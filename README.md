@@ -51,8 +51,8 @@ items = [
 ]
 ```
 
-Use `'single quotes'` for Windows paths. TOML processes `\` as an escape inside
-`"double quotes"`, so `"R:\dev"` is a parse error.
+Use `'single quotes'` for Windows paths. Inside `"double quotes"` TOML reads `\`
+as an escape, so `"R:\dev"` is a parse error.
 
 A manual `target` is anything the shell can open:
 
@@ -70,8 +70,8 @@ choose one.
 
 ### Appearance
 
-Tile size is fixed and never changes with item count, which is what makes tile
-positions learnable. The panel grows outward from the center until it hits
+Tile size is fixed. It never changes with item count, which is what makes tile
+positions learnable. The panel grows outward from center until it hits
 `max_screen_fraction` of the monitor, then scrolls.
 
 ```toml

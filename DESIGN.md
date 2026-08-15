@@ -242,37 +242,31 @@ Scope: `asInvoker` manifest, tray icon + `RegisterHotKey`, composition visual
 tree with configurable uniform grid, `SetWinEventHook` window model, icons via
 `IShellItemImageFactory`, config file, Esc-restores-caller.
 
-Built as designed. Notes from the implementation:
+Built as designed. Implementation notes:
 
-- Icons go through two worker threads in an MTA, with a cache. The UI thread
-  asks, gets `None`, draws the tile without an icon, and repaints on
-  `WM_ICON_READY`. There is no code path where the UI waits on the shell — a
-  blocking COM call cannot be cancelled, so the only real defence is never
-  waiting on one.
-- `SIIGBF_ICONONLY`, not thumbnails. Thumbnail extraction is the slow, hang-prone
-  half of the shell imaging API, and window previews come from capture anyway.
-- Tile content is Direct2D + DirectWrite drawn into a `CompositionDrawingSurface`.
-  That is the same object a capture frame becomes, so Milestone 3 does not have
-  to change the tile visual tree.
-- The watchdog's escape hatch is `SetWindowLongPtrW(GWL_EXSTYLE, |WS_EX_TRANSPARENT)`.
-  It writes the window struct directly and does not marshal to the owning thread,
-  so it still works when that thread is wedged. `ShowWindow` and `SetWindowPos`
-  would hang alongside it.
-- `Handle(isize)` wraps `HWND` in the model. `HWND` is `!Send` because of its raw
-  pointer, which would otherwise keep the item store off worker threads.
+- Icons: two MTA workers plus a cache. UI thread asks, gets `None`, draws without
+  an icon, repaints on `WM_ICON_READY`. A blocking COM call cannot be cancelled,
+  so never waiting on one is the only real defence.
+- `SIIGBF_ICONONLY`, not thumbnails. Thumbnail extraction is the hang-prone half
+  of the shell imaging API. Windows get previews from capture anyway.
+- Tile content is Direct2D + DirectWrite into a `CompositionDrawingSurface`. Same
+  object a capture frame becomes, so Milestone 3 leaves the tile tree alone.
+- Watchdog escape hatch: `SetWindowLongPtrW(GWL_EXSTYLE, |WS_EX_TRANSPARENT)`.
+  Writes the window struct directly, no marshal to the owning thread, so it works
+  when that thread is wedged. `ShowWindow` and `SetWindowPos` hang with it.
+- `Handle(isize)` wraps `HWND`. `HWND` is `!Send` because of its raw pointer,
+  which would keep the item store off worker threads.
 
-**Milestone 2 — activation. Done.** Focus for windows, `ShellExecuteW` for
-everything else. Verified: every `focused`/`launched` line in the log matched the
-resulting foreground window.
+**Milestone 2 — activation. Done.** Windows focus, everything else
+`ShellExecuteW`. Every `focused`/`launched` log line matched the resulting
+foreground window.
 
-`SetForegroundWindow` works without any `AttachThreadInput` trickery, exactly as
-predicted above — the hotkey that summoned the panel makes flick the last input
-recipient, and that right survives hiding the panel. Minimized windows need
-`SW_RESTORE` first or they will not come forward.
+`SetForegroundWindow` needs no `AttachThreadInput` trickery, as predicted above.
+The hotkey makes flick the last input recipient, and that right survives hiding
+the panel. Minimized windows need `SW_RESTORE` first or they stay down.
 
-Also landed here, ahead of the original order: taskbar pins, sections, and the
-general parsing-name target model, because "show what's active" and "show what I
-can launch" want the same tile.
+Taskbar pins, sections and the parsing-name model landed here too, ahead of the
+original order. "What's active" and "what I can launch" want the same tile.
 
 **Milestone 3 — capture.** Sparse package, borderless consent, preview pipeline
 with session caps and frame caching.
@@ -285,51 +279,47 @@ layout persistence.
 
 ---
 
-## The item model: one string for everything that is not a window
+## The item model
 
-A tile is either a **window** (an `HWND` to focus) or a **shell parsing name**
-(a string to hand to the shell). Nothing else.
+A tile is a **window** (`HWND` to focus) or a **shell parsing name** (string for
+the shell). Nothing else.
 
-That second case is doing a lot of work, and deliberately. A file path, a folder,
-a `.lnk`, `shell:AppsFolder\<AppUserModelID>` for a Store app, and a URI like
-`ms-settings:display` or `https://example.com` are all parsing names. All of them
-launch through one `ShellExecuteW` call, and all of them produce an icon through
-one `IShellItemImageFactory` call. So "pin anything" needs no per-type code:
-taskbar pins, folders, settings pages and links are the same code path.
+The second case carries the weight. Paths, folders, `.lnk`,
+`shell:AppsFolder\<AppUserModelID>`, `ms-settings:display`, `https://example.com`
+are all parsing names. One `ShellExecuteW` launches any of them. One
+`IShellItemImageFactory` gets any of their icons. "Pin anything" needs no
+per-type code.
 
-Two exceptions found in testing, both handled in `shell/icons.rs`:
+Two exceptions, both in `shell/icons.rs`:
 
-- A URI is not a shell item, but `SHCreateItemFromParsingName` does not say so —
-  it returns a generic item with a blank-page icon. So for URIs flick asks
-  `AssocQueryStringW` what is registered for the scheme and uses *that* app's
-  icon, which is the app the tile will actually launch.
-- Schemes owned by a packaged app have no executable to name, so the query fails
-  with `ERROR_NO_ASSOCIATION`. `ms-settings` is the one that matters; it maps to
-  the Settings AppUserModelID through a small table.
+- A URI is not a shell item, but `SHCreateItemFromParsingName` does not say so.
+  It returns a generic item with a blank-page icon. So for URIs, ask
+  `AssocQueryStringW` what opens the scheme and use that app's icon.
+- Packaged-app schemes have no exe to name, so that query fails with
+  `ERROR_NO_ASSOCIATION`. `ms-settings` maps to the Settings AppUserModelID
+  through a small table.
 
 ## Sections
 
-The grid is an ordered list of sections, each with a title and a source
-(`taskbar`, `windows`, `manual`), configured in `flick.toml`. They stack, each
-under its own header, and share one column count so tiles line up down the panel.
-Empty sections do not render.
+Ordered list, each with a title and a source (`taskbar`, `windows`, `manual`),
+configured in `flick.toml`. They stack under their own headers and share one
+column count so tiles line up. Empty sections do not render.
 
-**Pins and windows are shown separately, never merged.** Steam pinned to the
-taskbar and Steam running are two tiles. The redundancy is the point: a pin never
-moves, so its position is learnable, and each tile means exactly one thing —
-launch, or focus this particular window. Merging them, or hiding a pin while its
-app runs, makes tiles shift as you open and close things, which defeats the fixed
-tile size.
+**Pins and windows never merge.** Steam pinned and Steam running are two tiles.
+The redundancy is the point: a pin never moves, so its position is learnable, and
+each tile means one thing. Merging them, or hiding a pin while its app runs, makes
+tiles shift as you open and close things. That defeats the fixed tile size.
 
 **Taskbar pins come from the `.lnk` folder, not the registry.**
-`%APPDATA%\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar` holds one
-shortcut per pinned app. `ShellExecuteW` on a `.lnk` launches its target and
-`IShellItemImageFactory` on a `.lnk` returns its target's icon, so flick never
-resolves the shortcut itself. The taskbar's left-to-right *order* is not
-recoverable this way — it lives in `HKCU\...\Explorer\Taskband\Favorites` as an
-undocumented binary blob of serialised PIDLs, which is not worth parsing against
-a format Microsoft can change silently. Entries are sorted by name; a manual
-section gives exact control.
+`%APPDATA%\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar`, one
+shortcut per pinned app. `ShellExecuteW` on a `.lnk` launches its target;
+`IShellItemImageFactory` on a `.lnk` returns its target's icon. flick never
+resolves the shortcut itself.
+
+Order is not recoverable. It lives in `HKCU\...\Explorer\Taskband\Favorites` as
+an undocumented binary blob of serialised PIDLs. Not worth parsing against a
+format Microsoft can change silently. Sorted by name; a manual section gives
+exact control.
 
 ## Resolved
 
@@ -347,5 +337,7 @@ section gives exact control.
 
 ## Open questions
 
-- Whether tabs and windows share one grid section or are separated. (Milestone 4;
-  not blocking.)
+- Tabs and bookmarks arrive with the extension (Milestone 4). Own sections, or
+  merged into existing ones, still open.
+- Drag-and-drop pinning (Milestone 5) needs a rule for where a dropped item lands
+  when several manual sections exist.
