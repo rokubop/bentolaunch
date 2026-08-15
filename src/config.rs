@@ -42,6 +42,14 @@ pub struct SectionConfig {
     /// Shown as the section header. Empty string hides the header.
     pub title: String,
     pub source: Source,
+    /// Only for `source = "windows"`. Process names this section claims, e.g.
+    /// `["chrome.exe", "firefox.exe"]`. Case-insensitive. Empty means "whatever
+    /// is left", so an unfiltered windows section acts as the catch-all.
+    ///
+    /// Sections are matched in order and a window is claimed once, so listing a
+    /// filtered section above the catch-all is what groups apps together.
+    #[serde(default, rename = "match")]
+    pub matches: Vec<String>,
     /// Only read when `source = "manual"`. Each entry is a shell parsing name:
     /// a file, a folder, a .lnk, `shell:AppsFolder\<AppUserModelID>`, or a URI
     /// such as `ms-settings:display` or `https://example.com`.
@@ -96,6 +104,10 @@ pub struct Grid {
     pub max_screen_fraction: f32,
     /// Height reserved inside each tile for its label.
     pub label_height: f32,
+    /// Show the second line (process name or path) under the title. Off by
+    /// default: at compact tile sizes the title alone is what identifies a tile,
+    /// and the second line costs a row of tiles across the whole panel.
+    pub show_detail: bool,
     /// Height of a section header.
     pub header_height: f32,
     /// Extra space above each section after the first.
@@ -114,29 +126,43 @@ pub struct Theme {
     pub header: String,
 }
 
+/// Browsers, grouped together because that is how they are thought about. Any
+/// browser not listed simply lands in the catch-all section instead.
+const BROWSERS: &[&str] = &[
+    "chrome.exe",
+    "msedge.exe",
+    "firefox.exe",
+    "brave.exe",
+    "vivaldi.exe",
+    "opera.exe",
+    "arc.exe",
+    "zen.exe",
+];
+
+fn section(title: &str, source: Source, matches: &[&str]) -> SectionConfig {
+    SectionConfig {
+        title: title.into(),
+        source,
+        matches: matches.iter().map(|s| (*s).to_string()).collect(),
+        items: Vec::new(),
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             dry_run: false,
             hotkey: "alt+`".into(),
+            // Running things first: switching to what exists beats launching
+            // something new, so it gets the top of the panel.
             sections: vec![
-                SectionConfig {
-                    title: "Pinned".into(),
-                    source: Source::Taskbar,
-                    items: Vec::new(),
-                },
-                SectionConfig {
-                    title: "Windows".into(),
-                    source: Source::Windows,
-                    items: Vec::new(),
-                },
+                section("Browsing", Source::Windows, BROWSERS),
+                section("Files", Source::Windows, &["explorer.exe"]),
+                section("Active", Source::Windows, &[]),
+                section("Launch", Source::Taskbar, &[]),
                 // Empty by default, and empty sections do not render. Present so
                 // the shape is discoverable without reading the docs.
-                SectionConfig {
-                    title: "Places".into(),
-                    source: Source::Manual,
-                    items: Vec::new(),
-                },
+                section("Places", Source::Manual, &[]),
             ],
             grid: Grid::default(),
             theme: Theme::default(),
@@ -147,15 +173,16 @@ impl Default for Config {
 impl Default for Grid {
     fn default() -> Self {
         Self {
-            tile_width: 220.0,
-            tile_height: 150.0,
-            gap: 14.0,
-            padding: 24.0,
+            tile_width: 140.0,
+            tile_height: 100.0,
+            gap: 10.0,
+            padding: 18.0,
             max_screen_fraction: 0.8,
-            label_height: 30.0,
-            header_height: 28.0,
-            section_gap: 14.0,
-            corner_radius: 10.0,
+            label_height: 24.0,
+            show_detail: false,
+            header_height: 22.0,
+            section_gap: 10.0,
+            corner_radius: 8.0,
         }
     }
 }
@@ -413,9 +440,41 @@ mod tests {
         let text = toml::to_string_pretty(&Config::default()).unwrap();
         let back: Config = toml::from_str(&text).unwrap();
         assert_eq!(back.hotkey, Config::default().hotkey);
-        assert_eq!(back.sections.len(), 3);
-        assert_eq!(back.sections[0].source, Source::Taskbar);
-        assert_eq!(back.sections[1].source, Source::Windows);
+        assert_eq!(back.sections.len(), 5);
+        assert!(back.sections[0].matches.iter().any(|m| m == "chrome.exe"));
+    }
+
+    #[test]
+    fn running_things_are_listed_before_launchable_ones() {
+        let sections = Config::default().sections;
+        let last_window = sections.iter().rposition(|s| s.source == Source::Windows).unwrap();
+        let first_launch = sections.iter().position(|s| s.source != Source::Windows).unwrap();
+        assert!(
+            last_window < first_launch,
+            "every windows section must come before the launchers"
+        );
+    }
+
+    #[test]
+    fn exactly_one_windows_section_is_an_unfiltered_catch_all() {
+        let catch_alls = Config::default()
+            .sections
+            .iter()
+            .filter(|s| s.source == Source::Windows && s.matches.is_empty())
+            .count();
+        assert_eq!(catch_alls, 1, "windows with no matching section must land somewhere");
+    }
+
+    #[test]
+    fn a_section_can_declare_process_matches() {
+        let text = r#"
+[[sections]]
+title = "Browsing"
+source = "windows"
+match = ["chrome.exe", "firefox.exe"]
+"#;
+        let cfg: Config = toml::from_str(text).unwrap();
+        assert_eq!(cfg.sections[0].matches, ["chrome.exe", "firefox.exe"]);
     }
 
     #[test]

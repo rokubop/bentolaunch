@@ -33,8 +33,23 @@ pub const WM_MODEL_CHANGED: u32 = WM_APP + 1;
 struct Group {
     title: String,
     source: Source,
+    /// Lowercased process names this section claims. Empty means catch-all.
+    matches: Vec<String>,
     /// Pre-resolved for taskbar and manual sources; empty for windows.
     fixed: Vec<Item>,
+}
+
+impl Group {
+    fn claims(&self, window: &WindowInfo) -> bool {
+        if self.matches.is_empty() {
+            return true;
+        }
+        let Some(exe) = window.exe.as_ref().and_then(|p| p.file_name()) else {
+            return false;
+        };
+        let exe = exe.to_string_lossy().to_lowercase();
+        self.matches.contains(&exe)
+    }
 }
 
 struct Store {
@@ -58,21 +73,36 @@ fn store() -> &'static Mutex<Store> {
     })
 }
 
-/// First and only full enumeration. Everything after this is incremental.
-pub fn init(exclude: HWND, sections: &[SectionConfig]) {
-    let groups: Vec<Group> = sections
+/// Resolve the parts of a section that do not change without a config edit:
+/// taskbar pins and manual entries both touch the disk, so they are read once.
+fn build_groups(sections: &[SectionConfig]) -> Vec<Group> {
+    sections
         .iter()
         .map(|section| Group {
             title: section.title.clone(),
             source: section.source,
+            matches: section.matches.iter().map(|m| m.to_lowercase()).collect(),
             fixed: match section.source {
                 Source::Taskbar => taskbar::pins(),
                 Source::Manual => section.items.iter().filter_map(manual_item).collect(),
                 Source::Windows => Vec::new(),
             },
         })
-        .collect();
+        .collect()
+}
 
+/// Rebuild sections after a config edit. Windows are left alone: the hooks have
+/// been keeping that list current and it does not depend on config.
+pub fn reconfigure(sections: &[SectionConfig]) {
+    let groups = build_groups(sections);
+    if let Ok(mut s) = store().lock() {
+        s.groups = groups;
+    }
+}
+
+/// First and only full enumeration. Everything after this is incremental.
+pub fn init(exclude: HWND, sections: &[SectionConfig]) {
+    let groups = build_groups(sections);
     let found = enumerate(exclude);
     log_info!("initial scan: {} windows", found.len());
     for (n, w) in found.iter().enumerate() {
@@ -193,23 +223,40 @@ fn shorten_detail(spec: &str) -> String {
 
 /// The grid, in config order. Empty sections are dropped so a header never
 /// appears over nothing.
+///
+/// Each window is claimed by the first section whose `match` accepts it, so a
+/// filtered section listed above the catch-all is what pulls the browsers, or
+/// Explorer, out into their own group. No window appears twice.
 pub fn sections() -> Vec<Section> {
     let Ok(s) = store().lock() else {
         log_warn!("item store is poisoned; showing an empty grid");
         return Vec::new();
     };
 
-    s.groups
-        .iter()
-        .map(|group| Section {
-            title: group.title.clone(),
-            items: match group.source {
-                Source::Windows => s.windows.iter().map(WindowInfo::to_item).collect(),
-                _ => group.fixed.clone(),
-            },
-        })
-        .filter(|section| !section.items.is_empty())
-        .collect()
+    let mut claimed = vec![false; s.windows.len()];
+    let mut out = Vec::with_capacity(s.groups.len());
+
+    for group in &s.groups {
+        let items = match group.source {
+            Source::Windows => {
+                let mut items = Vec::new();
+                for (index, window) in s.windows.iter().enumerate() {
+                    if claimed[index] || !group.claims(window) {
+                        continue;
+                    }
+                    claimed[index] = true;
+                    items.push(window.to_item());
+                }
+                items
+            }
+            _ => group.fixed.clone(),
+        };
+
+        if !items.is_empty() {
+            out.push(Section { title: group.title.clone(), items });
+        }
+    }
+    out
 }
 
 /// Character-aware truncation; window titles are full of non-ASCII.

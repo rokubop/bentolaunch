@@ -188,7 +188,13 @@ impl Renderer {
             }
 
             let pad = 8.0;
-            let title_h = (label_height * 0.58).max(1.0);
+            // With no detail line the title gets the whole label strip, which
+            // keeps it vertically centred instead of riding high.
+            let title_h = if detail.is_empty() {
+                label_height.max(1.0)
+            } else {
+                (label_height * 0.58).max(1.0)
+            };
             self.draw_text(
                 context,
                 title,

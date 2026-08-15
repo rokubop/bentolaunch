@@ -6,9 +6,11 @@
 mod config;
 mod log;
 mod model;
+mod pins;
 mod safety;
 mod shell;
 mod ui;
+mod watch;
 
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetMessageW, MSG, TranslateMessage,
@@ -50,6 +52,7 @@ fn main() {
     store::init(hwnd, &sections);
     store::install_hooks(hwnd);
     icons::start(hwnd);
+    watch::start(hwnd);
     tray::install(hwnd);
 
     log_info!("ready — press the hotkey to summon, or use the tray icon");

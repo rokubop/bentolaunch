@@ -20,6 +20,10 @@ pub const WM_TRAY: u32 = WM_APP + 2;
 
 pub const CMD_TOGGLE: usize = 100;
 pub const CMD_EXIT: usize = 101;
+pub const CMD_ADD_APP: usize = 102;
+pub const CMD_ADD_FOLDER: usize = 103;
+pub const CMD_ADD_FILE: usize = 104;
+pub const CMD_EDIT_CONFIG: usize = 105;
 
 const ICON_ID: u32 = 1;
 
@@ -70,6 +74,12 @@ pub fn show_menu(hwnd: HWND) -> Option<usize> {
 
         let menu = CreatePopupMenu().ok()?;
         let _ = AppendMenuW(menu, MF_STRING, CMD_TOGGLE, w!("Show flick"));
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+        let _ = AppendMenuW(menu, MF_STRING, CMD_ADD_APP, w!("Add app..."));
+        let _ = AppendMenuW(menu, MF_STRING, CMD_ADD_FOLDER, w!("Add folder..."));
+        let _ = AppendMenuW(menu, MF_STRING, CMD_ADD_FILE, w!("Add file or shortcut..."));
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+        let _ = AppendMenuW(menu, MF_STRING, CMD_EDIT_CONFIG, w!("Edit settings..."));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
         let _ = AppendMenuW(menu, MF_STRING, CMD_EXIT, w!("Exit"));
 

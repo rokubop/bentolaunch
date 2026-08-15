@@ -321,6 +321,37 @@ an undocumented binary blob of serialised PIDLs. Not worth parsing against a
 format Microsoft can change silently. Sorted by name; a manual section gives
 exact control.
 
+### Grouping by intent
+
+A windows section can carry a `match` list of process names. Sections claim
+windows in order, each window is claimed once, and an unfiltered section is the
+catch-all. That is the whole mechanism: putting `["chrome.exe", ...]` above the
+catch-all is what pulls the browsers into their own group.
+
+Rejected: auto-grouping windows by exe with no config. It needs no setup, but
+sections then appear and disappear as apps open and close, and the whole panel
+reflows under the cursor. Explicit rules keep the shape of the grid stable, which
+is the same reason tile size is fixed.
+
+Running things sort above launchable ones. Switching to what exists is the more
+common intent, so it gets the top of the panel.
+
+## Configuring without hand-editing TOML
+
+Two mechanisms, both cheap because Windows already provides them:
+
+- **Pickers.** `IFileOpenDialog` pointed at `shell:AppsFolder` is a real
+  installed-app browser, Store apps included, and it returns a shell item whose
+  parsing name is exactly what the target model stores. So "add an app" needs no
+  bespoke UI. Folder and file pickers are the same dialog with different flags.
+- **Live reload.** A worker polls `flick.toml`'s mtime and posts to the panel.
+  Reload re-reads config, rebinds the hotkey if it changed, and rebuilds the
+  sections. No restart, which makes hand-tuning the grid bearable.
+
+Writes go through `toml_edit`, not serde. Round-tripping through `Config` would
+silently discard every comment and blank line in a file meant to be hand-edited.
+A tool that eats your comments is a tool you stop hand-editing.
+
 ## Resolved
 
 - **Hotkey: `Alt+`` `.** `Ctrl+Alt+Space` was chosen first, but `RegisterHotKey`

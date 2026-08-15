@@ -39,10 +39,11 @@ use crate::config::{self, Config};
 use crate::model::store;
 use crate::model::{Item, Section};
 use crate::safety;
-use crate::shell::{activate, icons};
+use crate::shell::{activate, icons, picker};
 use crate::ui::grid::{Layout, Metrics, Rect as GridRect, SectionShape};
 use crate::ui::render::{Renderer, TextColors, TilePaint, d2d_color};
 use crate::ui::tray;
+use crate::{pins, watch};
 use crate::{log_dry, log_error, log_info, log_warn};
 
 const HOTKEY_ID: i32 = 1;
@@ -389,6 +390,7 @@ impl Panel {
         let tile_color = color_of(&self.config.theme.tile);
         let icon_size = self.icon_size();
         let label_height = self.config.grid.label_height * scale;
+        let show_detail = self.config.grid.show_detail;
         let colors = self.text_colors();
         let mut built = Vec::with_capacity(self.items.len());
 
@@ -420,7 +422,7 @@ impl Panel {
                             height: rect.h,
                             label_height,
                             title: &item.title,
-                            detail: &item.detail,
+                            detail: if show_detail { &item.detail } else { "" },
                             icon: icon.as_deref(),
                             colors,
                         };
@@ -566,6 +568,7 @@ impl Panel {
         // cannot call back into `&self` helpers.
         let icon_size = self.icon_size();
         let label_height = self.config.grid.label_height * self.scale();
+        let show_detail = self.config.grid.show_detail;
         let text = d2d_color(&self.config.theme.text);
         let colors = TextColors { title: text, detail: dim(text) };
 
@@ -591,7 +594,7 @@ impl Panel {
                 height: rect.h,
                 label_height,
                 title: &item.title,
-                detail: &item.detail,
+                detail: if show_detail { &item.detail } else { "" },
                 icon: Some(&icon),
                 colors,
             };
@@ -641,6 +644,41 @@ impl Panel {
         }
     }
 
+    /// Add a picked target to the config. The watcher would catch the write on
+    /// its own, but reloading here makes the tile appear immediately.
+    fn pin(&mut self, target: Option<String>) {
+        let Some(target) = target else { return };
+        if pins::add(&target).is_some() {
+            self.reload_config();
+        }
+    }
+
+    /// Re-read the config and apply it live. Only the hotkey needs unbinding;
+    /// everything else is read fresh on the next show.
+    fn reload_config(&mut self) {
+        let next = Config::load();
+        let hotkey_changed = next.hotkey != self.config.hotkey;
+        self.config = next;
+
+        if hotkey_changed {
+            if self.hotkey_bound {
+                // SAFETY: matches the registration in bind_hotkey.
+                unsafe {
+                    let _ = UnregisterHotKey(Some(self.hwnd), HOTKEY_ID);
+                }
+                self.hotkey_bound = false;
+            }
+            self.bind_hotkey();
+        }
+
+        store::reconfigure(&self.config.sections);
+        log_info!("config reloaded");
+
+        if self.visible {
+            self.on_model_changed();
+        }
+    }
+
     fn cursor_index(&self, lparam: LPARAM) -> Option<usize> {
         let x = (lparam.0 & 0xFFFF) as i16 as f32;
         let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
@@ -662,6 +700,19 @@ impl Panel {
                     tray::Click::Left => self.toggle(),
                     tray::Click::Right => match tray::show_menu(self.hwnd) {
                         Some(tray::CMD_TOGGLE) => self.toggle(),
+                        Some(tray::CMD_ADD_APP) => {
+                            let picked = picker::pick_app(self.hwnd);
+                            self.pin(picked);
+                        }
+                        Some(tray::CMD_ADD_FOLDER) => {
+                            let picked = picker::pick_folder(self.hwnd);
+                            self.pin(picked);
+                        }
+                        Some(tray::CMD_ADD_FILE) => {
+                            let picked = picker::pick_file(self.hwnd);
+                            self.pin(picked);
+                        }
+                        Some(tray::CMD_EDIT_CONFIG) => open_config(),
                         Some(tray::CMD_EXIT) => {
                             log_info!("exit requested from the tray menu");
                             self.hide(false);
@@ -682,6 +733,10 @@ impl Panel {
             }
             icons::WM_ICON_READY => {
                 self.on_icons_ready();
+                Some(LRESULT(0))
+            }
+            watch::WM_CONFIG_RELOAD => {
+                self.reload_config();
                 Some(LRESULT(0))
             }
             WM_MOUSEMOVE => {
@@ -735,6 +790,44 @@ impl Drop for Panel {
                 let _ = UnregisterHotKey(Some(self.hwnd), HOTKEY_ID);
             }
         }
+    }
+}
+
+/// Open `flick.toml` in whatever the user edits TOML with. Falls back to
+/// Notepad, since a bare `.toml` often has no registered handler.
+fn open_config() {
+    let Some(path) = Config::path() else { return };
+    let target = windows::core::HSTRING::from(path.as_os_str());
+
+    // SAFETY: the strings outlive the calls. `open` never elevates.
+    let opened = unsafe {
+        windows::Win32::UI::Shell::ShellExecuteW(
+            None,
+            w!("open"),
+            &target,
+            None,
+            None,
+            SW_SHOWNORMAL,
+        )
+    };
+    if opened.0 as isize > 32 {
+        log_info!("opened {} for editing", path.display());
+        return;
+    }
+
+    // SAFETY: same contract; notepad.exe is always present.
+    let fallback = unsafe {
+        windows::Win32::UI::Shell::ShellExecuteW(
+            None,
+            w!("open"),
+            w!("notepad.exe"),
+            &target,
+            None,
+            SW_SHOWNORMAL,
+        )
+    };
+    if fallback.0 as isize <= 32 {
+        log_warn!("could not open {} in an editor", path.display());
     }
 }
 
