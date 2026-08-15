@@ -102,6 +102,10 @@ pub struct Grid {
     /// The grid grows outward from center until it reaches this fraction of the
     /// monitor work area, then stops widening and starts scrolling.
     pub max_screen_fraction: f32,
+    /// Hard cap on columns, applied on top of `max_screen_fraction`. A very wide
+    /// monitor would otherwise produce a row too long to scan in one look. 0
+    /// means no cap beyond what fits the screen.
+    pub max_columns: usize,
     /// Height reserved inside each tile for its label.
     pub label_height: f32,
     /// Show the second line (process name or path) under the title. Off by
@@ -178,6 +182,7 @@ impl Default for Grid {
             gap: 10.0,
             padding: 18.0,
             max_screen_fraction: 0.8,
+            max_columns: 9,
             label_height: 24.0,
             show_detail: false,
             header_height: 22.0,
@@ -267,6 +272,10 @@ impl Config {
                 g.max_screen_fraction, d.max_screen_fraction
             );
             g.max_screen_fraction = d.max_screen_fraction;
+        }
+        if g.max_columns > 64 {
+            log_warn!("max_columns {} is unreasonable; using {}", g.max_columns, d.max_columns);
+            g.max_columns = d.max_columns;
         }
         if !(0.0..=200.0).contains(&g.label_height) {
             g.label_height = d.label_height;

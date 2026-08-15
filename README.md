@@ -5,7 +5,8 @@ taskbar pins, folders, apps, settings pages, links.
 
 Press `` Alt+` ``. Click a tile. Esc closes and puts you back where you were.
 
-Windows 11 only. See `DESIGN.md` for architecture.
+Windows 11 only. `DESIGN.md` for architecture and decisions, `STATUS.md` for
+what works and what is next.
 
 ## Running
 
@@ -117,6 +118,7 @@ tile_height = 100.0
 gap = 10.0
 padding = 18.0
 max_screen_fraction = 0.8
+max_columns = 9          # hard column cap; 0 means whatever fits
 label_height = 24.0
 show_detail = false      # true: second line with process name or path
 header_height = 22.0     # 0 hides section headers

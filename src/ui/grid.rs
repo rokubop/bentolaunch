@@ -39,6 +39,8 @@ pub struct Metrics {
     pub gap: f32,
     pub padding: f32,
     pub max_fraction: f32,
+    /// Hard cap on columns. 0 means "whatever fits".
+    pub max_cols: usize,
     pub header_h: f32,
     pub section_gap: f32,
 }
@@ -78,11 +80,14 @@ impl Layout {
 
         // How many tiles fit across the widest panel we allow.
         let usable = (max_w - 2.0 * m.padding + m.gap).max(m.tile_w);
-        let max_cols = (usable / (m.tile_w + m.gap)).floor().max(1.0) as usize;
+        let fits = (usable / (m.tile_w + m.gap)).floor().max(1.0) as usize;
+        // A row longer than this stops being scannable in one look, however wide
+        // the monitor is.
+        let capped = if m.max_cols == 0 { fits } else { fits.min(m.max_cols) };
 
         // One column count for the whole panel, driven by the busiest section.
         let widest = sections.iter().map(|s| s.count).max().unwrap_or(0);
-        let cols = widest.clamp(1, max_cols);
+        let cols = widest.clamp(1, capped);
 
         let panel_w = cols as f32 * m.tile_w + (cols - 1) as f32 * m.gap + 2.0 * m.padding;
 
@@ -196,6 +201,7 @@ mod tests {
             gap: 10.0,
             padding: 20.0,
             max_fraction: 0.8,
+            max_cols: 0,
             header_h: 28.0,
             section_gap: 14.0,
         }
@@ -288,6 +294,38 @@ mod tests {
         assert_eq!(l.cols, 1);
         assert!(l.panel.w > 0.0 && l.panel.h > 0.0);
         assert_eq!(l.hit_test(30.0, 30.0, 0.0), None);
+    }
+
+    #[test]
+    fn max_cols_caps_a_row_the_screen_would_otherwise_allow() {
+        // Ultrawide, where the fraction cap alone still permits a very long row.
+        const WIDE: Rect = Rect { x: 0.0, y: 0.0, w: 5120.0, h: 1440.0 };
+
+        let uncapped = Layout::compute(&one(40), metrics(), WIDE);
+        assert!(uncapped.cols > 9, "fixture must allow more than 9 columns");
+
+        let m = Metrics { max_cols: 9, ..metrics() };
+        let capped = Layout::compute(&one(40), m, WIDE);
+        assert_eq!(capped.cols, 9);
+        assert!(capped.panel.w < uncapped.panel.w);
+    }
+
+    #[test]
+    fn max_cols_does_not_pad_out_a_short_row() {
+        let m = Metrics { max_cols: 9, ..metrics() };
+        let l = Layout::compute(&one(3), m, WORK);
+        assert_eq!(l.cols, 3, "three items must not stretch to nine columns");
+    }
+
+    #[test]
+    fn a_zero_cap_means_whatever_fits() {
+        const WIDE: Rect = Rect { x: 0.0, y: 0.0, w: 5120.0, h: 1440.0 };
+        let capped = Metrics { max_cols: 9, ..metrics() };
+        let uncapped = Metrics { max_cols: 0, ..metrics() };
+        assert!(
+            Layout::compute(&one(40), uncapped, WIDE).cols
+                > Layout::compute(&one(40), capped, WIDE).cols
+        );
     }
 
     #[test]

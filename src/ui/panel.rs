@@ -145,6 +145,7 @@ impl Panel {
             gap: 0.0,
             padding: 0.0,
             max_fraction: 0.8,
+            max_cols: 0,
             header_h: 0.0,
             section_gap: 0.0,
         };
@@ -229,6 +230,7 @@ impl Panel {
             gap: g.gap * scale,
             padding: g.padding * scale,
             max_fraction: g.max_screen_fraction,
+            max_cols: g.max_columns,
             header_h: g.header_height * scale,
             section_gap: g.section_gap * scale,
         }

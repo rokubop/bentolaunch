@@ -274,8 +274,22 @@ with session caps and frame caching.
 **Milestone 4 — browser.** Localhost WebSocket server, Chromium extension, tabs
 + bookmarks.
 
-**Milestone 5 — drag-and-drop pinning.** `IDropTarget`, `IShellLink` resolution,
-layout persistence.
+**Milestone 5 — edit mode and drag-and-drop pinning.** `IDropTarget`, drag to
+reorder, layout persistence.
+
+Edit mode is the prerequisite, not a nicety. Without an explicit mode, drag and
+click are ambiguous on the same tile, and a slightly dragged click would reorder
+the grid when the user meant to switch. Edit mode suspends activation, so a tile
+can be picked up, moved, or removed without ever firing.
+
+Two constraints found while designing it:
+
+- Reorder only makes sense for taskbar and manual sections. Window tiles are MRU
+  ordered by the foreground hook, and a persisted manual order would fight that
+  on every focus change.
+- Dropping from Explorer needs the panel to stay up during the drag, but clicking
+  away currently dismisses. Dismissal has to be suspended while a drag is in
+  flight.
 
 ---
 
@@ -365,6 +379,15 @@ A tool that eats your comments is a tool you stop hand-editing.
 
   Rejected: fit-to-screen tile shrinking. Tile size and position shifting with
   item count destroys the muscle memory that makes a switcher fast.
+
+- **Column cap: 9.** `max_screen_fraction` alone is not enough on a wide monitor.
+  A row of 14 tiles stops being scannable in one look, and the eye has to
+  traverse instead of jump. Capped in config, on top of the fraction.
+
+- **Tile size: 140x100, no detail line.** The first pass at 220x150 with a
+  process-name second line fit only 30 tiles, against a target of 50+. At compact
+  sizes the title alone identifies a tile, and the second line costs a whole row
+  across the panel. `show_detail = true` restores it.
 
 ## Open questions
 

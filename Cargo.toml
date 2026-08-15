@@ -1,7 +1,11 @@
 [package]
 name = "flick"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2024"
+rust-version = "1.89"
+description = "Hotkey-summoned grid of everything worth switching to: windows, taskbar pins, folders, apps, settings pages, links"
+readme = "README.md"
+publish = false
 
 [dependencies]
 serde = { version = "1.0.229", features = ["derive"] }
