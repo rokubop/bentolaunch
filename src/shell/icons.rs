@@ -10,25 +10,28 @@
 //! Requests use `SIIGBF_ICONONLY`. Real thumbnail extraction is the slow, risky
 //! half of the shell imaging API, and for apps and folders the icon is what a
 //! switcher wants anyway. Window previews come from capture in Milestone 3.
+//!
+//! Keys are shell parsing names, not paths, so the same cache serves an exe, a
+//! folder, a `.lnk`, a Store app by AppUserModelID, and a `ms-settings:` URI.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
-use windows::Win32::Foundation::{HWND, SIZE};
+use windows::Win32::Foundation::{HWND, MAX_PATH, SIZE};
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, DeleteObject, GetDC, GetDIBits,
     GetObjectW, HBITMAP, ReleaseDC,
 };
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
 use windows::Win32::UI::Shell::{
-    IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_BIGGERSIZEOK, SIIGBF_ICONONLY,
+    ASSOCF_IS_PROTOCOL, ASSOCSTR_EXECUTABLE, AssocQueryStringW, IShellItemImageFactory,
+    SHCreateItemFromParsingName, SIIGBF_BIGGERSIZEOK, SIIGBF_ICONONLY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
-use windows::core::HSTRING;
+use windows::core::{HSTRING, PWSTR};
 
 use crate::{log_info, log_warn};
 
@@ -52,7 +55,8 @@ pub struct IconPixels {
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 struct Key {
-    path: PathBuf,
+    /// A shell parsing name.
+    name: String,
     size: u32,
 }
 
@@ -99,8 +103,8 @@ pub fn start(notify: HWND) {
 /// Non-blocking. Returns the icon if it is already cached, otherwise queues it
 /// and returns `None` — the caller draws without an icon and repaints on
 /// `WM_ICON_READY`.
-pub fn request(path: &std::path::Path, size: u32) -> Option<Arc<IconPixels>> {
-    let key = Key { path: path.to_path_buf(), size };
+pub fn request(parsing_name: &str, size: u32) -> Option<Arc<IconPixels>> {
+    let key = Key { name: parsing_name.to_owned(), size };
 
     {
         let Ok(mut c) = cache().lock() else { return None };
@@ -153,8 +157,8 @@ fn worker(rx: Arc<Mutex<Receiver<Key>>>) {
         let elapsed = started.elapsed().as_millis();
         if elapsed > SLOW_REQUEST_MS {
             log_warn!(
-                "icon for {} took {elapsed}ms — a shell extension is slow on this path",
-                key.path.display()
+                "icon for {} took {elapsed}ms — a shell extension is slow on this target",
+                key.name
             );
         }
 
@@ -185,8 +189,15 @@ fn fetch(key: &Key) -> Option<IconPixels> {
     // SAFETY: every COM object is scoped to this call, and the HBITMAP is
     // deleted on both the success and failure paths below.
     unsafe {
-        let path = HSTRING::from(key.path.as_os_str());
-        let factory: IShellItemImageFactory = SHCreateItemFromParsingName(&path, None).ok()?;
+        // For a URI, ask the handler first. `SHCreateItemFromParsingName` does
+        // not reject `ms-settings:display` outright — it hands back a generic
+        // item whose icon is a blank page — so trying it first would always win
+        // and always look wrong. The app registered to open the scheme is the
+        // one the tile will actually launch, so its icon is the honest one.
+        let factory: IShellItemImageFactory = match protocol_handler(&key.name) {
+            Some(exe) => shell_item(&exe).or_else(|| shell_item(&key.name))?,
+            None => shell_item(&key.name)?,
+        };
 
         let size = SIZE { cx: key.size as i32, cy: key.size as i32 };
         let bitmap = factory
@@ -197,6 +208,57 @@ fn fetch(key: &Key) -> Option<IconPixels> {
         let _ = DeleteObject(bitmap.into());
         pixels
     }
+}
+
+unsafe fn shell_item(parsing_name: &str) -> Option<IShellItemImageFactory> {
+    // SAFETY: the HSTRING outlives the call.
+    unsafe { SHCreateItemFromParsingName(&HSTRING::from(parsing_name), None).ok() }
+}
+
+/// Schemes owned by a packaged app rather than a classic executable.
+/// `AssocQueryStringW` reports ERROR_NO_ASSOCIATION for these, because there is
+/// no .exe to name. The AppUserModelIDs are stable across Windows 10 and 11.
+const PACKAGED_HANDLERS: &[(&str, &str)] = &[(
+    "ms-settings",
+    r"shell:AppsFolder\windows.immersivecontrolpanel_cw5n1h2txyewy!microsoft.windows.immersivecontrolpanel",
+)];
+
+/// What will open a URI: the executable registered for its scheme, or a known
+/// packaged app. `None` for anything that is not a URI.
+unsafe fn protocol_handler(parsing_name: &str) -> Option<String> {
+    let (scheme, _) = parsing_name.split_once(':')?;
+    if scheme.len() <= 1 || !scheme.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return None;
+    }
+
+    if let Some((_, aumid)) = PACKAGED_HANDLERS
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(scheme))
+    {
+        return Some((*aumid).to_owned());
+    }
+
+    let mut buf = [0u16; MAX_PATH as usize];
+    let mut len = buf.len() as u32;
+    // SAFETY: len starts as the buffer capacity and is updated to the length
+    // written, per the API contract.
+    let hr = unsafe {
+        AssocQueryStringW(
+            ASSOCF_IS_PROTOCOL,
+            ASSOCSTR_EXECUTABLE,
+            &HSTRING::from(scheme),
+            None,
+            Some(PWSTR(buf.as_mut_ptr())),
+            &mut len,
+        )
+    };
+    if hr.is_err() || len == 0 {
+        return None;
+    }
+
+    // The returned length includes the terminating NUL.
+    let exe = String::from_utf16_lossy(&buf[..(len as usize).saturating_sub(1)]);
+    (!exe.is_empty()).then_some(exe)
 }
 
 /// Copy an HBITMAP into a premultiplied BGRA buffer.

@@ -14,16 +14,70 @@ use crate::{log_info, log_warn};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
-    /// Milestone 1 default. Clicks log what they would have done, and do nothing.
+    /// Log what a click would do instead of doing it. Off since Milestone 2.
     pub dry_run: bool,
     /// e.g. "alt+`". Modifiers: ctrl, alt, shift, win.
     pub hotkey: String,
-    /// Absolute paths to apps, shortcuts, and folders to show ahead of the live
-    /// windows. Milestone 5 populates this by drag-and-drop; until then it is
-    /// hand-edited.
-    pub pinned: Vec<String>,
+    /// Grid contents, top to bottom. Order here is order on screen.
+    pub sections: Vec<SectionConfig>,
     pub grid: Grid,
     pub theme: Theme,
+}
+
+/// Where a section's tiles come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Source {
+    /// Apps pinned to the Windows taskbar, read from disk.
+    Taskbar,
+    /// Every open window.
+    Windows,
+    /// Whatever is listed in `items`.
+    Manual,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SectionConfig {
+    /// Shown as the section header. Empty string hides the header.
+    pub title: String,
+    pub source: Source,
+    /// Only read when `source = "manual"`. Each entry is a shell parsing name:
+    /// a file, a folder, a .lnk, `shell:AppsFolder\<AppUserModelID>`, or a URI
+    /// such as `ms-settings:display` or `https://example.com`.
+    #[serde(default)]
+    pub items: Vec<ManualItem>,
+}
+
+/// A manual entry, either bare or with a chosen label:
+///
+/// ```toml
+/// items = [
+///   "R:\dev",
+///   { title = "Display", target = "ms-settings:display" },
+/// ]
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ManualItem {
+    Plain(String),
+    Named { title: String, target: String },
+}
+
+impl ManualItem {
+    pub fn target(&self) -> &str {
+        match self {
+            ManualItem::Plain(target) => target,
+            ManualItem::Named { target, .. } => target,
+        }
+    }
+
+    pub fn title(&self) -> Option<&str> {
+        match self {
+            ManualItem::Plain(_) => None,
+            ManualItem::Named { title, .. } => Some(title),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,6 +96,10 @@ pub struct Grid {
     pub max_screen_fraction: f32,
     /// Height reserved inside each tile for its label.
     pub label_height: f32,
+    /// Height of a section header.
+    pub header_height: f32,
+    /// Extra space above each section after the first.
+    pub section_gap: f32,
     pub corner_radius: f32,
 }
 
@@ -53,14 +111,33 @@ pub struct Theme {
     pub tile: String,
     pub tile_hover: String,
     pub text: String,
+    pub header: String,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            dry_run: true,
+            dry_run: false,
             hotkey: "alt+`".into(),
-            pinned: Vec::new(),
+            sections: vec![
+                SectionConfig {
+                    title: "Pinned".into(),
+                    source: Source::Taskbar,
+                    items: Vec::new(),
+                },
+                SectionConfig {
+                    title: "Windows".into(),
+                    source: Source::Windows,
+                    items: Vec::new(),
+                },
+                // Empty by default, and empty sections do not render. Present so
+                // the shape is discoverable without reading the docs.
+                SectionConfig {
+                    title: "Places".into(),
+                    source: Source::Manual,
+                    items: Vec::new(),
+                },
+            ],
             grid: Grid::default(),
             theme: Theme::default(),
         }
@@ -76,6 +153,8 @@ impl Default for Grid {
             padding: 24.0,
             max_screen_fraction: 0.8,
             label_height: 30.0,
+            header_height: 28.0,
+            section_gap: 14.0,
             corner_radius: 10.0,
         }
     }
@@ -88,6 +167,7 @@ impl Default for Theme {
             tile: "#FF2A2A32".into(),
             tile_hover: "#FF3C3C48".into(),
             text: "#FFE8E8EC".into(),
+            header: "#FF9A9AA8".into(),
         }
     }
 }
@@ -120,15 +200,19 @@ impl Config {
             },
             Err(_) => {
                 let cfg = Self::default();
-                match toml::to_string_pretty(&cfg) {
-                    Ok(text) => match std::fs::write(&path, text) {
-                        Ok(()) => log_info!("wrote default config to {}", path.display()),
-                        Err(e) => log_warn!("could not write config to {}: {e}", path.display()),
-                    },
-                    Err(e) => log_warn!("could not serialize default config: {e}"),
-                }
+                cfg.write_to(&path);
                 cfg
             }
+        }
+    }
+
+    fn write_to(&self, path: &std::path::Path) {
+        match toml::to_string_pretty(self) {
+            Ok(text) => match std::fs::write(path, text) {
+                Ok(()) => log_info!("wrote default config to {}", path.display()),
+                Err(e) => log_warn!("could not write config to {}: {e}", path.display()),
+            },
+            Err(e) => log_warn!("could not serialize default config: {e}"),
         }
     }
 
@@ -160,8 +244,19 @@ impl Config {
         if !(0.0..=200.0).contains(&g.label_height) {
             g.label_height = d.label_height;
         }
+        if !(0.0..=200.0).contains(&g.header_height) {
+            g.header_height = d.header_height;
+        }
+        if !(0.0..=256.0).contains(&g.section_gap) {
+            g.section_gap = d.section_gap;
+        }
         if !(0.0..=128.0).contains(&g.corner_radius) {
             g.corner_radius = d.corner_radius;
+        }
+
+        if self.sections.is_empty() {
+            log_warn!("config has no sections; falling back to the default set");
+            self.sections = Config::default().sections;
         }
         self
     }
@@ -265,12 +360,7 @@ pub fn parse_color(spec: &str) -> (u8, u8, u8, u8) {
         _ => None,
     };
     match parsed {
-        Some(v) => (
-            (v >> 24) as u8,
-            (v >> 16) as u8,
-            (v >> 8) as u8,
-            v as u8,
-        ),
+        Some(v) => ((v >> 24) as u8, (v >> 16) as u8, (v >> 8) as u8, v as u8),
         None => {
             log_warn!("could not parse color '{spec}'");
             (0xFF, 0xFF, 0x00, 0xFF)
@@ -323,6 +413,45 @@ mod tests {
         let text = toml::to_string_pretty(&Config::default()).unwrap();
         let back: Config = toml::from_str(&text).unwrap();
         assert_eq!(back.hotkey, Config::default().hotkey);
-        assert!(back.dry_run, "dry run must stay on by default");
+        assert_eq!(back.sections.len(), 3);
+        assert_eq!(back.sections[0].source, Source::Taskbar);
+        assert_eq!(back.sections[1].source, Source::Windows);
+    }
+
+    #[test]
+    fn a_hand_written_manual_section_parses() {
+        let text = r#"
+hotkey = "alt+`"
+
+[[sections]]
+title = "Places"
+source = "manual"
+items = ["R:\\dev", "ms-settings:display"]
+"#;
+        let cfg: Config = toml::from_str(text).unwrap();
+        assert_eq!(cfg.sections.len(), 1);
+        assert_eq!(cfg.sections[0].source, Source::Manual);
+        assert_eq!(cfg.sections[0].items[1].target(), "ms-settings:display");
+        assert_eq!(cfg.sections[0].items[1].title(), None);
+    }
+
+    #[test]
+    fn a_manual_item_can_carry_its_own_title() {
+        let text = r#"
+[[sections]]
+title = "Places"
+source = "manual"
+items = [{ title = "Display", target = "ms-settings:display" }]
+"#;
+        let cfg: Config = toml::from_str(text).unwrap();
+        let item = &cfg.sections[0].items[0];
+        assert_eq!(item.title(), Some("Display"));
+        assert_eq!(item.target(), "ms-settings:display");
+    }
+
+    #[test]
+    fn empty_section_list_falls_back_rather_than_showing_nothing() {
+        let cfg = Config { sections: Vec::new(), ..Config::default() }.validated();
+        assert!(!cfg.sections.is_empty());
     }
 }

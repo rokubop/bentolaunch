@@ -261,7 +261,18 @@ Built as designed. Notes from the implementation:
 - `Handle(isize)` wraps `HWND` in the model. `HWND` is `!Send` because of its raw
   pointer, which would otherwise keep the item store off worker threads.
 
-**Milestone 2 — activation.** Focus/launch for windows, pinned apps, folders.
+**Milestone 2 — activation. Done.** Focus for windows, `ShellExecuteW` for
+everything else. Verified: every `focused`/`launched` line in the log matched the
+resulting foreground window.
+
+`SetForegroundWindow` works without any `AttachThreadInput` trickery, exactly as
+predicted above — the hotkey that summoned the panel makes flick the last input
+recipient, and that right survives hiding the panel. Minimized windows need
+`SW_RESTORE` first or they will not come forward.
+
+Also landed here, ahead of the original order: taskbar pins, sections, and the
+general parsing-name target model, because "show what's active" and "show what I
+can launch" want the same tile.
 
 **Milestone 3 — capture.** Sparse package, borderless consent, preview pipeline
 with session caps and frame caching.
@@ -273,6 +284,52 @@ with session caps and frame caching.
 layout persistence.
 
 ---
+
+## The item model: one string for everything that is not a window
+
+A tile is either a **window** (an `HWND` to focus) or a **shell parsing name**
+(a string to hand to the shell). Nothing else.
+
+That second case is doing a lot of work, and deliberately. A file path, a folder,
+a `.lnk`, `shell:AppsFolder\<AppUserModelID>` for a Store app, and a URI like
+`ms-settings:display` or `https://example.com` are all parsing names. All of them
+launch through one `ShellExecuteW` call, and all of them produce an icon through
+one `IShellItemImageFactory` call. So "pin anything" needs no per-type code:
+taskbar pins, folders, settings pages and links are the same code path.
+
+Two exceptions found in testing, both handled in `shell/icons.rs`:
+
+- A URI is not a shell item, but `SHCreateItemFromParsingName` does not say so —
+  it returns a generic item with a blank-page icon. So for URIs flick asks
+  `AssocQueryStringW` what is registered for the scheme and uses *that* app's
+  icon, which is the app the tile will actually launch.
+- Schemes owned by a packaged app have no executable to name, so the query fails
+  with `ERROR_NO_ASSOCIATION`. `ms-settings` is the one that matters; it maps to
+  the Settings AppUserModelID through a small table.
+
+## Sections
+
+The grid is an ordered list of sections, each with a title and a source
+(`taskbar`, `windows`, `manual`), configured in `flick.toml`. They stack, each
+under its own header, and share one column count so tiles line up down the panel.
+Empty sections do not render.
+
+**Pins and windows are shown separately, never merged.** Steam pinned to the
+taskbar and Steam running are two tiles. The redundancy is the point: a pin never
+moves, so its position is learnable, and each tile means exactly one thing —
+launch, or focus this particular window. Merging them, or hiding a pin while its
+app runs, makes tiles shift as you open and close things, which defeats the fixed
+tile size.
+
+**Taskbar pins come from the `.lnk` folder, not the registry.**
+`%APPDATA%\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar` holds one
+shortcut per pinned app. `ShellExecuteW` on a `.lnk` launches its target and
+`IShellItemImageFactory` on a `.lnk` returns its target's icon, so flick never
+resolves the shortcut itself. The taskbar's left-to-right *order* is not
+recoverable this way — it lives in `HKCU\...\Explorer\Taskband\Favorites` as an
+undocumented binary blob of serialised PIDLs, which is not worth parsing against
+a format Microsoft can change silently. Entries are sorted by name; a manual
+section gives exact control.
 
 ## Resolved
 

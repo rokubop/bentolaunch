@@ -2,9 +2,11 @@
 //! panel is a read, never a scan.
 //!
 //! Windows are held in MRU order: the foreground hook moves the newly focused
-//! window to the front, which is the order a switcher wants.
+//! window to the front, which is the order a switcher wants. Taskbar pins and
+//! manual entries are resolved once at startup, because neither changes without
+//! a restart and both touch the disk.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -16,18 +18,28 @@ use windows::Win32::UI::WindowsAndMessaging::{
     OBJID_WINDOW, PostMessageW, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP,
 };
 
+use crate::config::{ManualItem, SectionConfig, Source};
 // Imported by name rather than as a module: `windows` would otherwise shadow the
 // `windows` crate throughout this file.
+use crate::model::taskbar;
 use crate::model::windows::{WindowInfo, enumerate, refresh_title, still_switchable};
-use crate::model::{Handle, Item, ItemId, Kind};
+use crate::model::{Handle, Item, ItemId, Kind, Section, Target};
 use crate::{log_info, log_warn};
 
 /// Posted to the panel when the item list changed. Only acted on while visible.
 pub const WM_MODEL_CHANGED: u32 = WM_APP + 1;
 
+/// One configured section, with whatever could be resolved up front.
+struct Group {
+    title: String,
+    source: Source,
+    /// Pre-resolved for taskbar and manual sources; empty for windows.
+    fixed: Vec<Item>,
+}
+
 struct Store {
     windows: Vec<WindowInfo>,
-    pinned: Vec<Item>,
+    groups: Vec<Group>,
     /// flick's own panel, which must never appear in its own grid.
     exclude: Handle,
 }
@@ -40,23 +52,29 @@ fn store() -> &'static Mutex<Store> {
     STORE.get_or_init(|| {
         Mutex::new(Store {
             windows: Vec::new(),
-            pinned: Vec::new(),
+            groups: Vec::new(),
             exclude: Handle::new(HWND(std::ptr::null_mut())),
         })
     })
 }
 
 /// First and only full enumeration. Everything after this is incremental.
-pub fn init(exclude: HWND, pinned_paths: &[String]) {
-    let pinned = pinned_paths.iter().filter_map(|p| pin_item(p)).collect::<Vec<_>>();
+pub fn init(exclude: HWND, sections: &[SectionConfig]) {
+    let groups: Vec<Group> = sections
+        .iter()
+        .map(|section| Group {
+            title: section.title.clone(),
+            source: section.source,
+            fixed: match section.source {
+                Source::Taskbar => taskbar::pins(),
+                Source::Manual => section.items.iter().filter_map(manual_item).collect(),
+                Source::Windows => Vec::new(),
+            },
+        })
+        .collect();
+
     let found = enumerate(exclude);
-    log_info!(
-        "initial scan: {} windows, {} pinned",
-        found.len(),
-        pinned.len()
-    );
-    // Milestone 1 is about validating what flick sees before it acts on any of
-    // it, so the whole list goes to the log.
+    log_info!("initial scan: {} windows", found.len());
     for (n, w) in found.iter().enumerate() {
         log_info!(
             "  [{n:>2}] {:<48} {} [{}]",
@@ -69,30 +87,129 @@ pub fn init(exclude: HWND, pinned_paths: &[String]) {
             w.class
         );
     }
+    for group in &groups {
+        log_info!(
+            "section \"{}\" ({:?}): {} fixed item(s)",
+            group.title,
+            group.source,
+            group.fixed.len()
+        );
+    }
 
     if let Ok(mut s) = store().lock() {
         s.exclude = Handle::new(exclude);
         s.windows = found;
-        s.pinned = pinned;
+        s.groups = groups;
     }
 }
 
-fn pin_item(spec: &str) -> Option<Item> {
-    let path = PathBuf::from(spec);
-    if !path.exists() {
-        log_warn!("pinned entry does not exist, skipping: {spec}");
+/// Build a tile from a manual config entry.
+///
+/// Everything here is a shell parsing name, so nothing needs to exist on disk —
+/// `ms-settings:display` is as valid a target as `R:\dev`. Existence only
+/// affects which title and icon flick can infer.
+fn manual_item(entry: &ManualItem) -> Option<Item> {
+    let target = entry.target().trim();
+    if target.is_empty() {
         return None;
     }
-    let kind = if path.is_dir() { Kind::Folder } else { Kind::App };
-    let title = pin_title(&path);
+    let kind = derive_kind(target);
+    let title = entry
+        .title()
+        .map(str::to_owned)
+        .unwrap_or_else(|| derive_title(target));
+
     Some(Item {
-        id: ItemId::Path(path.clone()),
+        id: ItemId::Shell(target.to_owned()),
         kind,
         title,
-        detail: path.to_string_lossy().into_owned(),
-        handle: None,
-        icon_source: Some(path),
+        detail: shorten_detail(target),
+        target: Target::Shell(target.to_owned()),
+        icon_source: Some(target.to_owned()),
     })
+}
+
+/// A URI scheme is letters followed by `:`. A drive letter is a single
+/// character, so `C:\x` is a path and `ms-settings:display` is a link.
+fn is_uri(spec: &str) -> bool {
+    match spec.split_once(':') {
+        Some((scheme, _)) => {
+            scheme.len() > 1 && scheme.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        }
+        None => false,
+    }
+}
+
+fn derive_kind(spec: &str) -> Kind {
+    let path = Path::new(spec);
+    if path.is_dir() {
+        Kind::Folder
+    } else if path.is_file() {
+        Kind::App
+    } else if is_uri(spec) {
+        Kind::Link
+    } else {
+        log_warn!("manual entry does not exist and is not a URI: {spec}");
+        Kind::App
+    }
+}
+
+fn derive_title(spec: &str) -> String {
+    let path = Path::new(spec);
+    if path.is_dir() {
+        return path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| spec.to_owned());
+    }
+    if path.is_file() {
+        return path
+            .file_stem()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| spec.to_owned());
+    }
+    if let Some((scheme, rest)) = spec.split_once(':')
+        && is_uri(spec)
+    {
+        let rest = rest.trim_start_matches('/').trim_end_matches('/');
+        return if rest.is_empty() { scheme.to_owned() } else { rest.to_owned() };
+    }
+    spec.to_owned()
+}
+
+/// Long paths are unreadable at tile width; keep the tail, which is the part
+/// that identifies the target.
+fn shorten_detail(spec: &str) -> String {
+    const MAX: usize = 40;
+    if spec.chars().count() <= MAX {
+        return spec.to_owned();
+    }
+    let tail: String = spec
+        .chars()
+        .skip(spec.chars().count().saturating_sub(MAX - 1))
+        .collect();
+    format!("…{tail}")
+}
+
+/// The grid, in config order. Empty sections are dropped so a header never
+/// appears over nothing.
+pub fn sections() -> Vec<Section> {
+    let Ok(s) = store().lock() else {
+        log_warn!("item store is poisoned; showing an empty grid");
+        return Vec::new();
+    };
+
+    s.groups
+        .iter()
+        .map(|group| Section {
+            title: group.title.clone(),
+            items: match group.source {
+                Source::Windows => s.windows.iter().map(WindowInfo::to_item).collect(),
+                _ => group.fixed.clone(),
+            },
+        })
+        .filter(|section| !section.items.is_empty())
+        .collect()
 }
 
 /// Character-aware truncation; window titles are full of non-ASCII.
@@ -101,24 +218,6 @@ fn truncate(s: &str, max: usize) -> String {
         return s.to_owned();
     }
     s.chars().take(max.saturating_sub(1)).collect::<String>() + "…"
-}
-
-fn pin_title(path: &Path) -> String {
-    path.file_stem()
-        .or_else(|| path.file_name())
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.to_string_lossy().into_owned())
-}
-
-/// Pins first so their positions never move, then windows in MRU order.
-pub fn items() -> Vec<Item> {
-    let Ok(s) = store().lock() else {
-        log_warn!("item store is poisoned; showing an empty grid");
-        return Vec::new();
-    };
-    let mut out = s.pinned.clone();
-    out.extend(s.windows.iter().map(WindowInfo::to_item));
-    out
 }
 
 /// `notify` receives `WM_MODEL_CHANGED` whenever the list changes.
@@ -277,5 +376,50 @@ fn on_rename(hwnd: HWND) -> bool {
             true
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drive_letters_are_paths_and_schemes_are_uris() {
+        assert!(!is_uri(r"C:\Windows\notepad.exe"));
+        assert!(!is_uri(r"R:\dev"));
+        assert!(is_uri("ms-settings:display"));
+        assert!(is_uri("https://example.com"));
+        assert!(!is_uri("plain-text"));
+    }
+
+    #[test]
+    fn uri_titles_drop_the_scheme() {
+        assert_eq!(derive_title("ms-settings:display"), "display");
+        assert_eq!(derive_title("https://example.com/"), "example.com");
+    }
+
+    #[test]
+    fn a_named_entry_keeps_its_title() {
+        let entry = ManualItem::Named {
+            title: "Display".into(),
+            target: "ms-settings:display".into(),
+        };
+        let item = manual_item(&entry).unwrap();
+        assert_eq!(item.title, "Display");
+        assert_eq!(item.kind, Kind::Link);
+        assert_eq!(item.target, Target::Shell("ms-settings:display".into()));
+    }
+
+    #[test]
+    fn blank_entries_are_dropped() {
+        assert!(manual_item(&ManualItem::Plain("   ".into())).is_none());
+    }
+
+    #[test]
+    fn long_targets_keep_their_tail() {
+        let long = format!("C:\\{}\\thing.exe", "x".repeat(80));
+        let detail = shorten_detail(&long);
+        assert!(detail.chars().count() <= 40);
+        assert!(detail.ends_with("thing.exe"));
     }
 }

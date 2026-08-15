@@ -27,7 +27,7 @@ fn main() {
     safety::start_watchdog();
 
     let config = Config::load();
-    let pinned = config.pinned.clone();
+    let sections = config.sections.clone();
     log_info!(
         "flick starting — dry_run={}, hotkey={}",
         config.dry_run,
@@ -35,8 +35,6 @@ fn main() {
     );
     if config.dry_run {
         log_info!("DRY RUN: clicks will be logged, not acted on");
-    } else {
-        log_warn!("dry_run is off, but activation lands in Milestone 2 — clicks still do nothing");
     }
 
     let mut panel = match Panel::create(config) {
@@ -49,7 +47,7 @@ fn main() {
     let hwnd = panel.hwnd();
 
     // Enumerate once, then stay current from hooks. Never scan on the hotkey.
-    store::init(hwnd, &pinned);
+    store::init(hwnd, &sections);
     store::install_hooks(hwnd);
     icons::start(hwnd);
     tray::install(hwnd);

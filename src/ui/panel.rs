@@ -8,16 +8,16 @@
 //! The window is `WS_EX_NOREDIRECTIONBITMAP` so there is no GDI redirection
 //! surface fighting the composition tree for per-pixel alpha.
 
-use windows_numerics::{Vector2, Vector3};
 use windows::UI::Color;
 use windows::UI::Composition::Desktop::DesktopWindowTarget;
 use windows::UI::Composition::{
     CompositionColorBrush, CompositionDrawingSurface, CompositionSpriteShape, Compositor,
-    ContainerVisual, ShapeVisual,
+    ContainerVisual, ShapeVisual, SpriteVisual,
 };
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 use windows::Win32::Graphics::Gdi::{
-    HBRUSH, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint, GetMonitorInfoW,
+    GetMonitorInfoW, HBRUSH, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint,
 };
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -25,22 +25,22 @@ use windows::Win32::System::WinRT::Composition::ICompositorDesktopInterop;
 use windows::Win32::System::WinRT::{
     CreateDispatcherQueueController, DQTAT_COM_NONE, DQTYPE_THREAD_CURRENT, DispatcherQueueOptions,
 };
-use windows::Win32::UI::HiDpi::GetDpiForWindow;
-// WM_MOUSELEAVE lives in Controls, not WindowsAndMessaging.
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
+use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, SetActiveWindow, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, UnregisterHotKey,
     VK_ESCAPE,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{Interface, PCWSTR, Result, w};
+use windows_numerics::{Vector2, Vector3};
 
 use crate::config::{self, Config};
-use crate::model::Item;
 use crate::model::store;
+use crate::model::{Item, Section};
 use crate::safety;
-use crate::shell::icons;
-use crate::ui::grid::{Layout, Metrics, Rect as GridRect};
+use crate::shell::{activate, icons};
+use crate::ui::grid::{Layout, Metrics, Rect as GridRect, SectionShape};
 use crate::ui::render::{Renderer, TextColors, TilePaint, d2d_color};
 use crate::ui::tray;
 use crate::{log_dry, log_error, log_info, log_warn};
@@ -77,11 +77,16 @@ pub struct Panel {
     renderer: Option<Renderer>,
 
     config: Config,
+    /// Sections as shown, empty ones already dropped by the store.
+    sections: Vec<Section>,
+    /// Every item flattened in section order. Tile index == this index.
     items: Vec<Item>,
     layout: Layout,
     scroll: f32,
     hover: Option<usize>,
     tiles: Vec<Tile>,
+    /// Header visuals, in the same order as `layout.headers()`.
+    headers: Vec<SpriteVisual>,
     visible: bool,
     /// Whether a `TrackMouseEvent` request is outstanding. Without one,
     /// WM_MOUSELEAVE never arrives and hover sticks on the last tile.
@@ -133,6 +138,16 @@ impl Panel {
             }
         };
 
+        let placeholder = Metrics {
+            tile_w: 1.0,
+            tile_h: 1.0,
+            gap: 0.0,
+            padding: 0.0,
+            max_fraction: 0.8,
+            header_h: 0.0,
+            section_gap: 0.0,
+        };
+
         let mut panel = Box::new(Panel {
             hwnd,
             compositor,
@@ -141,13 +156,17 @@ impl Panel {
             _dispatcher: dispatcher,
             renderer,
             config,
+            sections: Vec::new(),
             items: Vec::new(),
-            layout: Layout::compute(0, Metrics {
-                tile_w: 1.0, tile_h: 1.0, gap: 0.0, padding: 0.0, max_fraction: 0.8,
-            }, GridRect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 }),
+            layout: Layout::compute(
+                &[],
+                placeholder,
+                GridRect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 },
+            ),
             scroll: 0.0,
             hover: None,
             tiles: Vec::new(),
+            headers: Vec::new(),
             visible: false,
             tracking_mouse: false,
             caller: HWND(std::ptr::null_mut()),
@@ -209,7 +228,28 @@ impl Panel {
             gap: g.gap * scale,
             padding: g.padding * scale,
             max_fraction: g.max_screen_fraction,
+            header_h: g.header_height * scale,
+            section_gap: g.section_gap * scale,
         }
+    }
+
+    fn shapes(&self) -> Vec<SectionShape> {
+        self.sections
+            .iter()
+            .map(|s| SectionShape { title: s.title.clone(), count: s.items.len() })
+            .collect()
+    }
+
+    /// Pull the current model and recompute geometry. Shared by show and by the
+    /// live-update path.
+    fn reload(&mut self) {
+        self.sections = store::sections();
+        self.items = self
+            .sections
+            .iter()
+            .flat_map(|s| s.items.iter().cloned())
+            .collect();
+        self.layout = Layout::compute(&self.shapes(), self.metrics(), work_area());
     }
 
     pub fn toggle(&mut self) {
@@ -226,20 +266,18 @@ impl Panel {
             return;
         }
 
-        // SAFETY: plain queries about current system state.
+        // SAFETY: plain query about current system state.
         self.caller = unsafe { GetForegroundWindow() };
-        self.items = store::items();
-        let work = work_area();
-        self.layout = Layout::compute(self.items.len(), self.metrics(), work);
+        self.reload();
         self.scroll = 0.0;
         self.hover = None;
 
         let p = self.layout.panel;
         log_info!(
-            "show: {} items, {}x{} grid, panel {}x{} at {},{}{}",
+            "show: {} items in {} section(s), {} cols, panel {}x{} at {},{}{}",
             self.items.len(),
+            self.sections.len(),
             self.layout.cols,
-            self.layout.rows,
             p.w as i32,
             p.h as i32,
             p.x as i32,
@@ -288,15 +326,12 @@ impl Panel {
         }
 
         // Restoring the caller is flick undoing its own activation, not acting
-        // on a target, so it happens in dry run too.
+        // on a target. Skipped when we are about to activate something else.
         if restore_caller && !self.caller.is_invalid() && self.caller != self.hwnd {
             // SAFETY: a stale hwnd makes this fail harmlessly.
-            let restored = unsafe { SetForegroundWindow(self.caller) };
-            log_info!(
-                "restoring caller {:#x}: {}",
-                self.caller.0 as isize,
-                if restored.as_bool() { "ok" } else { "declined by the OS" }
-            );
+            unsafe {
+                let _ = SetForegroundWindow(self.caller);
+            }
         }
 
         // Drop the visual tree so hidden panels hold no GPU memory.
@@ -304,17 +339,20 @@ impl Panel {
             let _ = children.RemoveAll();
         }
         self.tiles.clear();
+        self.headers.clear();
         self.items.clear();
-        log_info!("hidden");
+        self.sections.clear();
     }
 
     fn rebuild_visuals(&mut self) -> Result<()> {
         let children = self.content.Children()?;
         children.RemoveAll()?;
         self.tiles.clear();
+        self.headers.clear();
 
         let p = self.layout.panel;
-        let radius = self.config.grid.corner_radius;
+        let scale = self.scale();
+        let radius = self.config.grid.corner_radius * scale;
 
         let (backdrop, _) = self.rounded_rect(
             Vector2 { X: p.w, Y: p.h },
@@ -323,7 +361,35 @@ impl Panel {
         )?;
         children.InsertAtTop(&backdrop)?;
 
+        if let Some(renderer) = &self.renderer {
+            let header_color = d2d_color(&self.config.theme.header);
+            let mut built = Vec::new();
+            for (title, rect) in self.layout.headers(self.scroll) {
+                let surface = match renderer.create_surface(rect.w, rect.h) {
+                    Ok(surface) => surface,
+                    Err(e) => {
+                        log_warn!("could not create a header surface: {e}");
+                        continue;
+                    }
+                };
+                if let Err(e) = renderer.draw_header(&surface, rect.w, rect.h, title, header_color) {
+                    log_warn!("could not draw header \"{title}\": {e}");
+                    continue;
+                }
+                let sprite = self.compositor.CreateSpriteVisual()?;
+                sprite.SetSize(Vector2 { X: rect.w, Y: rect.h })?;
+                sprite.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 })?;
+                sprite.SetBrush(&self.compositor.CreateSurfaceBrushWithSurface(&surface)?)?;
+                children.InsertAtTop(&sprite)?;
+                built.push(sprite);
+            }
+            self.headers = built;
+        }
+
         let tile_color = color_of(&self.config.theme.tile);
+        let icon_size = self.icon_size();
+        let label_height = self.config.grid.label_height * scale;
+        let colors = self.text_colors();
         let mut built = Vec::with_capacity(self.items.len());
 
         for (index, item) in self.items.iter().enumerate() {
@@ -342,15 +408,29 @@ impl Panel {
             if let Some(renderer) = &self.renderer {
                 match renderer.create_surface(rect.w, rect.h) {
                     Ok(drawn) => {
-                        let icon = self.icon_for(item);
+                        // Never blocks: None means the shell worker is still busy.
+                        let icon = item
+                            .icon_source
+                            .as_deref()
+                            .and_then(|name| icons::request(name, icon_size));
                         awaiting_icon = icon.is_none() && item.icon_source.is_some();
-                        self.paint_tile(renderer, &drawn, rect.w, rect.h, item, icon.as_deref());
+
+                        let paint = TilePaint {
+                            width: rect.w,
+                            height: rect.h,
+                            label_height,
+                            title: &item.title,
+                            detail: &item.detail,
+                            icon: icon.as_deref(),
+                            colors,
+                        };
+                        if let Err(e) = renderer.draw_tile(&drawn, paint) {
+                            log_warn!("could not draw tile \"{}\": {e}", item.title);
+                        }
 
                         let sprite = self.compositor.CreateSpriteVisual()?;
                         sprite.SetSize(Vector2 { X: rect.w, Y: rect.h })?;
-                        sprite.SetBrush(
-                            &self.compositor.CreateSurfaceBrushWithSurface(&drawn)?,
-                        )?;
+                        sprite.SetBrush(&self.compositor.CreateSurfaceBrushWithSurface(&drawn)?)?;
                         root.Children()?.InsertAtTop(&sprite)?;
                         surface = Some(drawn);
                     }
@@ -366,6 +446,11 @@ impl Panel {
         Ok(())
     }
 
+    fn text_colors(&self) -> TextColors {
+        let text = d2d_color(&self.config.theme.text);
+        TextColors { title: text, detail: dim(text) }
+    }
+
     /// Icon size in physical pixels: big enough to fill the tile's image area
     /// without asking the shell for more than it will be shown at.
     fn icon_size(&self) -> u32 {
@@ -374,36 +459,100 @@ impl Panel {
         (area * 0.6).clamp(32.0, 256.0) as u32
     }
 
-    fn icon_for(&self, item: &Item) -> Option<std::sync::Arc<icons::IconPixels>> {
-        // Never blocks: returns None and queues if the icon is not cached yet.
-        icons::request(item.icon_source.as_ref()?, self.icon_size())
+    fn rounded_rect(
+        &self,
+        size: Vector2,
+        radius: f32,
+        color: Color,
+    ) -> Result<(ShapeVisual, CompositionColorBrush)> {
+        let geometry = self.compositor.CreateRoundedRectangleGeometry()?;
+        geometry.SetSize(size)?;
+        geometry.SetCornerRadius(Vector2 { X: radius, Y: radius })?;
+
+        let brush = self.compositor.CreateColorBrushWithColor(color)?;
+        let shape: CompositionSpriteShape =
+            self.compositor.CreateSpriteShapeWithGeometry(&geometry)?;
+        shape.SetFillBrush(&brush)?;
+
+        let visual = self.compositor.CreateShapeVisual()?;
+        visual.SetSize(size)?;
+        visual.Shapes()?.Append(&shape)?;
+        Ok((visual, brush))
     }
 
-    fn paint_tile(
-        &self,
-        renderer: &Renderer,
-        surface: &CompositionDrawingSurface,
-        w: f32,
-        h: f32,
-        item: &Item,
-        icon: Option<&icons::IconPixels>,
-    ) {
-        let colors = TextColors {
-            title: d2d_color(&self.config.theme.text),
-            detail: dim(d2d_color(&self.config.theme.text)),
-        };
-        let paint = TilePaint {
-            width: w,
-            height: h,
-            label_height: self.config.grid.label_height * self.scale(),
-            title: &item.title,
-            detail: &item.detail,
-            icon,
-            colors,
-        };
-        if let Err(e) = renderer.draw_tile(surface, paint) {
-            log_warn!("could not draw tile \"{}\": {e}", item.title);
+    /// Repositions existing visuals after a scroll, without rebuilding them.
+    fn reposition(&self) {
+        for (index, tile) in self.tiles.iter().enumerate() {
+            let rect = self.layout.tile_rect(index, self.scroll);
+            let _ = tile.root.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 });
         }
+        for (visual, (_, rect)) in self.headers.iter().zip(self.layout.headers(self.scroll)) {
+            let _ = visual.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 });
+        }
+    }
+
+    fn set_hover(&mut self, index: Option<usize>) {
+        if self.hover == index {
+            return;
+        }
+        let normal = color_of(&self.config.theme.tile);
+        let hot = color_of(&self.config.theme.tile_hover);
+        for (slot, want) in [(self.hover, normal), (index, hot)] {
+            if let Some(i) = slot
+                && let Some(tile) = self.tiles.get(i)
+            {
+                let _ = tile.brush.SetColor(want);
+            }
+        }
+        self.hover = index;
+    }
+
+    /// Ask for one WM_MOUSELEAVE. The request is consumed when it fires, so it
+    /// is re-armed on the next move.
+    fn track_mouse_leave(&mut self) {
+        if self.tracking_mouse {
+            return;
+        }
+        let mut track = TRACKMOUSEEVENT {
+            cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+            dwFlags: TME_LEAVE,
+            hwndTrack: self.hwnd,
+            dwHoverTime: 0,
+        };
+        // SAFETY: `track` is fully initialized and outlives the call.
+        if unsafe { TrackMouseEvent(&mut track) }.is_ok() {
+            self.tracking_mouse = true;
+        }
+    }
+
+    fn scroll_by(&mut self, delta: f32) {
+        if self.layout.max_scroll <= 0.0 {
+            return;
+        }
+        let next = self.layout.clamp_scroll(self.scroll - delta);
+        if (next - self.scroll).abs() < 0.5 {
+            return;
+        }
+        self.scroll = next;
+        self.reposition();
+    }
+
+    fn activate(&mut self, index: usize) {
+        let Some(item) = self.items.get(index).cloned() else {
+            return;
+        };
+
+        if self.config.dry_run {
+            log_dry!("would {}", item.activation_summary());
+            self.hide(true);
+            return;
+        }
+
+        // Get out of the way first, and do not restore the caller: we are about
+        // to replace it. Foreground rights still hold, because the hotkey that
+        // summoned the panel made this process the last input recipient.
+        self.hide(false);
+        activate::activate(&item);
     }
 
     /// Repaint only the tiles still waiting on an icon.
@@ -417,10 +566,8 @@ impl Panel {
         // cannot call back into `&self` helpers.
         let icon_size = self.icon_size();
         let label_height = self.config.grid.label_height * self.scale();
-        let colors = TextColors {
-            title: d2d_color(&self.config.theme.text),
-            detail: dim(d2d_color(&self.config.theme.text)),
-        };
+        let text = d2d_color(&self.config.theme.text);
+        let colors = TextColors { title: text, detail: dim(text) };
 
         let mut filled = 0;
         for (index, tile) in self.tiles.iter_mut().enumerate() {
@@ -430,7 +577,7 @@ impl Panel {
             let (Some(surface), Some(item)) = (tile.surface.as_ref(), self.items.get(index)) else {
                 continue;
             };
-            let Some(source) = item.icon_source.as_ref() else {
+            let Some(source) = item.icon_source.as_deref() else {
                 tile.awaiting_icon = false;
                 continue;
             };
@@ -458,106 +605,13 @@ impl Panel {
         }
     }
 
-    fn rounded_rect(
-        &self,
-        size: Vector2,
-        radius: f32,
-        color: Color,
-    ) -> Result<(ShapeVisual, CompositionColorBrush)> {
-        let geometry = self.compositor.CreateRoundedRectangleGeometry()?;
-        geometry.SetSize(size)?;
-        geometry.SetCornerRadius(Vector2 { X: radius, Y: radius })?;
-
-        let brush = self.compositor.CreateColorBrushWithColor(color)?;
-        let shape: CompositionSpriteShape =
-            self.compositor.CreateSpriteShapeWithGeometry(&geometry)?;
-        shape.SetFillBrush(&brush)?;
-
-        let visual = self.compositor.CreateShapeVisual()?;
-        visual.SetSize(size)?;
-        visual.Shapes()?.Append(&shape)?;
-        Ok((visual, brush))
-    }
-
-    /// Repositions existing tiles after a scroll, without rebuilding them.
-    fn reposition_tiles(&self) {
-        for (index, tile) in self.tiles.iter().enumerate() {
-            let rect = self.layout.tile_rect(index, self.scroll);
-            let _ = tile.root.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 });
-        }
-    }
-
-    /// Ask for one WM_MOUSELEAVE. The request is consumed when it fires, so it
-    /// is re-armed on the next move.
-    fn track_mouse_leave(&mut self) {
-        if self.tracking_mouse {
-            return;
-        }
-        let mut track = TRACKMOUSEEVENT {
-            cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
-            dwFlags: TME_LEAVE,
-            hwndTrack: self.hwnd,
-            dwHoverTime: 0,
-        };
-        // SAFETY: `track` is fully initialized and outlives the call.
-        if unsafe { TrackMouseEvent(&mut track) }.is_ok() {
-            self.tracking_mouse = true;
-        }
-    }
-
-    fn set_hover(&mut self, index: Option<usize>) {
-        if self.hover == index {
-            return;
-        }
-        let normal = color_of(&self.config.theme.tile);
-        let hot = color_of(&self.config.theme.tile_hover);
-        for (slot, want) in [(self.hover, normal), (index, hot)] {
-            if let Some(i) = slot
-                && let Some(tile) = self.tiles.get(i)
-            {
-                let _ = tile.brush.SetColor(want);
-            }
-        }
-        self.hover = index;
-    }
-
-    fn scroll_by(&mut self, delta: f32) {
-        if self.layout.max_scroll <= 0.0 {
-            return;
-        }
-        let next = self.layout.clamp_scroll(self.scroll - delta);
-        if (next - self.scroll).abs() < 0.5 {
-            return;
-        }
-        self.scroll = next;
-        self.reposition_tiles();
-    }
-
-    /// Milestone 1: log what would have happened, activate nothing.
-    fn activate(&mut self, index: usize) {
-        let Some(item) = self.items.get(index).cloned() else {
-            return;
-        };
-        if self.config.dry_run {
-            log_dry!("would {}", item.activation_summary());
-            self.hide(true);
-            return;
-        }
-        // Milestone 2 replaces this.
-        log_warn!(
-            "dry_run is off but activation is not implemented yet; would {}",
-            item.activation_summary()
-        );
-        self.hide(true);
-    }
-
     fn on_model_changed(&mut self) {
         if !self.visible {
             return;
         }
         let previous = self.hover.and_then(|i| self.items.get(i)).map(|i| i.id.clone());
-        self.items = store::items();
-        self.layout = Layout::compute(self.items.len(), self.metrics(), work_area());
+
+        self.reload();
         self.scroll = self.layout.clamp_scroll(self.scroll);
 
         let p = self.layout.panel;
@@ -590,7 +644,7 @@ impl Panel {
     fn cursor_index(&self, lparam: LPARAM) -> Option<usize> {
         let x = (lparam.0 & 0xFFFF) as i16 as f32;
         let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
-        self.layout.hit_test(x, y, self.scroll, self.items.len())
+        self.layout.hit_test(x, y, self.scroll)
     }
 
     fn handle(&mut self, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
@@ -685,7 +739,7 @@ impl Drop for Panel {
 }
 
 /// The detail line sits under the title; same hue, less presence.
-fn dim(mut c: windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F) -> windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
+fn dim(mut c: D2D1_COLOR_F) -> D2D1_COLOR_F {
     c.a *= 0.6;
     c
 }
@@ -712,7 +766,7 @@ fn work_area() -> GridRect {
             return rect_to_grid(info.rcWork);
         }
 
-        log_warn!("GetMonitorInfoW failed; falling back to the virtual screen size");
+        log_warn!("GetMonitorInfoW failed; falling back to the primary screen size");
         GridRect {
             x: 0.0,
             y: 0.0,

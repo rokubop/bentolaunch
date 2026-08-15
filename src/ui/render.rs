@@ -25,9 +25,9 @@ use windows::Win32::Graphics::Direct3D11::{
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
     DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_MEASURING_MODE_NATURAL,
-    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TRIMMING,
-    DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory,
-    IDWriteFactory, IDWriteTextFormat,
+    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER,
+    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+    DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
@@ -65,6 +65,7 @@ pub struct Renderer {
     graphics: CompositionGraphicsDevice,
     title_format: IDWriteTextFormat,
     detail_format: IDWriteTextFormat,
+    header_format: IDWriteTextFormat,
     /// Held so the D2D device outlives every context it hands out.
     _d2d_device: ID2D1Device,
     _d3d_device: ID3D11Device,
@@ -89,13 +90,19 @@ impl Renderer {
         let dwrite: IDWriteFactory =
             unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
 
-        let title_format = text_format(&dwrite, DWRITE_FONT_WEIGHT_SEMI_BOLD, 13.0)?;
-        let detail_format = text_format(&dwrite, DWRITE_FONT_WEIGHT_NORMAL, 11.0)?;
+        let title_format =
+            text_format(&dwrite, DWRITE_FONT_WEIGHT_SEMI_BOLD, 13.0, DWRITE_TEXT_ALIGNMENT_CENTER)?;
+        let detail_format =
+            text_format(&dwrite, DWRITE_FONT_WEIGHT_NORMAL, 11.0, DWRITE_TEXT_ALIGNMENT_CENTER)?;
+        // Headers read as labels, so they sit left-aligned against the padding.
+        let header_format =
+            text_format(&dwrite, DWRITE_FONT_WEIGHT_SEMI_BOLD, 12.0, DWRITE_TEXT_ALIGNMENT_LEADING)?;
 
         Ok(Renderer {
             graphics,
             title_format,
             detail_format,
+            header_format,
             _d2d_device: d2d_device,
             _d3d_device: d3d_device,
         })
@@ -210,6 +217,46 @@ impl Renderer {
         Ok(())
     }
 
+    /// A section header: one line of text on a transparent surface.
+    pub fn draw_header(
+        &self,
+        surface: &CompositionDrawingSurface,
+        width: f32,
+        height: f32,
+        title: &str,
+        color: D2D1_COLOR_F,
+    ) -> Result<()> {
+        let interop: ICompositionDrawingSurfaceInterop = surface.cast()?;
+
+        // SAFETY: BeginDraw hands back a context valid until EndDraw, which the
+        // matching call below always runs.
+        let (context, offset): (ID2D1DeviceContext, POINT) = unsafe {
+            let mut offset = POINT::default();
+            let context = interop.BeginDraw(None, &mut offset)?;
+            (context, offset)
+        };
+
+        // SAFETY: the context is live until EndDraw.
+        let result = unsafe {
+            context.SetTransform(&Matrix3x2::translation(offset.x as f32, offset.y as f32));
+            context.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
+            self.draw_text(
+                &context,
+                title,
+                &self.header_format,
+                D2D_RECT_F { left: 0.0, top: 0.0, right: width, bottom: height },
+                color,
+            )
+        };
+
+        // SAFETY: pairs with BeginDraw; must run even on failure or the surface
+        // stays locked.
+        unsafe {
+            interop.EndDraw()?;
+        }
+        result
+    }
+
     unsafe fn draw_text(
         &self,
         context: &ID2D1DeviceContext,
@@ -267,6 +314,7 @@ fn text_format(
     dwrite: &IDWriteFactory,
     weight: windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT,
     size: f32,
+    alignment: DWRITE_TEXT_ALIGNMENT,
 ) -> Result<IDWriteTextFormat> {
     // SAFETY: all arguments are owned by the caller for the duration.
     let format = unsafe {
@@ -282,7 +330,7 @@ fn text_format(
     };
     // SAFETY: configuring a format we just created.
     unsafe {
-        format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+        format.SetTextAlignment(alignment)?;
         format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
         format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
 

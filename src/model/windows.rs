@@ -18,7 +18,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{BOOL, PWSTR};
 
-use crate::model::{Handle, Item, ItemId, Kind};
+use crate::model::{Handle, Item, ItemId, Kind, Target};
 
 /// Shell surfaces that pass the alt-tab test but are never worth switching to.
 const CLASS_DENYLIST: &[&str] = &[
@@ -54,8 +54,9 @@ impl WindowInfo {
             kind: Kind::Window,
             title: self.title.clone(),
             detail,
-            handle: Some(self.handle),
-            icon_source: self.exe.clone(),
+            target: Target::Window(self.handle),
+            // A filesystem path is already a valid shell parsing name.
+            icon_source: self.exe.as_ref().map(|p| p.to_string_lossy().into_owned()),
         }
     }
 }

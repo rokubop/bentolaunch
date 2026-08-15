@@ -1,9 +1,8 @@
 //! What flick knows about, and how it stays current.
 
 pub mod store;
+pub mod taskbar;
 pub mod windows;
-
-use std::path::PathBuf;
 
 use ::windows::Win32::Foundation::HWND;
 
@@ -11,8 +10,8 @@ use ::windows::Win32::Foundation::HWND;
 ///
 /// Window handles are process-wide and valid from any thread; the pointer inside
 /// `HWND` is the only reason windows-rs marks it `!Send`. Storing the raw value
-/// keeps the item store `Send`, which matters once icon and capture work moves
-/// to the worker threads that safety rule 5 requires.
+/// keeps the item store `Send`, which matters because icon work runs on the
+/// worker threads that safety rule 5 requires.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Handle(isize);
 
@@ -30,50 +29,84 @@ impl Handle {
     }
 }
 
+/// What activating a tile does.
+///
+/// Everything that is not a live window collapses to a **shell parsing name** —
+/// the string form the shell already understands. A file path, a folder, a
+/// `.lnk`, `shell:AppsFolder\<AppUserModelID>` for a Store app, and a URI like
+/// `ms-settings:display` are all parsing names, and all of them both launch
+/// through `ShellExecuteW` and produce an icon through `IShellItemImageFactory`.
+/// One string covers every non-window thing flick can show.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Target {
+    /// Focus this window.
+    Window(Handle),
+    /// Hand this to the shell.
+    Shell(String),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Kind {
     /// A live top-level window. Gets a capture preview in Milestone 3.
     Window,
-    /// A pinned executable or shortcut. Icon only.
     App,
-    /// A pinned Explorer folder. Icon only.
     Folder,
+    /// A URI target: settings pages, web links.
+    Link,
 }
 
-/// Stable across refreshes, so hover and selection survive the window list
-/// changing underneath them.
+impl Kind {
+    fn verb(self) -> &'static str {
+        match self {
+            Kind::Window => "focus window",
+            Kind::App => "launch",
+            Kind::Folder => "open folder",
+            Kind::Link => "open",
+        }
+    }
+}
+
+/// Stable across refreshes, so hover and selection survive the list changing.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ItemId {
     Window(isize),
-    Path(PathBuf),
+    Shell(String),
 }
 
 #[derive(Debug, Clone)]
 pub struct Item {
     pub id: ItemId,
     pub kind: Kind,
-    /// Window title, or the app/folder name.
     pub title: String,
-    /// Process name or path. Shown small, and used to pick an icon.
+    /// Process name or path. Shown small under the title.
     pub detail: String,
-    pub handle: Option<Handle>,
-    /// File to source the icon from: the exe for a window, the target for a pin.
-    pub icon_source: Option<PathBuf>,
+    pub target: Target,
+    /// Shell parsing name to source the icon from. `None` for windows whose
+    /// process path could not be read.
+    pub icon_source: Option<String>,
 }
 
 impl Item {
-    /// One line describing what activating this item would do. Milestone 1
-    /// writes this to the log instead of acting on it.
+    /// One line describing what activating this item does. Dry run logs it
+    /// instead of acting on it.
     pub fn activation_summary(&self) -> String {
-        match self.kind {
-            Kind::Window => format!(
-                "focus window {:#x} \"{}\" ({})",
-                self.handle.map(Handle::raw).unwrap_or(0),
+        match &self.target {
+            Target::Window(h) => format!(
+                "{} {:#x} \"{}\" ({})",
+                self.kind.verb(),
+                h.raw(),
                 self.title,
                 self.detail
             ),
-            Kind::App => format!("launch app \"{}\" ({})", self.title, self.detail),
-            Kind::Folder => format!("open folder \"{}\" ({})", self.title, self.detail),
+            Target::Shell(name) => format!("{} \"{}\" -> {}", self.kind.verb(), self.title, name),
         }
     }
+}
+
+/// A titled group of tiles. Sections are laid out stacked, each under its own
+/// header, and their order comes from config.
+#[derive(Debug, Clone)]
+pub struct Section {
+    pub title: String,
+    pub items: Vec<Item>,
 }
