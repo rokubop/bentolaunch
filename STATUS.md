@@ -41,6 +41,11 @@ config-writing are all covered. `cargo clippy --all-targets` is clean.
   exercised end to end. The `toml_edit` write path underneath them is tested. Try
   "Add app…" from the tray first thing.
 - Behaviour past ~60 tiles, and scrolling with many sections.
+- Real hotkey presses, as opposed to a posted `WM_HOTKEY`. Automated testing
+  drives the panel by posting the message, which shows it but does **not** grant
+  foreground rights: those need genuine input. The panel then sometimes loses
+  activation and self-dismisses within a few hundred ms. Harmless in real use,
+  but it makes screenshot automation racy, so capture within ~250ms of the post.
 - Anything on a second monitor with a different DPI. The scale factor is read per
   show, but a mid-session DPI change is untested.
 
