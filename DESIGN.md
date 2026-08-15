@@ -232,7 +232,7 @@ state:
 
 ## Build order
 
-**Milestone 1 — dry run (first testable thing).**
+**Milestone 1 — dry run. Done.**
 Enumerate everything, render the full grid with icons, but make every click a
 **no-op that logs what it would have activated**. Live with it for a few days.
 This validates the entire risky half — reading the system — before any code acts
@@ -241,6 +241,25 @@ on anything. Dry-run mode is ON by default.
 Scope: `asInvoker` manifest, tray icon + `RegisterHotKey`, composition visual
 tree with configurable uniform grid, `SetWinEventHook` window model, icons via
 `IShellItemImageFactory`, config file, Esc-restores-caller.
+
+Built as designed. Notes from the implementation:
+
+- Icons go through two worker threads in an MTA, with a cache. The UI thread
+  asks, gets `None`, draws the tile without an icon, and repaints on
+  `WM_ICON_READY`. There is no code path where the UI waits on the shell — a
+  blocking COM call cannot be cancelled, so the only real defence is never
+  waiting on one.
+- `SIIGBF_ICONONLY`, not thumbnails. Thumbnail extraction is the slow, hang-prone
+  half of the shell imaging API, and window previews come from capture anyway.
+- Tile content is Direct2D + DirectWrite drawn into a `CompositionDrawingSurface`.
+  That is the same object a capture frame becomes, so Milestone 3 does not have
+  to change the tile visual tree.
+- The watchdog's escape hatch is `SetWindowLongPtrW(GWL_EXSTYLE, |WS_EX_TRANSPARENT)`.
+  It writes the window struct directly and does not marshal to the owning thread,
+  so it still works when that thread is wedged. `ShowWindow` and `SetWindowPos`
+  would hang alongside it.
+- `Handle(isize)` wraps `HWND` in the model. `HWND` is `!Send` because of its raw
+  pointer, which would otherwise keep the item store off worker threads.
 
 **Milestone 2 — activation.** Focus/launch for windows, pinned apps, folders.
 
@@ -255,8 +274,21 @@ layout persistence.
 
 ---
 
+## Resolved
+
+- **Hotkey: `Alt+`` `.** `Ctrl+Alt+Space` was chosen first, but `RegisterHotKey`
+  reported it already registered on this machine, so `Alt+Grave` took its place:
+  adjacent to Tab, so it inherits Alt+Tab muscle memory. Configurable.
+- **Grid reflow: grow-then-scroll, capped at 80% of the work area.** Tile size is
+  fixed from config and never changes. The grid container grows outward from
+  screen center as items are added, until it hits 80% of the monitor work area in
+  either axis. Columns are then capped at what fits that width, and further items
+  extend downward past the height cap, which scrolls.
+
+  Rejected: fit-to-screen tile shrinking. Tile size and position shifting with
+  item count destroys the muscle memory that makes a switcher fast.
+
 ## Open questions
 
-- Hotkey binding — not yet chosen.
-- Whether tabs and windows share one grid section or are separated.
-- Tile size defaults and how "grows to 50+" reflows (fixed columns vs fit-to-screen).
+- Whether tabs and windows share one grid section or are separated. (Milestone 4;
+  not blocking.)
