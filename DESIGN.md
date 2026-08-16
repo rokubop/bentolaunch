@@ -440,19 +440,43 @@ render.
 `source = ["windows", "tabs"]`. A section costs a header plus a whole row even
 for one tile, so six sections on a quiet machine spent most of the panel on
 whitespace: one browser window, one Explorer window and three tabs took three
-rows to show five tiles. The default is two sections, `["windows", "tabs"]` over
-`["taskbar", "manual"]`. Sources contribute in the order listed, so a merged
-section still has a fixed shape and the tabs never land among the windows.
+rows to show five tiles.
+
+**Merging is not flattening.** Each entry in the list is a *group*, and a group
+keeps everything that mattered about being a section except the header and the
+row break: its order, its `match`, and a visual identity. An entry carries its
+own `match` when it needs one:
+
+```toml
+source = [
+  { source = "windows", match = ["chrome.exe", "firefox.exe"] },
+  "tabs",
+  { source = "windows", match = ["explorer.exe"] },
+  "windows",
+]
+```
+
+Groups contribute in the order listed, so a merged section has a fixed shape and
+the tabs never land among the windows. Browser windows lead and the tabs sit
+directly behind them — same intent, get me back to a page. The bare catch-all
+goes last or it swallows the groups behind it.
+
+**Groups are banded, not divided.** Alternate groups take `theme.tile_alt`
+instead of `theme.tile`. A rule or a spacer would have to break the row or the
+column alignment, and the fixed uniform grid is worth more than a crisp edge —
+so the cue is a fill, which costs no layout at all. Banding is by position in
+the list, not by source: two groups can share a source and still need telling
+apart. Set `tile_alt` equal to `tile` to switch it off.
 
 **Rejected: merging pins with windows.** Unchanged, and merging sources does not
 weaken it — the two default sections are exactly that line. See below.
 
 **Dragging stops at the seam.** A merged section holds tiles from more than one
-source, and no config can express a taskbar pin sitting between two manual ones:
+group, and no config can express a taskbar pin sitting between two manual ones:
 taskbar order is a list of names, manual order is a list of parsing names, and
-they are separate keys. So a drag rearranges the run of tiles sharing its own
-source and clamps there. What a tile allows — drag, unpin — is a property of the
-tile, not of the header above it (`Item::origin`).
+they are separate keys. So a drag rearranges the run of tiles in its own group
+and clamps there. What a tile allows — drag, unpin — is a property of the tile,
+not of the header above it (`Item::origin`, `Item::group`).
 
 **Pins and windows never merge.** Steam pinned and Steam running are two tiles.
 The redundancy is the point: a pin never moves, so its position is learnable, and
@@ -473,10 +497,11 @@ tile in edit mode — is what drives it.
 
 ### Grouping by intent
 
-A windows section can carry a `match` list of process names. Sections claim
-windows in order, each window is claimed once, and an unfiltered section is the
-catch-all. That is the whole mechanism: putting `["chrome.exe", ...]` above the
-catch-all is what pulls the browsers into their own group.
+A windows group can carry a `match` list of process names. Groups claim windows
+in order, each window is claimed once, and an unfiltered group is the catch-all.
+That is the whole mechanism: putting `["chrome.exe", ...]` above the catch-all is
+what pulls the browsers out. Groups used to be whole sections; they are entries
+in a section's `source` list now, which is what made merging affordable.
 
 Rejected: auto-grouping windows by exe with no config. It needs no setup, but
 sections then appear and disappear as apps open and close, and the whole panel

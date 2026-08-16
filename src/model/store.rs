@@ -33,25 +33,22 @@ pub const WM_MODEL_CHANGED: u32 = WM_APP + 1;
 struct Group {
     title: String,
     sources: Sources,
-    /// Lowercased process names this section claims. Empty means catch-all.
-    matches: Vec<String>,
-    /// Pre-resolved per source: taskbar pins and manual entries both touch the
-    /// disk, so they are read once. Windows and tabs are absent — they are read
-    /// at show time.
-    fixed: Vec<(Source, Vec<Item>)>,
+    /// Lowercased process names, one entry per source. Empty means catch-all.
+    matches: Vec<Vec<String>>,
+    /// Pre-resolved per source, keyed by its index in `sources`: taskbar pins
+    /// and manual entries both touch the disk, so they are read once. Windows
+    /// and tabs are absent — they are read at show time.
+    fixed: Vec<(usize, Vec<Item>)>,
 }
 
-impl Group {
-    fn claims(&self, window: &WindowInfo) -> bool {
-        if self.matches.is_empty() {
-            return true;
-        }
-        let Some(exe) = window.exe.as_ref().and_then(|p| p.file_name()) else {
-            return false;
-        };
-        let exe = exe.to_string_lossy().to_lowercase();
-        self.matches.contains(&exe)
+fn claims(matches: &[String], window: &WindowInfo) -> bool {
+    if matches.is_empty() {
+        return true;
     }
+    let Some(exe) = window.exe.as_ref().and_then(|p| p.file_name()) else {
+        return false;
+    };
+    matches.contains(&exe.to_string_lossy().to_lowercase())
 }
 
 struct Store {
@@ -83,14 +80,27 @@ fn build_groups(sections: &[SectionConfig]) -> Vec<Group> {
         .map(|section| Group {
             title: section.title.clone(),
             sources: section.source.clone(),
-            matches: section.matches.iter().map(|m| m.to_lowercase()).collect(),
+            // A group's own `match` wins; without one it falls back to the
+            // section's, which is what an unmerged section still writes.
+            matches: section
+                .source
+                .iter()
+                .map(|spec| {
+                    spec.matches()
+                        .unwrap_or(&section.matches)
+                        .iter()
+                        .map(|m| m.to_lowercase())
+                        .collect()
+                })
+                .collect(),
             fixed: section
                 .source
                 .iter()
-                .filter_map(|source| match source {
-                    Source::Taskbar => Some((source, taskbar::pins_in_order(&section.order))),
+                .enumerate()
+                .filter_map(|(index, spec)| match spec.source() {
+                    Source::Taskbar => Some((index, taskbar::pins_in_order(&section.order))),
                     Source::Manual => {
-                        Some((source, section.items.iter().filter_map(manual_item).collect()))
+                        Some((index, section.items.iter().filter_map(manual_item).collect()))
                     }
                     Source::Windows | Source::Tabs => None,
                 })
@@ -126,10 +136,19 @@ pub fn init(exclude: HWND, sections: &[SectionConfig]) {
         );
     }
     for group in &groups {
+        let shape = group
+            .sources
+            .iter()
+            .zip(&group.matches)
+            .map(|(spec, matches)| match matches.len() {
+                0 => format!("{:?}", spec.source()).to_lowercase(),
+                n => format!("{:?}+{n}", spec.source()).to_lowercase(),
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
         log_info!(
-            "section \"{}\" ({:?}): {} fixed item(s)",
+            "section \"{}\" [{shape}]: {} fixed item(s)",
             group.title,
-            group.sources.iter().collect::<Vec<_>>(),
             group.fixed.iter().map(|(_, items)| items.len()).sum::<usize>()
         );
     }
@@ -165,6 +184,7 @@ fn manual_item(entry: &ManualItem) -> Option<Item> {
         target: Target::Shell(target.to_owned()),
         icon_source: Some(target.to_owned()),
         origin: Source::Manual,
+        group: 0,
     })
 }
 
@@ -284,6 +304,7 @@ fn tab_items() -> Vec<Item> {
                 .as_ref()
                 .map(|key| format!("{}{key}", crate::shell::icons::FAVICON)),
             origin: Source::Tabs,
+            group: 0,
         })
         .collect()
 }
@@ -298,17 +319,19 @@ pub fn sections() -> Vec<Section> {
     let mut out = Vec::with_capacity(s.groups.len());
 
     for group in &s.groups {
-        // Sources contribute in the order they are listed, so a merged section
+        // Groups contribute in the order they are listed, so a merged section
         // still has a fixed shape: the tabs never land among the windows.
         let mut items = Vec::new();
-        for source in group.sources.iter() {
-            match source {
+        for (index, spec) in group.sources.iter().enumerate() {
+            let start = items.len();
+            match spec.source() {
                 Source::Windows => {
-                    for (index, window) in s.windows.iter().enumerate() {
-                        if claimed[index] || !group.claims(window) {
+                    let matches = group.matches.get(index).map_or(&[][..], Vec::as_slice);
+                    for (n, window) in s.windows.iter().enumerate() {
+                        if claimed[n] || !claims(matches, window) {
                             continue;
                         }
-                        claimed[index] = true;
+                        claimed[n] = true;
                         items.push(window.to_item());
                     }
                 }
@@ -316,10 +339,13 @@ pub fn sections() -> Vec<Section> {
                 // as the browser does.
                 Source::Tabs => items.extend(tab_items()),
                 Source::Taskbar | Source::Manual => {
-                    if let Some((_, fixed)) = group.fixed.iter().find(|(s, _)| *s == source) {
+                    if let Some((_, fixed)) = group.fixed.iter().find(|(n, _)| *n == index) {
                         items.extend(fixed.iter().cloned());
                     }
                 }
+            }
+            for item in &mut items[start..] {
+                item.group = index;
             }
         }
 

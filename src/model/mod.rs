@@ -95,6 +95,11 @@ pub struct Item {
     /// more than one, and what may be dragged, removed and written back to
     /// config is a property of the tile, not of the header above it.
     pub origin: crate::config::Source,
+    /// Which group inside the section produced it: the index into that
+    /// section's source list. Two groups can share a source — browser windows
+    /// and everything else — so this, not `origin`, is what the tint and the
+    /// drag runs key on. Set as the section is assembled.
+    pub group: usize,
 }
 
 impl Item {

@@ -754,9 +754,21 @@ impl Panel {
             &theme.tile_hover
         } else if self.selected == Some(index) {
             &theme.tile_selected
+        } else if self.alternating(index) {
+            &theme.tile_alt
         } else {
             &theme.tile
         })
+    }
+
+    /// Merging cost the groups their headers. Alternating the fill is what is
+    /// left to say "these belong together and those do not" — browser windows
+    /// and the tabs after them read as one block, the rest as another.
+    ///
+    /// Banded by parity of the group's position, not by source: two groups can
+    /// share a source and still need telling apart.
+    fn alternating(&self, index: usize) -> bool {
+        self.items.get(index).is_some_and(|item| item.group % 2 == 1)
     }
 
     fn repaint_tile(&self, index: usize) {
@@ -1128,8 +1140,8 @@ impl Panel {
     /// The tiles a drag may move within. See `grid::origin_run`.
     fn origin_run(&self, tile: usize) -> Option<(usize, usize)> {
         let band = self.layout.bands().get(self.layout.band_of(tile)?)?;
-        let origins: Vec<Source> = self.items.iter().map(|item| item.origin).collect();
-        Some(origin_run(&origins, band.first, band.count, tile))
+        let groups: Vec<usize> = self.items.iter().map(|item| item.group).collect();
+        Some(origin_run(&groups, band.first, band.count, tile))
     }
 
     /// Take a press on a tile. Whether it turns out to be a click or a drag is
@@ -1486,14 +1498,17 @@ impl Panel {
         if self.drop_band == band {
             return;
         }
-        let normal = color_of(&self.config.theme.tile);
         let hot = color_of(&self.config.theme.tile_hover);
-        for (slot, want) in [(self.drop_band, normal), (band, hot)] {
-            let Some(band) = slot.and_then(|index| self.layout.bands().get(index)) else {
+        // Clearing restores each tile's own fill, not one flat colour: a merged
+        // section is banded and would come back out of a drop unbanded.
+        for (slot, want) in [(self.drop_band, None), (band, Some(hot))] {
+            let Some(band) = slot.and_then(|index| self.layout.bands().get(index)).cloned() else {
                 continue;
             };
-            for tile in self.tiles.iter().skip(band.first).take(band.count) {
-                let _ = tile.brush.SetColor(want);
+            for index in band.first..band.first + band.count {
+                if let Some(tile) = self.tiles.get(index) {
+                    let _ = tile.brush.SetColor(want.unwrap_or_else(|| self.tile_color(index)));
+                }
             }
         }
         self.drop_band = band;

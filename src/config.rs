@@ -70,36 +70,80 @@ pub enum Source {
     Tabs,
 }
 
-/// A section's sources, in the order their tiles appear under the one header.
+/// One group of tiles inside a section: where they come from, and for windows
+/// which processes it claims.
+///
+/// Written bare when it claims everything left, or as a table to carry its own
+/// `match`:
+///
+/// ```toml
+/// source = [
+///   { source = "windows", match = ["chrome.exe"] },
+///   "tabs",
+///   "windows",
+/// ]
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SourceSpec {
+    Plain(Source),
+    Matched {
+        source: Source,
+        #[serde(default, rename = "match")]
+        matches: Vec<String>,
+    },
+}
+
+impl SourceSpec {
+    pub fn source(&self) -> Source {
+        match self {
+            Self::Plain(source) => *source,
+            Self::Matched { source, .. } => *source,
+        }
+    }
+
+    /// `None` when this group carries no rule of its own, in which case the
+    /// section's own `match` applies.
+    pub fn matches(&self) -> Option<&[String]> {
+        match self {
+            Self::Plain(_) => None,
+            Self::Matched { matches, .. } => Some(matches),
+        }
+    }
+}
+
+/// A section's groups, in the order their tiles appear under the one header.
 ///
 /// `source = "windows"` and `source = ["windows", "tabs"]` are both valid. A
 /// section costs a header plus a whole row even for one tile, so merging is how
-/// a panel of mostly-empty sections gets its vertical space back.
+/// a panel of mostly-empty sections gets its vertical space back. Grouping
+/// survives the merge: the groups stay ordered and stay visually apart, they
+/// just no longer each cost a header and a row.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Sources(Vec<Source>);
+pub struct Sources(Vec<SourceSpec>);
 
 impl Sources {
-    pub fn iter(&self) -> impl Iterator<Item = Source> + '_ {
-        self.0.iter().copied()
+    pub fn iter(&self) -> impl Iterator<Item = &SourceSpec> {
+        self.0.iter()
     }
 
     pub fn contains(&self, source: Source) -> bool {
-        self.0.contains(&source)
+        self.0.iter().any(|spec| spec.source() == source)
     }
 }
 
 impl From<Source> for Sources {
     fn from(source: Source) -> Self {
-        Self(vec![source])
+        Self(vec![SourceSpec::Plain(source)])
     }
 }
 
 impl Serialize for Sources {
-    /// A single source round-trips as a bare string, so merging a section is
-    /// the only thing that ever turns it into a list.
+    /// A single bare source round-trips as a string, so an unmerged section is
+    /// left exactly as it was written.
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         match self.0.as_slice() {
-            [one] => one.serialize(s),
+            [one @ SourceSpec::Plain(_)] => one.serialize(s),
             many => many.serialize(s),
         }
     }
@@ -110,12 +154,12 @@ impl<'de> Deserialize<'de> for Sources {
         #[derive(Deserialize)]
         #[serde(untagged)]
         enum Raw {
-            One(Source),
-            Many(Vec<Source>),
+            One(SourceSpec),
+            Many(Vec<SourceSpec>),
         }
 
         let list = match Raw::deserialize(d)? {
-            Raw::One(source) => vec![source],
+            Raw::One(spec) => vec![spec],
             Raw::Many(list) => list,
         };
         if list.is_empty() {
@@ -131,12 +175,14 @@ pub struct SectionConfig {
     /// Shown as the section header. Empty string hides the header.
     pub title: String,
     pub source: Sources,
-    /// Only for `source = "windows"`. Process names this section claims, e.g.
+    /// Process names this section's windows groups claim, e.g.
     /// `["chrome.exe", "firefox.exe"]`. Case-insensitive. Empty means "whatever
-    /// is left", so an unfiltered windows section acts as the catch-all.
+    /// is left", so an unfiltered windows group acts as the catch-all.
     ///
-    /// Sections are matched in order and a window is claimed once, so listing a
-    /// filtered section above the catch-all is what groups apps together.
+    /// Groups are matched in order and a window is claimed once, so listing a
+    /// filtered group above the catch-all is what groups apps together. A group
+    /// that carries its own `match` ignores this; it is the fallback, and what
+    /// a section with a single bare source still writes.
     #[serde(default, rename = "match")]
     pub matches: Vec<String>,
     /// Only read when `source = "manual"`. Each entry is a shell parsing name:
@@ -224,6 +270,11 @@ pub struct Theme {
     /// "#AARRGGBB" or "#RRGGBB".
     pub panel: String,
     pub tile: String,
+    /// Fill for every other group inside a section. Merging cost the groups
+    /// their headers, so alternating the tile fill is what still reads as
+    /// "these belong together and those do not". Set it equal to `tile` to
+    /// turn the banding off.
+    pub tile_alt: String,
     pub tile_hover: String,
     pub text: String,
     pub header: String,
@@ -248,13 +299,20 @@ pub const BROWSERS: &[&str] = &[
     "zen.exe",
 ];
 
-fn section(title: &str, sources: &[Source], matches: &[&str]) -> SectionConfig {
+fn section(title: &str, sources: &[SourceSpec]) -> SectionConfig {
     SectionConfig {
         title: title.into(),
         source: Sources(sources.to_vec()),
-        matches: matches.iter().map(|s| (*s).to_string()).collect(),
+        matches: Vec::new(),
         items: Vec::new(),
         order: Vec::new(),
+    }
+}
+
+fn group(source: Source, matches: &[&str]) -> SourceSpec {
+    SourceSpec::Matched {
+        source,
+        matches: matches.iter().map(|s| (*s).to_string()).collect(),
     }
 }
 
@@ -263,16 +321,30 @@ impl Default for Config {
         Self {
             dry_run: false,
             hotkey: "alt+`".into(),
-            // Two sections, not six. Every section costs a header plus a full
-            // row even for one tile, and a machine with one browser window, one
+            // Two sections, not six. A section costs a header plus a full row
+            // even for one tile, and a machine with one browser window, one
             // Explorer window and three tabs spent three rows showing five
-            // tiles. Split them with `match` if you want the grouping back.
+            // tiles. The groups survive inside the section: still ordered,
+            // still tinted apart, no longer a header and a row each.
             //
             // Running things first: switching to what exists beats launching
-            // something new, so it gets the top of the panel.
+            // something new, so it gets the top of the panel. Browser windows
+            // and tabs lead, and lead adjacent — same intent, get me back to a
+            // page.
             sections: vec![
-                section("Active", &[Source::Windows, Source::Tabs], &[]),
-                section("Launch", &[Source::Taskbar, Source::Manual], &[]),
+                section(
+                    "Active",
+                    &[
+                        group(Source::Windows, BROWSERS),
+                        SourceSpec::Plain(Source::Tabs),
+                        group(Source::Windows, &["explorer.exe"]),
+                        SourceSpec::Plain(Source::Windows),
+                    ],
+                ),
+                section(
+                    "Launch",
+                    &[SourceSpec::Plain(Source::Taskbar), SourceSpec::Plain(Source::Manual)],
+                ),
             ],
             grid: Grid::default(),
             theme: Theme::default(),
@@ -305,6 +377,7 @@ impl Default for Theme {
         Self {
             panel: "#F01A1A1E".into(),
             tile: "#FF2A2A32".into(),
+            tile_alt: "#FF22222A".into(),
             tile_hover: "#FF3C3C48".into(),
             text: "#FFE8E8EC".into(),
             header: "#FF9A9AA8".into(),
@@ -572,7 +645,11 @@ mod tests {
 
     #[test]
     fn running_things_are_listed_before_launchable_ones() {
-        let running = |s: &SectionConfig| s.source.iter().all(|s| matches!(s, Source::Windows | Source::Tabs));
+        let running = |s: &SectionConfig| {
+            s.source
+                .iter()
+                .all(|spec| matches!(spec.source(), Source::Windows | Source::Tabs))
+        };
         let sections = Config::default().sections;
         let last_running = sections.iter().rposition(running).unwrap();
         let first_launch = sections.iter().position(|s| !running(s)).unwrap();
@@ -614,13 +691,44 @@ title = "Launch"
 source = "taskbar"
 "#;
         let cfg: Config = toml::from_str(text).unwrap();
-        assert_eq!(cfg.sections[0].source.iter().collect::<Vec<_>>(), [Source::Windows, Source::Tabs]);
-        assert_eq!(cfg.sections[1].source.iter().collect::<Vec<_>>(), [Source::Taskbar]);
+        let sources = |s: &SectionConfig| s.source.iter().map(SourceSpec::source).collect::<Vec<_>>();
+        assert_eq!(sources(&cfg.sections[0]), [Source::Windows, Source::Tabs]);
+        assert_eq!(sources(&cfg.sections[1]), [Source::Taskbar]);
 
         // A lone source goes back out bare, so an unmerged section is untouched.
         let out = toml::to_string(&cfg).unwrap();
         assert!(out.contains(r#"source = "taskbar""#), "{out}");
         assert!(out.contains(r#"source = ["windows", "tabs"]"#), "{out}");
+    }
+
+    /// Merging must not have flattened the grouping. Browser windows lead, and
+    /// the tabs sit directly behind them: same intent, get me back to a page.
+    #[test]
+    fn browser_things_lead_the_active_section_and_stay_adjacent() {
+        let active = &Config::default().sections[0];
+        let groups: Vec<_> = active.source.iter().collect();
+
+        assert_eq!(groups[0].source(), Source::Windows);
+        assert!(groups[0].matches().unwrap().iter().any(|m| m == "chrome.exe"));
+        assert_eq!(groups[1].source(), Source::Tabs);
+        // And the catch-all is last, or it would swallow the groups behind it.
+        assert_eq!(groups.last().unwrap().source(), Source::Windows);
+        assert_eq!(groups.last().unwrap().matches(), None);
+    }
+
+    #[test]
+    fn a_group_carries_its_own_match_or_falls_back_to_the_sections() {
+        let text = r#"
+[[sections]]
+title = "Active"
+source = [{ source = "windows", match = ["chrome.exe"] }, "windows"]
+match = ["explorer.exe"]
+"#;
+        let cfg: Config = toml::from_str(text).unwrap();
+        let groups: Vec<_> = cfg.sections[0].source.iter().collect();
+        assert_eq!(groups[0].matches(), Some(["chrome.exe".to_string()].as_slice()));
+        assert_eq!(groups[1].matches(), None, "a bare source defers to the section");
+        assert_eq!(cfg.sections[0].matches, ["explorer.exe"]);
     }
 
     #[test]

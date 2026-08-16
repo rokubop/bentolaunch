@@ -92,5 +92,6 @@ fn item_for(path: &std::path::Path) -> Option<Item> {
         target: Target::Shell(name.clone()),
         icon_source: Some(name),
         origin: crate::config::Source::Taskbar,
+        group: 0,
     })
 }
