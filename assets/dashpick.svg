@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <title>DashPick</title>
+
+  <!-- Four tiles. Three resting, one picked: lifted out of the grid, larger,
+       and the only thing wearing colour. The dash is in the lift. -->
+
+  <defs>
+    <linearGradient id="picked" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFC24B"/>
+      <stop offset="1" stop-color="#FF5F6D"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="256" height="256" rx="56" fill="#1A1A1E"/>
+
+  <g fill="#3A4152">
+    <rect x="44"  y="44"  width="76" height="76" rx="18"/>
+    <rect x="44"  y="136" width="76" height="76" rx="18"/>
+    <rect x="136" y="136" width="76" height="76" rx="18"/>
+  </g>
+
+  <!-- The gap the picked tile left behind. -->
+  <rect x="136" y="44" width="76" height="76" rx="18"
+        fill="none" stroke="#2A2F3C" stroke-width="6"/>
+
+  <!-- Picked: up and to the right, bigger, off the grid. -->
+  <rect x="150" y="26" width="88" height="88" rx="21" fill="url(#picked)"/>
+</svg>

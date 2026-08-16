@@ -1,4 +1,4 @@
-//! Tray icon. flick has no taskbar presence and no window of its own most of the
+//! Tray icon. dashpick has no taskbar presence and no window of its own most of the
 //! time, so this is the only affordance proving it is running — and the only way
 //! to quit it without the Task Manager.
 
@@ -6,12 +6,13 @@ use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
 use windows::Win32::UI::Shell::{
     NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
 };
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, IDI_APPLICATION, LoadIconW,
+    AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, HICON, IDI_APPLICATION, LoadIconW,
     MF_SEPARATOR, MF_STRING, SetForegroundWindow, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
     WM_APP, WM_LBUTTONUP, WM_RBUTTONUP,
 };
-use windows::core::w;
+use windows::core::{PCWSTR, w};
 
 use crate::{log_info, log_warn};
 
@@ -27,6 +28,29 @@ pub const CMD_EDIT_CONFIG: usize = 105;
 
 const ICON_ID: u32 = 1;
 
+/// Resource id the build script gives the embedded `.ico`. `winresource`
+/// numbers the first icon 1.
+///
+/// This is `MAKEINTRESOURCE`: a resource id travels in the pointer itself, so
+/// the address is an integer and is never dereferenced.
+fn app_icon_id() -> PCWSTR {
+    PCWSTR(std::ptr::without_provenance(1))
+}
+
+/// The embedded icon, or the stock one if it is missing. Missing happens on a
+/// machine that built without rc.exe, and a stock icon beats no tray at all.
+fn app_icon() -> HICON {
+    // SAFETY: the module handle is this exe; a missing resource returns an
+    // error rather than misbehaving.
+    unsafe {
+        let instance = GetModuleHandleW(None).ok();
+        instance
+            .and_then(|module| LoadIconW(Some(module.into()), app_icon_id()).ok())
+            .or_else(|| LoadIconW(None, IDI_APPLICATION).ok())
+            .unwrap_or_default()
+    }
+}
+
 fn icon_data(hwnd: HWND) -> NOTIFYICONDATAW {
     NOTIFYICONDATAW {
         cbSize: size_of::<NOTIFYICONDATAW>() as u32,
@@ -40,10 +64,9 @@ pub fn install(hwnd: HWND) {
     let mut data = icon_data(hwnd);
     data.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     data.uCallbackMessage = WM_TRAY;
-    // SAFETY: a stock system icon; no resource of ours to keep alive.
-    data.hIcon = unsafe { LoadIconW(None, IDI_APPLICATION).unwrap_or_default() };
+    data.hIcon = app_icon();
 
-    let tip = "flick";
+    let tip = "DashPick";
     for (slot, unit) in data.szTip.iter_mut().zip(tip.encode_utf16()) {
         *slot = unit;
     }
@@ -52,7 +75,7 @@ pub fn install(hwnd: HWND) {
     if unsafe { Shell_NotifyIconW(NIM_ADD, &data) }.as_bool() {
         log_info!("tray icon installed");
     } else {
-        log_warn!("could not install the tray icon; flick is running with no visible affordance");
+        log_warn!("could not install the tray icon; dashpick is running with no visible affordance");
     }
 }
 
@@ -73,7 +96,7 @@ pub fn show_menu(hwnd: HWND) -> Option<usize> {
         let _ = GetCursorPos(&mut point);
 
         let menu = CreatePopupMenu().ok()?;
-        let _ = AppendMenuW(menu, MF_STRING, CMD_TOGGLE, w!("Show flick"));
+        let _ = AppendMenuW(menu, MF_STRING, CMD_TOGGLE, w!("Show dashpick"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
         let _ = AppendMenuW(menu, MF_STRING, CMD_ADD_APP, w!("Add app..."));
         let _ = AppendMenuW(menu, MF_STRING, CMD_ADD_FOLDER, w!("Add folder..."));

@@ -1,5 +1,5 @@
 [package]
-name = "flick"
+name = "dashpick"
 version = "0.3.0"
 edition = "2024"
 rust-version = "1.89"
@@ -18,3 +18,6 @@ windows = { version = "0.62.2", features = ["Foundation", "Foundation_Numerics",
 # Only for `#[implement]`, whose expansion refers to `windows_core` by name.
 windows-core = "0.62.2"
 windows-numerics = "0.3.1"
+
+[build-dependencies]
+winresource = "0.1.31"

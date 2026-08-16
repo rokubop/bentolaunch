@@ -1,4 +1,6 @@
-# flick
+<img src="assets/dashpick-256.png" width="88" alt="">
+
+# DashPick
 
 A hotkey-summoned grid of everything worth switching to: running windows,
 browser tabs, taskbar pins, folders, apps, settings pages, links.
@@ -7,7 +9,7 @@ Press `` Alt+` ``. Type to narrow. Enter takes the top match, or click a tile.
 Esc closes and puts you back where you were.
 
 Windows 11 only. Never asks for admin, and writes nothing outside its own
-config and `%LOCALAPPDATA%\flick`.
+config and `%LOCALAPPDATA%\dashpick`.
 
 `DESIGN.md` for architecture and decisions, `STATUS.md` for what works and what
 is still unverified.
@@ -19,7 +21,7 @@ Early days. It does what this README says, but plenty is listed as unverified in
 
 ```powershell
 cargo build
-target\debug\flick.exe
+target\debug\dashpick.exe
 ```
 
 Starts silent, tray icon only.
@@ -28,14 +30,14 @@ Right-click the tray icon:
 
 | Item | Does |
 |---|---|
-| Show flick | Same as the hotkey |
+| Show DashPick | Same as the hotkey |
 | Add app… | Browse installed apps, Store apps included, and pin one |
 | Add folder… | Pin a folder |
 | Add file or shortcut… | Pin a file or `.lnk` |
-| Edit settings… | Open `flick.toml` in your editor |
+| Edit settings… | Open `dashpick.toml` in your editor |
 | Exit | Quit |
 
-Log: `%LOCALAPPDATA%\flick\flick.log`
+Log: `%LOCALAPPDATA%\dashpick\dashpick.log`
 
 ## Finding
 
@@ -76,7 +78,7 @@ past it is a drag.
 
 Only pinned tiles move. Running windows stay in most-recent order.
 
-Every change goes straight into `flick.toml`. Nothing is remembered anywhere
+Every change goes straight into `dashpick.toml`. Nothing is remembered anywhere
 else, and all of it can be undone by hand. Drops land in the section you dropped
 on, or the first manual one. Taskbar order is saved as an `order` list, since
 Windows does not expose its own.
@@ -91,9 +93,9 @@ file. Resets when the panel closes.
 
 ## Config
 
-`flick.toml`, next to the exe. Written with defaults on first run.
+`dashpick.toml`, next to the exe. Written with defaults on first run.
 
-**No restart needed.** flick watches the file and reloads on save, hotkey
+**No restart needed.** DashPick watches the file and reloads on save, hotkey
 included. Pins added from the tray are written here, and hand-written comments
 and formatting are preserved.
 
@@ -193,7 +195,7 @@ What guards that port:
   machine, but browsers stamp every connection with who is making it and pages
   cannot fake that stamp. Only the extension you listed is let through.
 - A secret token, generated on first run, kept in
-  `%LOCALAPPDATA%\flick\bridge-token`, which Windows restricts to your account.
+  `%LOCALAPPDATA%\dashpick\bridge-token`, which Windows restricts to your account.
 
 What it does not guard against: software already running under your own account.
 That software can read the token, but it can also read your browser profile
@@ -247,5 +249,5 @@ search_height = 72.0     # the filter strip; its text is sized from this
 - Firefox needs its own extension build.
 - Tab tiles cannot be rearranged, and neither can a filtered grid.
 - Dragging moves a tile within its own section. Moving one between sections
-  means editing `flick.toml`.
+  means editing `dashpick.toml`.
 - Window tiles show icons, not live previews.

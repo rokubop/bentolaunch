@@ -1,6 +1,6 @@
 # Status
 
-Where flick stands and what to pick up next.
+Where DashPick stands and what to pick up next.
 
 `DESIGN.md` is the source of truth for *why*. This file is *where*.
 
@@ -50,7 +50,7 @@ as a unit and against a real listener.
 - Unpinning removed that entry and left the rest alone.
 
 Type-to-filter, driven end to end against a dry-run copy in a scratch directory
-(its own `flick.toml`, its own hotkey, so the real instance was untouched):
+(its own `dashpick.toml`, its own hotkey, so the real instance was untouched):
 
 - `s` → 9 of 10, `st` → 4, `sto` → 1. Backspace walked it back to 4.
 - Panel went 926x290 → 926x362 the moment a query existed and back on clearing,
@@ -70,7 +70,7 @@ setting its own `Origin`):
 - Typing `zombo` narrowed 5 to 1; Enter logged
   `asked the browser to switch to "Zombocom"` and the client received
   `{"type":"focus","tabId":104,"windowId":2}`.
-- flick's 20s ping arrived and the client's pong came back. That heartbeat is
+- DashPick's 20s ping arrived and the client's pong came back. That heartbeat is
   what keeps an MV3 service worker alive.
 - Refused, all with the correct token: a `https://` page origin, an unpaired
   extension id. Refused with the paired origin: a wrong token.
@@ -85,7 +85,7 @@ setting its own `Origin`):
   WebSocket needs no host permissions.
 - `AllowSetForegroundWindow` plus `chrome.windows.update` raises the window.
   Clicking a tab tile switches to it. This was the riskiest guess in the design.
-- Favicons arrive and paint. `_favicon` needs no network access from flick.
+- Favicons arrive and paint. `_favicon` needs no network access from DashPick.
 
 Input for those was posted, not typed. Covers everything except what the OS owns:
 real capture, and the OLE drag loop.
@@ -126,12 +126,12 @@ have never been run.
   a site cannot enumerate your tabs. Verified against a live listener with the
   correct token.
 - Capped past the gate: 4 MiB messages, 1 MiB frames, 8 connections, 2000 tabs.
-- A client can set what flick shows and receive focus commands. Nothing reaches
+- A client can set what DashPick shows and receive focus commands. Nothing reaches
   `ShellExecuteW` from a tab's title or URL.
-- `flick.toml` is gitignored, so the token is not in the repo.
+- `dashpick.toml` is gitignored, so the token is not in the repo.
 - The token lives in `%LOCALAPPDATA%lickridge-token`, not beside the exe.
   A portable build can land in `Program Files`, where a file next to it is
-  readable by every account on the machine. Migrated out of `flick.toml` on
+  readable by every account on the machine. Migrated out of `dashpick.toml` on
   startup.
 
 Live concerns, none urgent:

@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity type="win32" name="flick" version="0.3.0.0" processorArchitecture="amd64"/>
+  <assemblyIdentity type="win32" name="dashpick" version="0.3.0.0" processorArchitecture="amd64"/>
 
-  <!-- Safety rule 1: asInvoker, always. flick needs no privileged operation. -->
+  <!-- Safety rule 1: asInvoker, always. dashpick needs no privileged operation. -->
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>

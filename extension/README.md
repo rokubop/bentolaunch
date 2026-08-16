@@ -1,6 +1,6 @@
-# flick bridge
+# DashPick bridge
 
-Sends open tabs to flick. Switches to one when flick asks.
+Sends open tabs to DashPick. Switches to one when DashPick asks.
 
 Chromium only for now: Chrome, Edge, Brave, Vivaldi. Firefox needs a separate
 build.
@@ -19,13 +19,13 @@ No OS API exposes browser tabs. The alternatives are closed:
 
 The socket stays shut until both halves are set, so this is a round trip.
 
-1. In `flick.toml`, set `enabled = true` under `[browser]`. Restart flick.
+1. In `dashpick.toml`, set `enabled = true` under `[browser]`. Restart DashPick.
    It generates `token` and writes it back to the same file.
 2. Load this folder: `chrome://extensions`, Developer mode on, Load unpacked.
 3. Open its options page. Paste the token in, Save. Copy the origin it shows.
-4. Put that origin in `browser.allow`. Restart flick.
+4. Put that origin in `browser.allow`. Restart DashPick.
 
-flick only listens once `allow` is non-empty, so nothing connects before step 4.
+DashPick only listens once `allow` is non-empty, so nothing connects before step 4.
 
 ```
 INFO  browser bridge listening on 127.0.0.1:8777
@@ -33,7 +33,7 @@ INFO  browser connected (connection 1)
 INFO  browser connection 1: 37 tab(s)
 ```
 
-Log lives at `%LOCALAPPDATA%\flick\flick.log`. A wrong origin says so:
+Log lives at `%LOCALAPPDATA%\dashpick\dashpick.log`. A wrong origin says so:
 
 ```
 WARN  browser connection refused: origin chrome-extension://abc... is not paired
@@ -54,11 +54,11 @@ Empty until the extension connects, and empty sections do not render.
 `tabs`: the title and URL of every open tab.
 `favicon`: site icons, from Chrome's own cache.
 
-Both go to flick over loopback. Nothing leaves the machine. No host permissions,
+Both go to DashPick over loopback. Nothing leaves the machine. No host permissions,
 no content scripts, no network access beyond `127.0.0.1` and `_favicon`.
 
-Favicons are decoded here, not in flick: a service worker already has an image
-decoder, so flick needs none. One bitmap per origin, sent once per connection.
+Favicons are decoded here, not in DashPick: a service worker already has an image
+decoder, so DashPick needs none. One bitmap per origin, sent once per connection.
 
 ## Security
 
@@ -70,7 +70,7 @@ The socket is loopback-only and refuses a connection unless both hold:
 - The token matches. A non-browser process can claim any origin it likes; it
   cannot guess a 48-hex-character secret from the OS CSPRNG.
 
-The token lives in plaintext in `flick.toml`, so anything running as you can
+The token lives in plaintext in `dashpick.toml`, so anything running as you can
 read it. It stops other users and blind attempts, not code running as you. The
 origin check is what stops the threat that actually exists.
 

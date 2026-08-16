@@ -265,7 +265,7 @@ impl Default for Theme {
 impl Config {
     pub fn path() -> Option<PathBuf> {
         let exe = std::env::current_exe().ok()?;
-        Some(exe.parent()?.join("flick.toml"))
+        Some(exe.parent()?.join("dashpick.toml"))
     }
 
     /// Never fails: a broken or absent config falls back to defaults rather than

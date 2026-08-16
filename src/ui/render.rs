@@ -63,7 +63,7 @@ pub struct TilePaint<'a> {
 }
 
 /// The pushpin on the panel's keep-open button. A Segoe MDL2 glyph, so it comes
-/// from the shell's own icon font rather than a bitmap flick has to ship.
+/// from the shell's own icon font rather than a bitmap dashpick has to ship.
 pub const PIN_GLYPH: &str = "\u{E718}";
 
 /// Reads as a search box without needing a border or a caret.

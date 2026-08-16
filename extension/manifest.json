@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "flick bridge",
+  "name": "DashPick bridge",
   "version": "0.1.0",
-  "description": "Sends open tabs to flick, and switches to one when flick asks.",
+  "description": "Sends open tabs to DashPick, and switches to one when DashPick asks.",
   "permissions": ["tabs", "storage", "alarms", "favicon"],
   "background": {
     "service_worker": "worker.js"

@@ -1,6 +1,6 @@
-//! Minimal logger: appends to `%LOCALAPPDATA%\flick\flick.log` and mirrors to stderr.
+//! Minimal logger: appends to `%LOCALAPPDATA%\dashpick\dashpick.log` and mirrors to stderr.
 //!
-//! Milestone 1 is a dry run, so the log *is* the product — every action flick
+//! Milestone 1 is a dry run, so the log *is* the product — every action dashpick
 //! would have taken gets recorded here instead of executed.
 
 use std::fs::{self, OpenOptions};
@@ -12,11 +12,11 @@ use windows::Win32::System::SystemInformation::GetLocalTime;
 
 static SINK: OnceLock<Mutex<Option<std::fs::File>>> = OnceLock::new();
 
-/// `%LOCALAPPDATA%\flick` — the only directory flick writes to besides its own
+/// `%LOCALAPPDATA%\dashpick` — the only directory dashpick writes to besides its own
 /// config file (safety rule 2).
 pub fn cache_dir() -> Option<PathBuf> {
     let base = std::env::var_os("LOCALAPPDATA")?;
-    let dir = PathBuf::from(base).join("flick");
+    let dir = PathBuf::from(base).join("dashpick");
     fs::create_dir_all(&dir).ok()?;
     Some(dir)
 }
@@ -26,7 +26,7 @@ pub fn init() {
         OpenOptions::new()
             .create(true)
             .append(true)
-            .open(dir.join("flick.log"))
+            .open(dir.join("dashpick.log"))
             .ok()
     });
     let _ = SINK.set(Mutex::new(file));
@@ -68,7 +68,7 @@ macro_rules! log_error {
     ($($arg:tt)*) => { $crate::log::write("ERROR", &format!($($arg)*)) };
 }
 
-/// Dry-run marker: "this is what flick *would* have done."
+/// Dry-run marker: "this is what dashpick *would* have done."
 #[macro_export]
 macro_rules! log_dry {
     ($($arg:tt)*) => { $crate::log::write("DRY", &format!($($arg)*)) };

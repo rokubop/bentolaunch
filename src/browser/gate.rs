@@ -1,4 +1,4 @@
-//! Who is allowed on flick's socket. Two callers, two gates.
+//! Who is allowed on dashpick's socket. Two callers, two gates.
 //!
 //! Web page: can script a WebSocket to localhost, so without a check any site
 //! could enumerate your tabs. The browser stamps `Origin` on the handshake and
@@ -85,7 +85,7 @@ fn token_matches(expected: &str, given: &str) -> bool {
     differences == 0
 }
 
-/// Where the token lives: flick's own directory under `%LOCALAPPDATA%`, which
+/// Where the token lives: dashpick's own directory under `%LOCALAPPDATA%`, which
 /// Windows already restricts to this account.
 ///
 /// Not beside the exe. A portable build can be dropped in `Program Files`,
@@ -97,7 +97,7 @@ fn token_path() -> Option<std::path::PathBuf> {
 
 /// The token to admit against, generating one on first use.
 ///
-/// `legacy` is the `browser.token` an older build wrote into `flick.toml`. It
+/// `legacy` is the `browser.token` an older build wrote into `dashpick.toml`. It
 /// is migrated out and the caller clears it from the config.
 pub fn resolve_token(legacy: &str) -> Option<String> {
     let path = token_path()?;
@@ -110,7 +110,7 @@ pub fn resolve_token(legacy: &str) -> Option<String> {
     }
 
     let token = if legacy.len() >= MIN_TOKEN_LEN {
-        log_info!("moving the bridge token out of flick.toml into {}", path.display());
+        log_info!("moving the bridge token out of dashpick.toml into {}", path.display());
         legacy.to_owned()
     } else {
         generate_token()?
