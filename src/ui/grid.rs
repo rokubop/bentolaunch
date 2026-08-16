@@ -59,6 +59,23 @@ pub struct Header {
     pub rect: Rect,
 }
 
+/// One rendered section's slice of the grid.
+///
+/// Bands tile the panel with no gaps: each one runs from where the previous
+/// ended down to its own last row, so every point in the panel belongs to
+/// exactly one section. Dropping needs that — something landing in the gap above
+/// a section should still mean *that* section, not nothing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Band {
+    /// Index into the sections handed to `compute`.
+    pub section: usize,
+    /// Flat index of this section's first tile.
+    pub first: usize,
+    pub count: usize,
+    /// Content space, spanning the header and every row of tiles.
+    pub rect: Rect,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Layout {
     pub cols: usize,
@@ -71,6 +88,8 @@ pub struct Layout {
     /// One per item, flattened across sections in order. Content space.
     tiles: Vec<Rect>,
     headers: Vec<Header>,
+    bands: Vec<Band>,
+    metrics: Metrics,
 }
 
 impl Layout {
@@ -93,12 +112,15 @@ impl Layout {
 
         let mut tiles = Vec::new();
         let mut headers = Vec::new();
+        let mut bands: Vec<Band> = Vec::new();
         let mut y = m.padding;
 
         for (index, section) in sections.iter().enumerate() {
             if section.count == 0 {
                 continue;
             }
+            let band_top = y;
+            let first_tile = tiles.len();
             if index > 0 && !tiles.is_empty() {
                 y += m.section_gap;
             }
@@ -127,10 +149,28 @@ impl Layout {
                 });
             }
             y += rows as f32 * m.tile_h + (rows.saturating_sub(1)) as f32 * m.gap;
+
+            bands.push(Band {
+                section: index,
+                first: first_tile,
+                count: section.count,
+                // Width and the final height are filled in below, once the panel
+                // width and the following band's top are both known.
+                rect: Rect { x: 0.0, y: band_top, w: panel_w, h: y - band_top },
+            });
         }
 
         let content_h = y + m.padding;
         let panel_h = content_h.min(max_h);
+
+        // Stretch the bands over the padding at both ends and over the gaps
+        // between them, so they cover the panel with nothing in between.
+        for i in 0..bands.len() {
+            let top = if i == 0 { 0.0 } else { bands[i].rect.y };
+            let bottom = bands.get(i + 1).map_or(content_h, |next| next.rect.y);
+            bands[i].rect.y = top;
+            bands[i].rect.h = bottom - top;
+        }
 
         // Centered on the work area, snapped to whole pixels so tiles stay crisp.
         let panel = Rect {
@@ -147,6 +187,8 @@ impl Layout {
             max_scroll: (content_h - panel_h).max(0.0),
             tiles,
             headers,
+            bands,
+            metrics: m,
         }
     }
 
@@ -186,6 +228,80 @@ impl Layout {
     pub fn clamp_scroll(&self, scroll: f32) -> f32 {
         scroll.clamp(0.0, self.max_scroll)
     }
+
+    pub fn bands(&self) -> &[Band] {
+        &self.bands
+    }
+
+    /// The keep-open button, panel-local.
+    ///
+    /// Chrome, not content: it does not scroll, so it cannot be carried off the
+    /// top of a long grid. It sits on the first header's row, where headers
+    /// leave the right-hand end empty, and falls back to the top padding strip
+    /// when headers are turned off.
+    pub fn chrome(&self) -> Rect {
+        let m = self.metrics;
+        let h = m.header_h.max(16.0).min(self.panel.h);
+        let y = if m.header_h >= 16.0 { m.padding } else { (m.padding - h).max(0.0) };
+        // A panel barely taller than one tile still has to keep it inside.
+        let y = y.min((self.panel.h - h).max(0.0));
+        let w = (h * 2.8).min(self.panel.w - 2.0 * m.padding).max(0.0);
+        Rect { x: self.panel.w - m.padding - w, y, w, h }
+    }
+
+    /// Which band a panel-local point falls in. Unlike `hit_test`, gaps and
+    /// padding still belong to a section: a drop between two tiles is a drop
+    /// into that section, not a miss.
+    pub fn band_at(&self, x: f32, y: f32, scroll: f32) -> Option<usize> {
+        if x < 0.0 || y < 0.0 || x >= self.panel.w || y >= self.panel.h {
+            return None;
+        }
+        let content_y = y + scroll;
+        self.bands
+            .iter()
+            .position(|band| band.rect.contains(x, content_y))
+    }
+
+    /// Which band owns a flat tile index.
+    pub fn band_of(&self, tile: usize) -> Option<usize> {
+        self.bands
+            .iter()
+            .position(|band| tile >= band.first && tile < band.first + band.count)
+    }
+
+    /// Where a dragged tile would land in `band`, as an insertion index in
+    /// `0..=count`. Measured against tile centers, so the drop goes where the
+    /// gap the cursor is nearest to is, not where the tile under it starts.
+    pub fn insert_slot(&self, band: usize, x: f32, y: f32, scroll: f32) -> usize {
+        let Some(band) = self.bands.get(band) else {
+            return 0;
+        };
+        let Some(origin) = self.tiles.get(band.first) else {
+            return 0;
+        };
+        let m = self.metrics;
+
+        let row = ((y + scroll - origin.y) / (m.tile_h + m.gap)).floor().max(0.0) as usize;
+        let column = ((x - origin.x) / (m.tile_w + m.gap) + 0.5)
+            .floor()
+            .clamp(0.0, self.cols as f32) as usize;
+
+        (row * self.cols + column).min(band.count)
+    }
+}
+
+/// The order slots end up in when the tile at `from` is dropped at insertion
+/// point `to`. Each entry is the slot an item came from.
+///
+/// Split out from the panel because it is pure index arithmetic, and because
+/// off-by-one here silently scrambles a user's pinned layout.
+pub fn reordered(count: usize, from: usize, to: usize) -> Vec<usize> {
+    let mut slots: Vec<usize> = (0..count).filter(|&slot| slot != from).collect();
+    // `to` counts positions in the *original* list, so an insertion after the
+    // dragged tile shifts down by one once that tile is lifted out.
+    let at = if to > from { to - 1 } else { to };
+    slots.insert(at.min(slots.len()), from);
+    slots
 }
 
 #[cfg(test)]
@@ -400,6 +516,139 @@ mod tests {
         assert_eq!(l.tile_count(), 4);
         // Still two groups: the second starts a new row despite cols == 2.
         assert!(l.tile_rect(2, 0.0).y > l.tile_rect(0, 0.0).y);
+    }
+
+    // --- chrome ---
+
+    #[test]
+    fn the_keep_open_button_sits_in_the_first_header_row() {
+        let l = Layout::compute(&[shape("Pinned", 4)], metrics(), WORK);
+        let button = l.chrome();
+        let header = l.headers(0.0).next().unwrap().1;
+
+        assert_eq!(button.y, header.y);
+        assert_eq!(button.h, header.h);
+        // Right-aligned inside the padding, and clear of the first tile.
+        assert!((button.x + button.w - (l.panel.w - metrics().padding)).abs() < 0.01);
+        assert!(button.y + button.h <= l.tile_rect(0, 0.0).y);
+    }
+
+    #[test]
+    fn the_keep_open_button_survives_headers_being_turned_off() {
+        let m = Metrics { header_h: 0.0, ..metrics() };
+        let l = Layout::compute(&[shape("", 4)], m, WORK);
+        let button = l.chrome();
+
+        assert!(button.w > 0.0 && button.h > 0.0, "the button must always exist");
+        assert!(button.x >= 0.0 && button.x + button.w <= l.panel.w);
+        assert!(button.y + button.h <= l.tile_rect(0, 0.0).y, "must not cover a tile");
+    }
+
+    #[test]
+    fn an_empty_grid_still_places_the_button_inside_the_panel() {
+        let l = Layout::compute(&[], metrics(), WORK);
+        let button = l.chrome();
+        assert!(button.x >= 0.0 && button.x + button.w <= l.panel.w + 0.01);
+        assert!(button.y + button.h <= l.panel.h + 0.01);
+    }
+
+    // --- bands and drop slots ---
+
+    #[test]
+    fn bands_cover_the_whole_panel_with_no_dead_space() {
+        let sections = vec![shape("Pinned", 3), shape("Windows", 5)];
+        let l = Layout::compute(&sections, metrics(), WORK);
+
+        assert_eq!(l.bands().len(), 2);
+        assert_eq!(l.bands()[0].rect.y, 0.0);
+        let last = l.bands().last().unwrap();
+        assert_eq!(last.rect.y + last.rect.h, l.content_h);
+        assert_eq!(l.bands()[0].rect.h, l.bands()[1].rect.y);
+
+        // Every row of pixels down the panel belongs to some band.
+        for y in 0..l.panel.h as i32 {
+            assert!(l.band_at(5.0, y as f32, 0.0).is_some(), "no band at y={y}");
+        }
+    }
+
+    #[test]
+    fn empty_sections_do_not_get_a_band() {
+        let l = Layout::compute(&[shape("Pinned", 0), shape("Windows", 2)], metrics(), WORK);
+        assert_eq!(l.bands().len(), 1);
+        // The band still names the section it came from, not its position.
+        assert_eq!(l.bands()[0].section, 1);
+    }
+
+    #[test]
+    fn a_tile_belongs_to_the_band_it_was_laid_out_in() {
+        let l = Layout::compute(&[shape("A", 3), shape("B", 4)], metrics(), WORK);
+        assert_eq!(l.band_of(0), Some(0));
+        assert_eq!(l.band_of(2), Some(0));
+        assert_eq!(l.band_of(3), Some(1));
+        assert_eq!(l.band_of(6), Some(1));
+        assert_eq!(l.band_of(7), None);
+
+        // And a point inside a tile agrees with the tile's own band.
+        let r = l.tile_rect(4, 0.0);
+        assert_eq!(l.band_at(r.x + 1.0, r.y + 1.0, 0.0), l.band_of(4));
+    }
+
+    #[test]
+    fn a_drop_lands_on_the_nearest_gap_between_tiles() {
+        let l = Layout::compute(&one(5), metrics(), WORK);
+        let first = l.tile_rect(0, 0.0);
+        let third = l.tile_rect(2, 0.0);
+
+        // Left of the first tile, and on its left half: before everything.
+        assert_eq!(l.insert_slot(0, 1.0, first.y + 5.0, 0.0), 0);
+        assert_eq!(l.insert_slot(0, first.x + 5.0, first.y + 5.0, 0.0), 0);
+        // Right half of a tile means after it.
+        assert_eq!(l.insert_slot(0, first.x + first.w - 5.0, first.y + 5.0, 0.0), 1);
+        assert_eq!(l.insert_slot(0, third.x + third.w - 5.0, third.y + 5.0, 0.0), 3);
+        // Past the last tile, clamped to the end.
+        assert_eq!(l.insert_slot(0, l.panel.w - 1.0, l.panel.h - 1.0, 0.0), 5);
+    }
+
+    #[test]
+    fn drop_slots_are_measured_within_the_section_not_the_panel() {
+        let l = Layout::compute(&[shape("A", 4), shape("B", 4)], metrics(), WORK);
+        let second = l.bands()[1].clone();
+        let first_of_b = l.tile_rect(second.first, 0.0);
+
+        assert_eq!(l.insert_slot(1, first_of_b.x + 5.0, first_of_b.y + 5.0, 0.0), 0);
+        assert_eq!(
+            l.insert_slot(1, first_of_b.x + first_of_b.w - 5.0, first_of_b.y + 5.0, 0.0),
+            1
+        );
+    }
+
+    #[test]
+    fn drop_slots_follow_the_scroll_offset() {
+        let l = Layout::compute(&one(500), metrics(), WORK);
+        let scroll = 200.0;
+        let index = l.cols * 3;
+        let r = l.tile_rect(index, scroll);
+        assert_eq!(l.insert_slot(0, r.x + 5.0, r.y + 5.0, scroll), index);
+    }
+
+    #[test]
+    fn moving_a_tile_shifts_only_what_it_passes() {
+        // 0 1 2 3 4, drag 0 to the end.
+        assert_eq!(reordered(5, 0, 5), vec![1, 2, 3, 4, 0]);
+        // Drag the last tile to the front.
+        assert_eq!(reordered(5, 4, 0), vec![4, 0, 1, 2, 3]);
+        // One step right: the insertion point is past the tile's own slot.
+        assert_eq!(reordered(5, 1, 3), vec![0, 2, 1, 3, 4]);
+        // One step left.
+        assert_eq!(reordered(5, 3, 1), vec![0, 3, 1, 2, 4]);
+    }
+
+    #[test]
+    fn dropping_a_tile_back_where_it_started_changes_nothing() {
+        for slot in 0..5 {
+            assert_eq!(reordered(5, slot, slot), vec![0, 1, 2, 3, 4]);
+            assert_eq!(reordered(5, slot, slot + 1), vec![0, 1, 2, 3, 4]);
+        }
     }
 
     #[test]

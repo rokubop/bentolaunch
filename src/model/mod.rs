@@ -87,6 +87,15 @@ pub struct Item {
 }
 
 impl Item {
+    /// The parsing name behind this tile. `None` for a live window, which is
+    /// the one thing flick shows that config cannot name.
+    pub fn shell_target(&self) -> Option<&str> {
+        match &self.target {
+            Target::Shell(name) => Some(name),
+            Target::Window(_) => None,
+        }
+    }
+
     /// One line describing what activating this item does. Dry run logs it
     /// instead of acting on it.
     pub fn activation_summary(&self) -> String {
@@ -108,5 +117,9 @@ impl Item {
 #[derive(Debug, Clone)]
 pub struct Section {
     pub title: String,
+    /// Carried through from config so the panel knows what it may rearrange:
+    /// pinned sections have an order flick owns, window sections are MRU and
+    /// belong to the foreground hook.
+    pub source: crate::config::Source,
     pub items: Vec<Item>,
 }

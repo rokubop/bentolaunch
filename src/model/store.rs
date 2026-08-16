@@ -83,7 +83,7 @@ fn build_groups(sections: &[SectionConfig]) -> Vec<Group> {
             source: section.source,
             matches: section.matches.iter().map(|m| m.to_lowercase()).collect(),
             fixed: match section.source {
-                Source::Taskbar => taskbar::pins(),
+                Source::Taskbar => taskbar::pins_in_order(&section.order),
                 Source::Manual => section.items.iter().filter_map(manual_item).collect(),
                 Source::Windows => Vec::new(),
             },
@@ -253,7 +253,11 @@ pub fn sections() -> Vec<Section> {
         };
 
         if !items.is_empty() {
-            out.push(Section { title: group.title.clone(), items });
+            out.push(Section {
+                title: group.title.clone(),
+                source: group.source,
+                items,
+            });
         }
     }
     out

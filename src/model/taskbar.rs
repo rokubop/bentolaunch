@@ -29,6 +29,29 @@ fn pin_dir() -> Option<PathBuf> {
     )
 }
 
+/// Pins in the order `order` names them, by pin title, with anything unlisted
+/// following in name order.
+///
+/// The taskbar's own left-to-right order is not readable (see above), so an
+/// explicit list is the only way to get an exact one. Dragging a taskbar tile is
+/// what writes that list.
+pub fn pins_in_order(order: &[String]) -> Vec<Item> {
+    let mut items = pins();
+    if order.is_empty() {
+        return items;
+    }
+    let rank: Vec<String> = order.iter().map(|name| name.to_lowercase()).collect();
+    let position = |item: &Item| {
+        rank.iter()
+            .position(|name| *name == item.title.to_lowercase())
+            .unwrap_or(usize::MAX)
+    };
+    // Stable, so the alphabetical order `pins` produced survives as the
+    // tie-break for everything the list does not mention.
+    items.sort_by_key(position);
+    items
+}
+
 pub fn pins() -> Vec<Item> {
     let Some(dir) = pin_dir() else {
         log_warn!("APPDATA is not set; cannot read taskbar pins");

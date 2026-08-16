@@ -61,11 +61,17 @@ pub struct TilePaint<'a> {
     pub colors: TextColors,
 }
 
+/// The pushpin on the panel's keep-open button. A Segoe MDL2 glyph, so it comes
+/// from the shell's own icon font rather than a bitmap flick has to ship.
+pub const PIN_GLYPH: &str = "\u{E718}";
+
 pub struct Renderer {
     graphics: CompositionGraphicsDevice,
     title_format: IDWriteTextFormat,
     detail_format: IDWriteTextFormat,
     header_format: IDWriteTextFormat,
+    /// Segoe MDL2 Assets, for the pushpin.
+    glyph_format: IDWriteTextFormat,
     /// Held so the D2D device outlives every context it hands out.
     _d2d_device: ID2D1Device,
     _d3d_device: ID3D11Device,
@@ -97,12 +103,20 @@ impl Renderer {
         // Headers read as labels, so they sit left-aligned against the padding.
         let header_format =
             text_format(&dwrite, DWRITE_FONT_WEIGHT_SEMI_BOLD, 12.0, DWRITE_TEXT_ALIGNMENT_LEADING)?;
+        let glyph_format = font_format(
+            &dwrite,
+            w!("Segoe MDL2 Assets"),
+            DWRITE_FONT_WEIGHT_NORMAL,
+            12.0,
+            DWRITE_TEXT_ALIGNMENT_CENTER,
+        )?;
 
         Ok(Renderer {
             graphics,
             title_format,
             detail_format,
             header_format,
+            glyph_format,
             _d2d_device: d2d_device,
             _d3d_device: d3d_device,
         })
@@ -263,6 +277,47 @@ impl Renderer {
         result
     }
 
+    /// One centered glyph on a transparent surface: the keep-open pushpin. The
+    /// pill behind it is a composition shape, so the button's state and hover
+    /// are colour writes rather than repaints.
+    pub fn draw_glyph(
+        &self,
+        surface: &CompositionDrawingSurface,
+        width: f32,
+        height: f32,
+        text: &str,
+        color: D2D1_COLOR_F,
+    ) -> Result<()> {
+        let interop: ICompositionDrawingSurfaceInterop = surface.cast()?;
+
+        // SAFETY: BeginDraw hands back a context valid until EndDraw, which the
+        // matching call below always runs.
+        let (context, offset): (ID2D1DeviceContext, POINT) = unsafe {
+            let mut offset = POINT::default();
+            let context = interop.BeginDraw(None, &mut offset)?;
+            (context, offset)
+        };
+
+        // SAFETY: the context is live until EndDraw.
+        let result = unsafe {
+            context.SetTransform(&Matrix3x2::translation(offset.x as f32, offset.y as f32));
+            context.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
+            self.draw_text(
+                &context,
+                text,
+                &self.glyph_format,
+                D2D_RECT_F { left: 0.0, top: 0.0, right: width, bottom: height },
+                color,
+            )
+        };
+
+        // SAFETY: pairs with BeginDraw; must run even on failure.
+        unsafe {
+            interop.EndDraw()?;
+        }
+        result
+    }
+
     unsafe fn draw_text(
         &self,
         context: &ID2D1DeviceContext,
@@ -322,10 +377,20 @@ fn text_format(
     size: f32,
     alignment: DWRITE_TEXT_ALIGNMENT,
 ) -> Result<IDWriteTextFormat> {
+    font_format(dwrite, w!("Segoe UI"), weight, size, alignment)
+}
+
+fn font_format(
+    dwrite: &IDWriteFactory,
+    family: windows::core::PCWSTR,
+    weight: windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT,
+    size: f32,
+    alignment: DWRITE_TEXT_ALIGNMENT,
+) -> Result<IDWriteTextFormat> {
     // SAFETY: all arguments are owned by the caller for the duration.
     let format = unsafe {
         dwrite.CreateTextFormat(
-            w!("Segoe UI"),
+            family,
             None,
             weight,
             DWRITE_FONT_STYLE_NORMAL,

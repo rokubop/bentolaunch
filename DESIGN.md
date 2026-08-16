@@ -274,22 +274,71 @@ with session caps and frame caching.
 **Milestone 4 — browser.** Localhost WebSocket server, Chromium extension, tabs
 + bookmarks.
 
-**Milestone 5 — edit mode and drag-and-drop pinning.** `IDropTarget`, drag to
-reorder, layout persistence.
+**Milestone 5 — rearranging and drag-and-drop pinning. Done**, ahead of 3 and 4.
+`IDropTarget`, drag to reorder, unpinning, layout persistence.
 
-Edit mode is the prerequisite, not a nicety. Without an explicit mode, drag and
-click are ambiguous on the same tile, and a slightly dragged click would reorder
-the grid when the user meant to switch. Edit mode suspends activation, so a tile
-can be picked up, moved, or removed without ever firing.
+### Edit mode: built, then removed
 
-Two constraints found while designing it:
+Original plan: an explicit mode, because click and drag are ambiguous on a tile
+that also activates.
 
-- Reorder only makes sense for taskbar and manual sections. Window tiles are MRU
-  ordered by the foreground hook, and a persisted manual order would fight that
-  on every focus change.
-- Dropping from Explorer needs the panel to stay up during the drag, but clicking
-  away currently dismisses. Dismissal has to be suspended while a drag is in
-  flight.
+Built it. Wrong. Two reasons:
+
+- First user could not find it. `F2` plus a tray item is not an entry point.
+- Every comparable surface rejects the mode. Taskbar, bookmarks bar, Quick
+  Access, Dock: click acts, drag rearranges, right-click manages. Only touch home
+  screens have a mode, and for reasons flick does not share: no hover, no
+  right-click, coarse targets.
+
+The ambiguity is what `SM_CXDRAG` is for. 4px. The shell's own threshold, and
+what those surfaces have used for twenty years.
+
+Settled model:
+
+| | |
+|---|---|
+| Click | activate |
+| Drag a pinned tile | reorder in its section |
+| Right-click | pin, unpin, show in Explorer, settings |
+| Pushpin | keep the panel open |
+
+**Pin what is in front of you.** The taskbar's best pin action is right-click the
+running app. The browser's is a star on the current page. flick already lists
+every running window, so right-click a window tile gives "Pin this app": no
+picker, no typing. Same menu pins a tab as a bookmark once M4 lands.
+
+Two constraints from the original design held:
+
+- Reorder is for taskbar and manual sections only. Window tiles are MRU ordered
+  by the foreground hook; a saved order would fight it on every focus change.
+- Dropping from Explorer needs the panel to survive losing focus. That is a
+  keep-open concern, not an edit one, so it is its own pushpin toggle. The drag
+  *starts* in Explorer, so "suspend dismissal while a drag is in flight" is too
+  late: the panel is gone before the drag exists.
+
+Implementation notes:
+
+- **A press is not yet a click.** `WM_LBUTTONDOWN` starts a press with capture;
+  release decides. Past the threshold: reorder, or nothing on a tile flick cannot
+  rearrange. Under it: activate, if the release is still on the same tile.
+- **Layout gained bands.** One per rendered section, tiling the panel with no
+  gaps, so a drop between two tiles still names a section. Insertion points are
+  measured against tile centers.
+- **Persistence is the config file, nothing else.** A manual reorder rewrites
+  that section's `items`. Entries are moved, not rebuilt, so `{ title, target }`
+  keeps its title. No separate layout store to fall out of sync.
+- **Taskbar order is an `order` list of pin names** on the section. Windows does
+  not expose its own (see below), so flick keeps one once the user states it.
+- **Unpinning is manual sections only.** A taskbar entry belongs to the taskbar.
+  Safety rule 3.
+- **The pushpin is chrome, not content.** Does not scroll, so a long grid cannot
+  carry it off the top. Glyph from Segoe MDL2, the shell's own icon font.
+- **The drop target holds no state.** Each OLE call becomes a synchronous
+  `SendMessageW` to the panel, so the panel stays the only thing touching its own
+  fields. The reply is the drop effect, and it keeps the path list alive across
+  the call for free.
+- `OleInitialize` replaced `CoInitializeEx`. Same apartment, plus the
+  drag-and-drop half `RegisterDragDrop` needs.
 
 ---
 
@@ -332,8 +381,9 @@ resolves the shortcut itself.
 
 Order is not recoverable. It lives in `HKCU\...\Explorer\Taskband\Favorites` as
 an undocumented binary blob of serialised PIDLs. Not worth parsing against a
-format Microsoft can change silently. Sorted by name; a manual section gives
-exact control.
+format Microsoft can change silently. Sorted by name until the user says
+otherwise, at which point that section's `order` list — written by dragging a
+tile in edit mode — is what drives it.
 
 ### Grouping by intent
 
@@ -393,5 +443,7 @@ A tool that eats your comments is a tool you stop hand-editing.
 
 - Tabs and bookmarks arrive with the extension (Milestone 4). Own sections, or
   merged into existing ones, still open.
-- Drag-and-drop pinning (Milestone 5) needs a rule for where a dropped item lands
-  when several manual sections exist.
+
+**Resolved:** where a dropped item lands with several manual sections. The one it
+was dropped on. Bands cover the whole panel, so the drop point already names a
+section; only the fallback needed deciding, and that is the first manual section.

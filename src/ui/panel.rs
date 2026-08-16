@@ -19,8 +19,8 @@ use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, HBRUSH, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint,
 };
-use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Ole::{IDropTarget, OleInitialize};
 use windows::Win32::System::WinRT::Composition::ICompositorDesktopInterop;
 use windows::Win32::System::WinRT::{
     CreateDispatcherQueueController, DQTAT_COM_NONE, DQTYPE_THREAD_CURRENT, DispatcherQueueOptions,
@@ -28,20 +28,22 @@ use windows::Win32::System::WinRT::{
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    RegisterHotKey, SetActiveWindow, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, UnregisterHotKey,
-    VK_ESCAPE,
+    RegisterHotKey, ReleaseCapture, SetActiveWindow, SetCapture, TME_LEAVE, TRACKMOUSEEVENT,
+    TrackMouseEvent, UnregisterHotKey, VK_ESCAPE,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{Interface, PCWSTR, Result, w};
 use windows_numerics::{Vector2, Vector3};
 
-use crate::config::{self, Config};
+use crate::config::{self, Config, Source};
 use crate::model::store;
-use crate::model::{Item, Section};
+use crate::model::{Item, Section, Target};
 use crate::safety;
 use crate::shell::{activate, icons, picker};
-use crate::ui::grid::{Layout, Metrics, Rect as GridRect, SectionShape};
-use crate::ui::render::{Renderer, TextColors, TilePaint, d2d_color};
+use crate::ui::dropzone;
+use crate::ui::grid::{Layout, Metrics, Rect as GridRect, SectionShape, reordered};
+use crate::ui::menu;
+use crate::ui::render::{PIN_GLYPH, Renderer, TextColors, TilePaint, d2d_color};
 use crate::ui::tray;
 use crate::{pins, watch};
 use crate::{log_dry, log_error, log_info, log_warn};
@@ -50,6 +52,21 @@ const HOTKEY_ID: i32 = 1;
 /// Drives the watchdog heartbeat while the panel is up.
 const HEARTBEAT_TIMER: usize = 1;
 const HEARTBEAT_MS: u32 = 250;
+/// A press that never travels this far is a click, not a drag.
+///
+/// Taken from the shell rather than picked, so flick's idea of "that was a
+/// drag" is the same as every other window's on this machine. This is what
+/// makes an explicit edit mode unnecessary: a 3px wobble activates, a real drag
+/// rearranges, and the two are never confused.
+fn drag_slop() -> (f32, f32) {
+    // SAFETY: plain system metric reads.
+    unsafe {
+        (
+            GetSystemMetrics(SM_CXDRAG).max(2) as f32,
+            GetSystemMetrics(SM_CYDRAG).max(2) as f32,
+        )
+    }
+}
 
 /// One tile's visuals. The brush is held so hover is a colour write rather than
 /// a walk back down the visual tree.
@@ -88,6 +105,11 @@ pub struct Panel {
     tiles: Vec<Tile>,
     /// Header visuals, in the same order as `layout.headers()`.
     headers: Vec<SpriteVisual>,
+    /// The keep-open button: its pill's brush, and its glyph. `None` if the
+    /// renderer is missing.
+    chrome: Option<(CompositionColorBrush, SpriteVisual)>,
+    /// Cursor is on the keep-open button.
+    chrome_hot: bool,
     visible: bool,
     /// Whether a `TrackMouseEvent` request is outstanding. Without one,
     /// WM_MOUSELEAVE never arrives and hover sticks on the last tile.
@@ -95,14 +117,47 @@ pub struct Panel {
     /// Foreground window at show time, so Esc can put it back.
     caller: HWND,
     hotkey_bound: bool,
+
+    /// Keep the panel up when it loses focus. Off by default — the panel's whole
+    /// job is to get out of the way — but a drag that starts in Explorer takes
+    /// focus away before there is any drag to react to, so dropping onto flick
+    /// needs the panel pinned open first.
+    keep_open: bool,
+    /// A context menu is up. It does not deactivate us, but a stray dismissal
+    /// while a menu is open would be baffling, so it is treated the same.
+    menu_open: bool,
+    /// A button is down on a tile. It becomes a drag past the slop threshold and
+    /// an activation if it never gets there.
+    press: Option<Press>,
+    /// Section highlighted for a drop that is still in flight.
+    drop_band: Option<usize>,
+    /// Held for the window's lifetime; dropping it would unregister the target.
+    _drop_target: Option<IDropTarget>,
+}
+
+/// A pressed tile, which may still turn out to be either a click or a drag.
+struct Press {
+    /// Flat index of the tile under the press.
+    tile: usize,
+    /// Its section, if that section's order is flick's to rearrange.
+    band: Option<usize>,
+    /// Where in the tile it was pressed, so a drag does not jump to the cursor.
+    grab: (f32, f32),
+    start: (f32, f32),
+    /// Past the slop threshold: no longer a click.
+    dragging: bool,
+    /// Insertion slot within the section the cursor is currently over.
+    slot: usize,
 }
 
 impl Panel {
     pub fn create(config: Config) -> Result<Box<Panel>> {
-        // SAFETY: standard apartment init for a UI thread; the composition
-        // stack requires an initialized apartment before the queue exists.
+        // SAFETY: apartment-threaded init for a UI thread, which is what the
+        // composition stack needs before the dispatcher queue exists. The OLE
+        // form rather than `CoInitializeEx` because `RegisterDragDrop` below
+        // needs the drag-and-drop half initialized too.
         unsafe {
-            CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
+            OleInitialize(None)?;
         }
 
         let hwnd = unsafe { create_window()? };
@@ -169,10 +224,17 @@ impl Panel {
             hover: None,
             tiles: Vec::new(),
             headers: Vec::new(),
+            chrome: None,
+            chrome_hot: false,
             visible: false,
             tracking_mouse: false,
             caller: HWND(std::ptr::null_mut()),
             hotkey_bound: false,
+            keep_open: false,
+            menu_open: false,
+            press: None,
+            drop_band: None,
+            _drop_target: dropzone::register(hwnd),
         });
 
         // Hand the window a back-pointer so the wndproc can find us. Messages
@@ -320,6 +382,12 @@ impl Panel {
         }
         self.visible = false;
         self.tracking_mouse = false;
+        // Keep-open lasts as long as the panel is on screen. A pin that outlives
+        // the thing it pinned would leave the next summon behaving oddly with no
+        // memory of why.
+        self.keep_open = false;
+        self.press = None;
+        self.drop_band = None;
         safety::mark_shown(false);
 
         // SAFETY: our own window, on our own thread.
@@ -343,6 +411,8 @@ impl Panel {
         }
         self.tiles.clear();
         self.headers.clear();
+        self.chrome = None;
+        self.chrome_hot = false;
         self.items.clear();
         self.sections.clear();
     }
@@ -352,6 +422,9 @@ impl Panel {
         children.RemoveAll()?;
         self.tiles.clear();
         self.headers.clear();
+        // `chrome_hot` deliberately survives: a rebuild under a resting cursor
+        // should not make the button forget it is being pointed at.
+        self.chrome = None;
 
         let p = self.layout.panel;
         let scale = self.scale();
@@ -447,7 +520,77 @@ impl Panel {
         }
 
         self.tiles = built;
+        self.build_chrome(radius);
         Ok(())
+    }
+
+    /// The keep-open pushpin, built last so it sits above the tiles: the grid
+    /// scrolls under it rather than carrying it off the top.
+    fn build_chrome(&mut self, radius: f32) {
+        let Some(renderer) = &self.renderer else { return };
+        let rect = self.layout.chrome();
+        if rect.w < 16.0 || rect.h < 12.0 {
+            return;
+        }
+
+        let hot = self.chrome_hot;
+        let built = (|| -> Result<(CompositionColorBrush, SpriteVisual)> {
+            let children = self.content.Children()?;
+            let (pill, brush) = self.rounded_rect(
+                Vector2 { X: rect.w, Y: rect.h },
+                (rect.h / 2.0).min(radius * 2.0),
+                self.chrome_color(hot),
+            )?;
+            pill.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 })?;
+            children.InsertAtTop(&pill)?;
+
+            let surface = renderer.create_surface(rect.w, rect.h)?;
+            renderer.draw_glyph(
+                &surface,
+                rect.w,
+                rect.h,
+                PIN_GLYPH,
+                d2d_color(&self.config.theme.text),
+            )?;
+            let sprite = self.compositor.CreateSpriteVisual()?;
+            sprite.SetSize(Vector2 { X: rect.w, Y: rect.h })?;
+            sprite.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 })?;
+            sprite.SetBrush(&self.compositor.CreateSurfaceBrushWithSurface(&surface)?)?;
+            children.InsertAtTop(&sprite)?;
+            Ok((brush, sprite))
+        })();
+
+        match built {
+            // A missing button is not worth refusing to show the panel over:
+            // the right-click menu carries the same toggle.
+            Err(e) => log_warn!("could not draw the keep-open button: {e}"),
+            Ok(chrome) => self.chrome = Some(chrome),
+        }
+    }
+
+    fn chrome_color(&self, hot: bool) -> Color {
+        let theme = &self.config.theme;
+        color_of(if hot {
+            &theme.tile_hover
+        } else if self.keep_open {
+            &theme.tile_drag
+        } else {
+            &theme.tile
+        })
+    }
+
+    fn chrome_hit(&self, x: f32, y: f32) -> bool {
+        self.chrome.is_some() && self.layout.chrome().contains(x, y)
+    }
+
+    fn set_chrome_hot(&mut self, hot: bool) {
+        if self.chrome_hot == hot {
+            return;
+        }
+        self.chrome_hot = hot;
+        if let Some((brush, _)) = &self.chrome {
+            let _ = brush.SetColor(self.chrome_color(hot));
+        }
     }
 
     fn text_colors(&self) -> TextColors {
@@ -655,6 +798,403 @@ impl Panel {
         }
     }
 
+    // --- rearranging, without a mode ---
+
+    /// Which config section a tile belongs to.
+    fn section_of(&self, tile: usize) -> Option<&Section> {
+        let band = self.layout.band_of(tile)?;
+        self.section_in_band(band)
+    }
+
+    fn section_in_band(&self, band: usize) -> Option<&Section> {
+        let band = self.layout.bands().get(band)?;
+        self.sections.get(band.section)
+    }
+
+    /// Only pins flick owns can be removed. A taskbar entry belongs to the
+    /// taskbar, and unpinning it there is Windows' business, not flick's
+    /// (safety rule 3).
+    fn removable(&self, tile: usize) -> bool {
+        self.section_of(tile).is_some_and(|s| s.source == Source::Manual)
+    }
+
+    /// Window tiles are MRU ordered by the foreground hook, so a saved order
+    /// would fight the hook on every focus change. Pinned sections have an order
+    /// that is flick's to keep.
+    fn draggable(&self, tile: usize) -> bool {
+        self.section_of(tile)
+            .is_some_and(|s| matches!(s.source, Source::Manual | Source::Taskbar))
+    }
+
+    /// Take a press on a tile. Whether it turns out to be a click or a drag is
+    /// decided later, by how far the cursor travels.
+    fn begin_press(&mut self, tile: usize, x: f32, y: f32) {
+        let rect = self.layout.tile_rect(tile, self.scroll);
+        let band = self.layout.band_of(tile).filter(|_| self.draggable(tile));
+        // SAFETY: our own window. Capture keeps the moves coming when the cursor
+        // leaves the panel mid-drag, and makes the release ours whatever it is
+        // over.
+        unsafe {
+            SetCapture(self.hwnd);
+        }
+        self.press = Some(Press {
+            tile,
+            band,
+            grab: (x - rect.x, y - rect.y),
+            start: (x, y),
+            dragging: false,
+            slot: band.map_or(0, |band| tile - self.layout.bands()[band].first),
+        });
+    }
+
+    fn press_moved_to(&mut self, x: f32, y: f32) {
+        let Some(mut press) = self.press.take() else { return };
+
+        if !press.dragging {
+            let (slop_x, slop_y) = drag_slop();
+            if (x - press.start.0).abs() <= slop_x && (y - press.start.1).abs() <= slop_y {
+                self.press = Some(press);
+                return;
+            }
+            press.dragging = true;
+            // Past the threshold on a tile flick cannot rearrange: nothing to
+            // drag, and no activation either — this was not a click.
+            if press.band.is_none() {
+                self.press = Some(press);
+                return;
+            }
+            if let Some(item) = self.items.get(press.tile) {
+                log_info!("picked up \"{}\"", item.title);
+            }
+            // Lift the tile out of the flow: on top of its neighbours, and
+            // coloured so it reads as held rather than hovered.
+            if let Some(tile) = self.tiles.get(press.tile)
+                && let Ok(children) = self.content.Children()
+            {
+                let _ = children.Remove(&tile.root);
+                let _ = children.InsertAtTop(&tile.root);
+                let _ = tile.brush.SetColor(color_of(&self.config.theme.tile_drag));
+            }
+        }
+
+        if let Some(band) = press.band {
+            press.slot = self.layout.insert_slot(band, x, y, self.scroll);
+            self.preview(&press);
+
+            if let Some(tile) = self.tiles.get(press.tile) {
+                let _ = tile.root.SetOffset(Vector3 {
+                    X: x - press.grab.0,
+                    Y: y - press.grab.1,
+                    Z: 0.0,
+                });
+            }
+        }
+        self.press = Some(press);
+    }
+
+    /// Slide the section's other tiles into the order they would take if the
+    /// drag ended here.
+    fn preview(&self, press: &Press) {
+        let Some(band) = press.band.and_then(|band| self.layout.bands().get(band)) else {
+            return;
+        };
+        let from = press.tile - band.first;
+        for (position, slot) in reordered(band.count, from, press.slot).iter().enumerate() {
+            if *slot == from {
+                continue;
+            }
+            let rect = self.layout.tile_rect(band.first + position, self.scroll);
+            if let Some(tile) = self.tiles.get(band.first + slot) {
+                let _ = tile.root.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 });
+            }
+        }
+    }
+
+    /// Put everything back where the layout says it goes.
+    fn cancel_press(&mut self, press: &Press) {
+        // SAFETY: releasing a capture we no longer hold is harmless.
+        unsafe {
+            let _ = ReleaseCapture();
+        }
+        if let Some(tile) = self.tiles.get(press.tile) {
+            let _ = tile.brush.SetColor(color_of(&self.config.theme.tile));
+        }
+        self.reposition();
+    }
+
+    /// Write the new order out, then reload so the grid and the file agree.
+    fn commit_drag(&mut self, press: &Press) {
+        // SAFETY: releasing a capture we no longer hold is harmless.
+        unsafe {
+            let _ = ReleaseCapture();
+        }
+        let Some(band) = press
+            .band
+            .and_then(|band| self.layout.bands().get(band))
+            .cloned()
+        else {
+            return;
+        };
+        let Some(section) = self.sections.get(band.section) else {
+            return;
+        };
+
+        let from = press.tile - band.first;
+        let slots = reordered(band.count, from, press.slot);
+        if slots.iter().enumerate().all(|(position, slot)| position == *slot) {
+            self.cancel_press(press);
+            return;
+        }
+
+        // What identifies an entry in config: manual sections list parsing
+        // names, taskbar sections list pin names.
+        let key = |item: &Item| match section.source {
+            Source::Manual => item.shell_target().map(str::to_owned),
+            _ => Some(item.title.clone()),
+        };
+        let Some(keys) = slots
+            .iter()
+            .map(|slot| self.items.get(band.first + slot).and_then(key))
+            .collect::<Option<Vec<String>>>()
+        else {
+            log_warn!("could not identify every tile in \"{}\"; order not saved", section.title);
+            self.cancel_press(press);
+            return;
+        };
+
+        let title = section.title.clone();
+        let saved = match section.source {
+            Source::Manual => pins::reorder(&title, &keys),
+            Source::Taskbar => pins::set_order(&title, &keys),
+            Source::Windows => false,
+        };
+        if saved {
+            self.reload_config();
+        } else {
+            self.cancel_press(press);
+        }
+    }
+
+    // --- the tile menu ---
+
+    /// Right-click on a tile, or on the panel itself.
+    ///
+    /// Managing a pin lives here rather than in a mode, and the most useful
+    /// entry is on the tiles that are not pins at all: something already running
+    /// is the thing a user most often wants to pin, and flick is already showing
+    /// it.
+    fn show_menu(&mut self, lparam: LPARAM) {
+        let (x, y) = point_of(lparam);
+        let tile = self.layout.hit_test(x, y, self.scroll);
+        let entries = self.menu_for(tile);
+
+        self.menu_open = true;
+        let chosen = menu::show(self.hwnd, &entries);
+        self.menu_open = false;
+
+        match chosen {
+            Some(menu::CMD_PIN_APP) => self.pin_app_of(tile),
+            Some(menu::CMD_UNPIN) => self.unpin(tile),
+            Some(menu::CMD_OPEN_LOCATION) => self.open_location(tile),
+            Some(menu::CMD_ADD_APP) => {
+                let picked = picker::pick_app(self.hwnd);
+                self.pin(picked);
+            }
+            Some(menu::CMD_ADD_FOLDER) => {
+                let picked = picker::pick_folder(self.hwnd);
+                self.pin(picked);
+            }
+            Some(menu::CMD_ADD_FILE) => {
+                let picked = picker::pick_file(self.hwnd);
+                self.pin(picked);
+            }
+            Some(menu::CMD_KEEP_OPEN) => self.set_keep_open(!self.keep_open),
+            Some(menu::CMD_SETTINGS) => open_config(),
+            _ => {}
+        }
+    }
+
+    fn menu_for(&self, tile: Option<usize>) -> Vec<Option<menu::Entry>> {
+        let mut entries = Vec::new();
+
+        if let Some(index) = tile
+            && let Some(item) = self.items.get(index)
+        {
+            match item.target {
+                // The pin-what-is-in-front case. No picker, no typing: the app is
+                // already on screen and flick already knows its path.
+                Target::Window(_) => {
+                    if item.icon_source.is_some() {
+                        // Not "Pin <name>": the name available here is the
+                        // executable's stem, which reads as "Pin obs64".
+                        entries.push(Some(menu::Entry::new(menu::CMD_PIN_APP, "Pin this app")));
+                    }
+                }
+                Target::Shell(_) => {
+                    if self.removable(index) {
+                        entries.push(Some(menu::Entry::new(menu::CMD_UNPIN, "Unpin")));
+                    }
+                }
+            }
+            if self.locatable(index) {
+                entries.push(Some(menu::Entry::new(
+                    menu::CMD_OPEN_LOCATION,
+                    "Open file location",
+                )));
+            }
+            if !entries.is_empty() {
+                entries.push(None);
+            }
+        }
+
+        entries.push(Some(menu::Entry::new(menu::CMD_ADD_APP, "Add app...")));
+        entries.push(Some(menu::Entry::new(menu::CMD_ADD_FOLDER, "Add folder...")));
+        entries.push(Some(menu::Entry::new(
+            menu::CMD_ADD_FILE,
+            "Add file or shortcut...",
+        )));
+        entries.push(None);
+        entries.push(Some(menu::Entry::checkable(
+            menu::CMD_KEEP_OPEN,
+            "Keep panel open",
+            self.keep_open,
+        )));
+        entries.push(Some(menu::Entry::new(menu::CMD_SETTINGS, "Settings...")));
+        entries
+    }
+
+    /// Pin the app behind a running window. Its icon source is its executable,
+    /// which is exactly the parsing name a pin stores.
+    fn pin_app_of(&mut self, tile: Option<usize>) {
+        let target = tile
+            .and_then(|index| self.items.get(index))
+            .filter(|item| matches!(item.target, Target::Window(_)))
+            .and_then(|item| item.icon_source.clone());
+        self.pin(target);
+    }
+
+    fn unpin(&mut self, tile: Option<usize>) {
+        let Some(tile) = tile else { return };
+        let (Some(section), Some(item)) = (self.section_of(tile), self.items.get(tile)) else {
+            return;
+        };
+        let (Some(target), title) = (item.shell_target(), section.title.clone()) else {
+            return;
+        };
+        if pins::remove(&title, target) {
+            self.reload_config();
+        }
+    }
+
+    /// Only for tiles backed by something on disk. A settings page or a URL has
+    /// no folder to show.
+    fn locatable(&self, tile: usize) -> bool {
+        self.items
+            .get(tile)
+            .and_then(|item| item.icon_source.as_deref())
+            .is_some_and(|source| std::path::Path::new(source).exists())
+    }
+
+    fn open_location(&mut self, tile: Option<usize>) {
+        let Some(source) = tile
+            .and_then(|index| self.items.get(index))
+            .and_then(|item| item.icon_source.clone())
+        else {
+            return;
+        };
+        // Explorer's own "show me this file" verb, so the target is revealed and
+        // selected rather than opened.
+        let arguments = windows::core::HSTRING::from(format!("/select,\"{source}\""));
+        self.hide(false);
+        // SAFETY: both strings outlive the call, and `open` never elevates.
+        let launched = unsafe {
+            windows::Win32::UI::Shell::ShellExecuteW(
+                None,
+                w!("open"),
+                w!("explorer.exe"),
+                &arguments,
+                None,
+                SW_SHOWNORMAL,
+            )
+        };
+        if launched.0 as isize <= 32 {
+            log_warn!("could not show {source} in Explorer");
+        }
+    }
+
+    fn set_keep_open(&mut self, on: bool) {
+        if self.keep_open == on {
+            return;
+        }
+        self.keep_open = on;
+        log_info!("keep panel open: {on}");
+        if let Some((brush, _)) = &self.chrome {
+            let _ = brush.SetColor(self.chrome_color(self.chrome_hot));
+        }
+    }
+
+    // --- drops from Explorer ---
+
+    /// Which section a drop at this point would land in: the one under the
+    /// cursor when it takes pins, otherwise the first section that does.
+    fn drop_target(&self, lparam: LPARAM) -> Option<usize> {
+        if !self.visible {
+            return None;
+        }
+        let (x, y) = point_of(lparam);
+        let under = self
+            .layout
+            .band_at(x, y, self.scroll)
+            .filter(|band| {
+                self.section_in_band(*band).is_some_and(|s| s.source == Source::Manual)
+            });
+        under.or_else(|| {
+            (0..self.layout.bands().len()).find(|band| {
+                self.section_in_band(*band).is_some_and(|s| s.source == Source::Manual)
+            })
+        })
+    }
+
+    /// Tint a whole section to show where a drop would go. There is no cursor to
+    /// follow here — the drag belongs to Explorer — so the target has to be
+    /// visible in the panel itself.
+    fn set_drop_band(&mut self, band: Option<usize>) {
+        if self.drop_band == band {
+            return;
+        }
+        let normal = color_of(&self.config.theme.tile);
+        let hot = color_of(&self.config.theme.tile_hover);
+        for (slot, want) in [(self.drop_band, normal), (band, hot)] {
+            let Some(band) = slot.and_then(|index| self.layout.bands().get(index)) else {
+                continue;
+            };
+            for tile in self.tiles.iter().skip(band.first).take(band.count) {
+                let _ = tile.brush.SetColor(want);
+            }
+        }
+        self.drop_band = band;
+    }
+
+    fn on_drop(&mut self, paths: &[String], lparam: LPARAM) -> bool {
+        let Some(band) = self.drop_target(lparam) else {
+            return false;
+        };
+        self.set_drop_band(None);
+        let title = self.section_in_band(band).map(|s| s.title.clone());
+
+        let mut pinned = 0;
+        for path in paths {
+            if pins::add_into(title.as_deref(), path).is_some() {
+                pinned += 1;
+            }
+        }
+        log_info!("dropped {pinned} of {} item(s)", paths.len());
+        if pinned > 0 {
+            self.reload_config();
+        }
+        pinned > 0
+    }
+
     /// Re-read the config and apply it live. Only the hotkey needs unbinding;
     /// everything else is read fresh on the next show.
     fn reload_config(&mut self) {
@@ -682,8 +1222,7 @@ impl Panel {
     }
 
     fn cursor_index(&self, lparam: LPARAM) -> Option<usize> {
-        let x = (lparam.0 & 0xFFFF) as i16 as f32;
-        let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
+        let (x, y) = point_of(lparam);
         self.layout.hit_test(x, y, self.scroll)
     }
 
@@ -742,24 +1281,95 @@ impl Panel {
                 Some(LRESULT(0))
             }
             WM_MOUSEMOVE => {
+                if self.press.is_some() {
+                    let (x, y) = point_of(lparam);
+                    self.press_moved_to(x, y);
+                    return Some(LRESULT(0));
+                }
                 self.track_mouse_leave();
-                let index = self.cursor_index(lparam);
+                let (x, y) = point_of(lparam);
+                let on_chrome = self.chrome_hit(x, y);
+                self.set_chrome_hot(on_chrome);
+                let index = if on_chrome { None } else { self.cursor_index(lparam) };
                 self.set_hover(index);
                 Some(LRESULT(0))
             }
             WM_MOUSELEAVE => {
                 self.tracking_mouse = false;
                 self.set_hover(None);
+                self.set_chrome_hot(false);
+                Some(LRESULT(0))
+            }
+            // A press is not yet a click. Which one it becomes is decided on
+            // release, by whether the cursor travelled far enough to be a drag.
+            WM_LBUTTONDOWN => {
+                let (x, y) = point_of(lparam);
+                if self.chrome_hit(x, y) {
+                    // The button answers on release, like any button.
+                    return Some(LRESULT(0));
+                }
+                if let Some(index) = self.layout.hit_test(x, y, self.scroll) {
+                    self.begin_press(index, x, y);
+                }
                 Some(LRESULT(0))
             }
             WM_LBUTTONUP => {
-                match self.cursor_index(lparam) {
-                    Some(index) => self.activate(index),
-                    // A click on the panel's own padding dismisses, matching the
-                    // click-outside behaviour.
-                    None => self.hide(true),
+                if let Some(press) = self.press.take() {
+                    match (press.dragging, press.band) {
+                        // Travelled, and over something flick can rearrange.
+                        (true, Some(_)) => self.commit_drag(&press),
+                        // Travelled, but not a rearrangeable tile. A drag that
+                        // went nowhere is not an activation.
+                        (true, None) => self.cancel_press(&press),
+                        // Never travelled: an ordinary click.
+                        (false, _) => {
+                            self.cancel_press(&press);
+                            let (x, y) = point_of(lparam);
+                            if self.layout.hit_test(x, y, self.scroll) == Some(press.tile) {
+                                self.activate(press.tile);
+                            }
+                        }
+                    }
+                    return Some(LRESULT(0));
+                }
+                let (x, y) = point_of(lparam);
+                if self.chrome_hit(x, y) {
+                    self.set_keep_open(!self.keep_open);
+                    return Some(LRESULT(0));
+                }
+                // A click on the panel's own padding dismisses, matching the
+                // click-outside behaviour.
+                if self.cursor_index(lparam).is_none() {
+                    self.hide(true);
                 }
                 Some(LRESULT(0))
+            }
+            WM_RBUTTONUP => {
+                self.show_menu(lparam);
+                Some(LRESULT(0))
+            }
+            // Capture lost to something else — an alt-tab, a system dialog.
+            WM_CAPTURECHANGED => {
+                if let Some(press) = self.press.take() {
+                    self.cancel_press(&press);
+                }
+                Some(LRESULT(0))
+            }
+            dropzone::WM_DRAG_OVER => {
+                let band = self.drop_target(lparam);
+                self.set_drop_band(band);
+                Some(LRESULT(band.is_some() as isize))
+            }
+            dropzone::WM_DRAG_LEAVE => {
+                self.set_drop_band(None);
+                Some(LRESULT(0))
+            }
+            dropzone::WM_DRAG_DROP => {
+                // SAFETY: the sender blocks in `SendMessageW` on this thread for
+                // the whole call, so the Vec it points at is alive and unaliased.
+                let paths = unsafe { &*(wparam.0 as *const Vec<String>) };
+                let taken = self.on_drop(paths, lparam);
+                Some(LRESULT(taken as isize))
             }
             WM_MOUSEWHEEL => {
                 let delta = ((wparam.0 >> 16) & 0xFFFF) as i16 as f32;
@@ -770,8 +1380,13 @@ impl Panel {
                 self.hide(true);
                 Some(LRESULT(0))
             }
-            // Clicking away, or anything else stealing focus, dismisses.
-            WM_ACTIVATE if (wparam.0 & 0xFFFF) as u32 == WA_INACTIVE => {
+            // Clicking away, or anything else stealing focus, dismisses — unless
+            // the panel is pinned open, or a menu of ours is up.
+            WM_ACTIVATE
+                if (wparam.0 & 0xFFFF) as u32 == WA_INACTIVE
+                    && !self.keep_open
+                    && !self.menu_open =>
+            {
                 self.hide(false);
                 Some(LRESULT(0))
             }
@@ -786,6 +1401,7 @@ impl Panel {
 
 impl Drop for Panel {
     fn drop(&mut self) {
+        dropzone::revoke(self.hwnd);
         if self.hotkey_bound {
             // SAFETY: matches the successful RegisterHotKey in bind_hotkey.
             unsafe {
@@ -831,6 +1447,15 @@ fn open_config() {
     if fallback.0 as isize <= 32 {
         log_warn!("could not open {} in an editor", path.display());
     }
+}
+
+/// Client point out of a mouse message's lparam. Signed, because a captured
+/// drag reports positions outside the window.
+fn point_of(lparam: LPARAM) -> (f32, f32) {
+    (
+        (lparam.0 & 0xFFFF) as i16 as f32,
+        ((lparam.0 >> 16) & 0xFFFF) as i16 as f32,
+    )
 }
 
 /// The detail line sits under the title; same hue, less presence.

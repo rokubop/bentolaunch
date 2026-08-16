@@ -43,7 +43,7 @@ pub fn install(hwnd: HWND) {
     // SAFETY: a stock system icon; no resource of ours to keep alive.
     data.hIcon = unsafe { LoadIconW(None, IDI_APPLICATION).unwrap_or_default() };
 
-    let tip = "flick — dry run";
+    let tip = "flick";
     for (slot, unit) in data.szTip.iter_mut().zip(tip.encode_utf16()) {
         *slot = unit;
     }

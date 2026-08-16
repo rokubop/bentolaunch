@@ -30,6 +30,37 @@ Right-click the tray icon:
 
 Log: `%LOCALAPPDATA%\flick\flick.log`
 
+## Arranging
+
+There is no edit mode. Same as the taskbar or the bookmarks bar:
+
+| Do | Get |
+|---|---|
+| Click a tile | Switch to it, or launch it |
+| Drag a pinned tile | Reorder it inside its section |
+| Right-click a running window | **Pin this app** |
+| Right-click a pin | **Unpin**, **Open file location** |
+| Right-click anywhere | Add app/folder/file, keep open, settings |
+| Drag a file or folder in from Explorer | Pin it where you dropped it |
+
+Click and drag never get confused: under the system's drag threshold is a click,
+past it is a drag.
+
+Only pinned tiles move. Running windows stay in most-recent order.
+
+Every change goes straight into `flick.toml`. Nothing is remembered anywhere
+else, and all of it can be undone by hand. Drops land in the section you dropped
+on, or the first manual one. Taskbar order is saved as an `order` list, since
+Windows does not expose its own.
+
+### Keeping the panel open
+
+Pushpin, top right. Also in the right-click menu.
+
+The panel normally closes the moment it loses focus. A drag from Explorer takes
+focus before there is anything to drop, so pin it open first, then go get the
+file. Resets when the panel closes.
+
 ## Config
 
 `flick.toml`, next to the exe. Written with defaults on first run.
@@ -68,6 +99,7 @@ source = "windows"   # no match: everything not claimed above
 [[sections]]
 title  = "Launch"
 source = "taskbar"   # apps pinned to your Windows taskbar
+order  = []          # pin names, in order; written by dragging a tile
 
 [[sections]]
 title  = "Places"
@@ -131,14 +163,15 @@ tile = "#FF2A2A32"
 tile_hover = "#FF3C3C48"
 text = "#FFE8E8EC"
 header = "#FF9A9AA8"
+tile_drag = "#FF4A4460"   # a tile being dragged, and the pushpin when it is on
 ```
 
 ## Known gaps
 
-- Taskbar pin **order** is not the taskbar's; entries are sorted by name. The
-  real order is an undocumented registry blob. Use a manual section for exact
-  control.
+- Taskbar pin order is alphabetical until you arrange it. Windows keeps its own
+  order in an undocumented registry blob, so dragging a tile writes an `order`
+  list instead.
 - Browser tabs and bookmarks need a browser extension. Not built yet.
-- Pinning is via the tray pickers or `flick.toml`. No drag-and-drop, no
-  drag-to-reorder, no edit mode yet.
+- Dragging moves a tile within its own section. Moving one between sections
+  means editing `flick.toml`.
 - Window tiles show icons, not live previews.

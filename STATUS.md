@@ -4,11 +4,11 @@ Where flick stands and what to pick up next.
 
 `DESIGN.md` is the source of truth for *why*. This file is *where*.
 
-Last updated: 2026-08-15, end of the first implementation session.
+Last updated: 2026-08-15, end of the second implementation session.
 
 ## Working
 
-Milestones 1 and 2 done, plus grouping and config UX pulled forward.
+Milestones 1, 2 and 5 done, plus grouping and config UX pulled forward.
 
 | Area | State |
 |---|---|
@@ -22,11 +22,14 @@ Milestones 1 and 2 done, plus grouping and config UX pulled forward.
 | Targets | Paths, folders, `.lnk`, Store apps, `ms-settings:`, `https:` |
 | Taskbar pins | Read from the `User Pinned\TaskBar` `.lnk` folder |
 | Config | Live reload on save, tray pickers write pins via `toml_edit` |
-| Tray | Show, add app/folder/file, edit settings, exit |
+| Tray | Show, add app/folder/file, arrange tiles, edit settings, exit |
+| Arranging | No mode. Drag past the shell's threshold to reorder, right-click to pin/unpin, drop from Explorer |
+| Keep open | Pushpin button, or the right-click menu. Off by default, resets on hide |
 | Safety | `asInvoker`, panic hook, watchdog, no `WH_KEYBOARD_LL` |
 
-42 tests. Layout, hotkey parsing, colour parsing, section claiming, and
-config-writing are all covered. `cargo clippy --all-targets` is clean.
+61 tests: layout, bands, chrome placement, drop slots, reorder arithmetic,
+hotkey and colour parsing, section claiming, every config-writing path.
+`cargo clippy --all-targets` clean.
 
 ## Verified on the real machine
 
@@ -34,28 +37,42 @@ config-writing are all covered. `cargo clippy --all-targets` is clean.
 - Every `focused` / `launched` log line matched the resulting foreground window.
 - Live reload applied a tile size change and a hotkey swap in ~3s, no restart.
 - Icons resolve for exes, folders, `ms-settings:` and `https:`.
+- The tray pickers, end to end.
+- Dragging a manual tile rewrote that section's `items` in the new order, kept a
+  `{ title, target }` entry's title, reloaded live.
+- Dragging a taskbar tile wrote an `order` list of pin names and applied it.
+- Unpinning removed that entry and left the rest alone.
+
+Input for those was posted, not typed. Covers everything except what the OS owns:
+real capture, and the OLE drag loop.
+
+**Those runs predate the removal of edit mode.** The write paths underneath are
+unchanged. The click-versus-drag handling and the right-click menu on top of them
+have never been run.
 
 ## Not verified
 
-- **The three tray pickers.** Modal dialogs need real input, so they were never
-  exercised end to end. The `toml_edit` write path underneath them is tested. Try
-  "Add app…" from the tray first thing.
-- Behaviour past ~60 tiles, and scrolling with many sections.
-- Real hotkey presses, as opposed to a posted `WM_HOTKEY`. Automated testing
-  drives the panel by posting the message, which shows it but does **not** grant
-  foreground rights: those need genuine input. The panel then sometimes loses
-  activation and self-dismisses within a few hundred ms. Harmless in real use,
-  but it makes screenshot automation racy, so capture within ~250ms of the post.
-- Anything on a second monitor with a different DPI. The scale factor is read per
-  show, but a mid-session DPI change is untested.
+- **Everything since edit mode came out**: drag threshold, right-click menu,
+  "Pin this app", pushpin. Compiles, passes tests, never run.
+- **Dropping from Explorer.** Needs a real cross-process mouse drag; cannot be
+  posted. Everything under it is tested: the drop target answers, the
+  section-under-cursor rule, the same `add` path the pickers use. Pin the panel
+  open first, then drag a folder onto it.
+- Past ~60 tiles, and scrolling with many sections.
+- Real hotkey presses, as opposed to a posted `WM_HOTKEY`. Posting shows the
+  panel but grants no foreground rights, so it sometimes self-dismisses within a
+  few hundred ms. Capture within ~250ms. Screenshots must come from the OS
+  (PrtScn): the panel is `WS_EX_NOREDIRECTIONBITMAP`, so `BitBlt` off the screen
+  DC reads nothing.
+- A second monitor at a different DPI. Scale is read per show; a mid-session
+  change is untested.
 
 ## Known gaps
 
-- Taskbar pin order is alphabetical, not the taskbar's. The real order is an
-  undocumented registry blob. A manual section gives exact control.
 - Window tiles show icons, not live previews.
 - No browser tabs or bookmarks.
-- No drag-and-drop, no reordering, no edit mode.
+- Dragging moves a tile within its own section only. Moving one between sections
+  is a config edit.
 - Config edits need the file or the tray. No in-app settings UI.
 
 ## Next steps
@@ -63,17 +80,7 @@ config-writing are all covered. `cargo clippy --all-targets` is clean.
 In recommended order. Each is independent; pick by what is most annoying in
 daily use.
 
-**1. Edit mode + drop-to-pin** (Milestone 5, moved up)
-
-The natural completion of the config work already done. Edit mode first, because
-without an explicit mode a slightly-dragged click reorders the grid when the user
-meant to switch. Then `IDropTarget` so a file or folder dragged from Explorer
-pins itself, and drag-to-reorder for taskbar and manual sections only.
-
-Blockers to solve: dismissal must be suspended while a drag is in flight, and
-reorder needs a persisted order that does not fight MRU on window tiles.
-
-**2. Live previews** (Milestone 3)
+**1. Live previews** (Milestone 3)
 
 The visible upgrade: window tiles become live captures instead of icons. Needs a
 sparse package for `graphicsCaptureWithoutBorder`, one-time borderless consent,
@@ -84,7 +91,7 @@ existing structure without restructuring.
 Biggest single risk left in the project. The yellow capture border is unusable at
 50 tiles and suppressing it depends on package identity working as documented.
 
-**3. Browser tabs and bookmarks** (Milestone 4)
+**2. Browser tabs and bookmarks** (Milestone 4)
 
 The largest gap in coverage: tabs are a big share of what is worth switching to.
 Localhost WebSocket server plus a Chromium extension. Test against a separate
@@ -93,17 +100,19 @@ Chrome profile first.
 Once that channel exists, a bookmark picker is just another entry in the tray
 menu, reusing the pin-writing path.
 
-**4. Smaller things**
+**3. Smaller things**
 
 - Type-to-filter. The panel already takes activation normally, so keyboard input
-  needs no extra plumbing.
+  needs no extra plumbing, and no letter key is spoken for.
 - Keyboard navigation, arrows plus Enter.
+- Dragging a tile between sections. The write path exists already (remove plus
+  add); the drag has to survive crossing a band boundary, which today clamps to
+  the section it started in.
 - Release build and a real tray icon. Currently a stock system icon.
 - Auto-start entry, one of the four reversible footprint items in `DESIGN.md`.
 
 ## Open questions
 
-- Where a dropped item lands when several manual sections exist.
 - Whether tabs get their own section or merge into `Browsing`.
 - Whether an in-app settings UI is worth building, given every control would be
   hand-drawn. See the rejected-alternatives reasoning in `DESIGN.md`.

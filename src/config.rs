@@ -55,6 +55,13 @@ pub struct SectionConfig {
     /// such as `ms-settings:display` or `https://example.com`.
     #[serde(default)]
     pub items: Vec<ManualItem>,
+    /// Only for `source = "taskbar"`. Pin names, in the order they should
+    /// appear. Windows does not expose the taskbar's own order (see
+    /// `model/taskbar.rs`), so this is where dragging a taskbar tile in edit
+    /// mode records what it did. Anything not listed keeps following, sorted by
+    /// name.
+    #[serde(default)]
+    pub order: Vec<String>,
 }
 
 /// A manual entry, either bare or with a chosen label:
@@ -128,6 +135,9 @@ pub struct Theme {
     pub tile_hover: String,
     pub text: String,
     pub header: String,
+    /// Fill for a tile being dragged, and for the keep-open button while it is
+    /// holding the panel open.
+    pub tile_drag: String,
 }
 
 /// Browsers, grouped together because that is how they are thought about. Any
@@ -149,6 +159,7 @@ fn section(title: &str, source: Source, matches: &[&str]) -> SectionConfig {
         source,
         matches: matches.iter().map(|s| (*s).to_string()).collect(),
         items: Vec::new(),
+        order: Vec::new(),
     }
 }
 
@@ -200,6 +211,7 @@ impl Default for Theme {
             tile_hover: "#FF3C3C48".into(),
             text: "#FFE8E8EC".into(),
             header: "#FF9A9AA8".into(),
+            tile_drag: "#FF4A4460".into(),
         }
     }
 }
