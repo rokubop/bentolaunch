@@ -70,12 +70,67 @@ pub enum Source {
     Tabs,
 }
 
+/// A section's sources, in the order their tiles appear under the one header.
+///
+/// `source = "windows"` and `source = ["windows", "tabs"]` are both valid. A
+/// section costs a header plus a whole row even for one tile, so merging is how
+/// a panel of mostly-empty sections gets its vertical space back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sources(Vec<Source>);
+
+impl Sources {
+    pub fn iter(&self) -> impl Iterator<Item = Source> + '_ {
+        self.0.iter().copied()
+    }
+
+    pub fn contains(&self, source: Source) -> bool {
+        self.0.contains(&source)
+    }
+}
+
+impl From<Source> for Sources {
+    fn from(source: Source) -> Self {
+        Self(vec![source])
+    }
+}
+
+impl Serialize for Sources {
+    /// A single source round-trips as a bare string, so merging a section is
+    /// the only thing that ever turns it into a list.
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self.0.as_slice() {
+            [one] => one.serialize(s),
+            many => many.serialize(s),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Sources {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            One(Source),
+            Many(Vec<Source>),
+        }
+
+        let list = match Raw::deserialize(d)? {
+            Raw::One(source) => vec![source],
+            Raw::Many(list) => list,
+        };
+        if list.is_empty() {
+            return Err(serde::de::Error::custom("a section needs at least one source"));
+        }
+        Ok(Self(list))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SectionConfig {
     /// Shown as the section header. Empty string hides the header.
     pub title: String,
-    pub source: Source,
+    pub source: Sources,
     /// Only for `source = "windows"`. Process names this section claims, e.g.
     /// `["chrome.exe", "firefox.exe"]`. Case-insensitive. Empty means "whatever
     /// is left", so an unfiltered windows section acts as the catch-all.
@@ -193,10 +248,10 @@ pub const BROWSERS: &[&str] = &[
     "zen.exe",
 ];
 
-fn section(title: &str, source: Source, matches: &[&str]) -> SectionConfig {
+fn section(title: &str, sources: &[Source], matches: &[&str]) -> SectionConfig {
     SectionConfig {
         title: title.into(),
-        source,
+        source: Sources(sources.to_vec()),
         matches: matches.iter().map(|s| (*s).to_string()).collect(),
         items: Vec::new(),
         order: Vec::new(),
@@ -208,19 +263,16 @@ impl Default for Config {
         Self {
             dry_run: false,
             hotkey: "alt+`".into(),
+            // Two sections, not six. Every section costs a header plus a full
+            // row even for one tile, and a machine with one browser window, one
+            // Explorer window and three tabs spent three rows showing five
+            // tiles. Split them with `match` if you want the grouping back.
+            //
             // Running things first: switching to what exists beats launching
             // something new, so it gets the top of the panel.
             sections: vec![
-                section("Browsing", Source::Windows, BROWSERS),
-                // Next to the browser windows, not filed under something else.
-                // Both are the same intent: get me back to a page.
-                section("Tabs", Source::Tabs, &[]),
-                section("Files", Source::Windows, &["explorer.exe"]),
-                section("Active", Source::Windows, &[]),
-                section("Launch", Source::Taskbar, &[]),
-                // Empty by default, and empty sections do not render. Present so
-                // the shape is discoverable without reading the docs.
-                section("Places", Source::Manual, &[]),
+                section("Active", &[Source::Windows, Source::Tabs], &[]),
+                section("Launch", &[Source::Taskbar, Source::Manual], &[]),
             ],
             grid: Grid::default(),
             theme: Theme::default(),
@@ -514,16 +566,16 @@ mod tests {
         let text = toml::to_string_pretty(&Config::default()).unwrap();
         let back: Config = toml::from_str(&text).unwrap();
         assert_eq!(back.hotkey, Config::default().hotkey);
-        assert_eq!(back.sections.len(), 6);
-        assert!(back.sections[0].matches.iter().any(|m| m == "chrome.exe"));
+        assert_eq!(back.sections.len(), 2);
+        assert!(back.sections[0].source.contains(Source::Tabs));
     }
 
     #[test]
     fn running_things_are_listed_before_launchable_ones() {
-        let running = |s: Source| matches!(s, Source::Windows | Source::Tabs);
+        let running = |s: &SectionConfig| s.source.iter().all(|s| matches!(s, Source::Windows | Source::Tabs));
         let sections = Config::default().sections;
-        let last_running = sections.iter().rposition(|s| running(s.source)).unwrap();
-        let first_launch = sections.iter().position(|s| !running(s.source)).unwrap();
+        let last_running = sections.iter().rposition(running).unwrap();
+        let first_launch = sections.iter().position(|s| !running(s)).unwrap();
         assert!(
             last_running < first_launch,
             "everything already open must come before the launchers"
@@ -531,11 +583,13 @@ mod tests {
     }
 
     #[test]
-    fn tabs_sit_next_to_the_browser_windows() {
+    fn tabs_share_a_section_with_the_windows() {
         let sections = Config::default().sections;
-        let browsing = sections.iter().position(|s| s.title == "Browsing").unwrap();
-        let tabs = sections.iter().position(|s| s.source == Source::Tabs).unwrap();
-        assert_eq!(tabs, browsing + 1, "the two browser sections must be adjacent");
+        let tabs = sections.iter().find(|s| s.source.contains(Source::Tabs)).unwrap();
+        assert!(
+            tabs.source.contains(Source::Windows),
+            "tabs and windows are one group: both answer get me back to what is open"
+        );
     }
 
     #[test]
@@ -543,9 +597,36 @@ mod tests {
         let catch_alls = Config::default()
             .sections
             .iter()
-            .filter(|s| s.source == Source::Windows && s.matches.is_empty())
+            .filter(|s| s.source.contains(Source::Windows) && s.matches.is_empty())
             .count();
         assert_eq!(catch_alls, 1, "windows with no matching section must land somewhere");
+    }
+
+    #[test]
+    fn a_source_reads_as_a_string_or_a_list() {
+        let text = r#"
+[[sections]]
+title = "Active"
+source = ["windows", "tabs"]
+
+[[sections]]
+title = "Launch"
+source = "taskbar"
+"#;
+        let cfg: Config = toml::from_str(text).unwrap();
+        assert_eq!(cfg.sections[0].source.iter().collect::<Vec<_>>(), [Source::Windows, Source::Tabs]);
+        assert_eq!(cfg.sections[1].source.iter().collect::<Vec<_>>(), [Source::Taskbar]);
+
+        // A lone source goes back out bare, so an unmerged section is untouched.
+        let out = toml::to_string(&cfg).unwrap();
+        assert!(out.contains(r#"source = "taskbar""#), "{out}");
+        assert!(out.contains(r#"source = ["windows", "tabs"]"#), "{out}");
+    }
+
+    #[test]
+    fn a_section_with_no_source_is_rejected() {
+        let text = "[[sections]]\ntitle = \"Nothing\"\nsource = []\n";
+        assert!(toml::from_str::<Config>(text).is_err());
     }
 
     #[test]
@@ -572,7 +653,7 @@ items = ["R:\\dev", "ms-settings:display"]
 "#;
         let cfg: Config = toml::from_str(text).unwrap();
         assert_eq!(cfg.sections.len(), 1);
-        assert_eq!(cfg.sections[0].source, Source::Manual);
+        assert!(cfg.sections[0].source.contains(Source::Manual));
         assert_eq!(cfg.sections[0].items[1].target(), "ms-settings:display");
         assert_eq!(cfg.sections[0].items[1].title(), None);
     }

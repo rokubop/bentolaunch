@@ -163,7 +163,7 @@ fn set_order_in(path: &Path, section: &str, names: &[String]) -> bool {
     let Some(sections) = sections_mut(&mut doc) else { return false };
     let Some(index) = sections
         .iter()
-        .position(|table| title_of(table) == section && source_of(table) == Some("taskbar"))
+        .position(|table| title_of(table) == section && has_source(table, "taskbar"))
     else {
         log_warn!("no taskbar section titled \"{section}\"; order not saved");
         return false;
@@ -206,20 +206,27 @@ fn title_of(table: &Table) -> String {
         .to_owned()
 }
 
-fn source_of(table: &Table) -> Option<&str> {
-    table.get("source").and_then(|s| s.as_str())
+/// `source` is a bare string, or a list when the section merges several. Both
+/// forms answer the same question: does this section take entries of this kind?
+fn has_source(table: &Table, source: &str) -> bool {
+    let Some(item) = table.get("source") else {
+        return false;
+    };
+    if item.as_str() == Some(source) {
+        return true;
+    }
+    item.as_array()
+        .is_some_and(|list| list.iter().any(|s| s.as_str() == Some(source)))
 }
 
 fn first_manual(sections: &ArrayOfTables) -> Option<usize> {
-    sections
-        .iter()
-        .position(|table| source_of(table) == Some("manual"))
+    sections.iter().position(|table| has_source(table, "manual"))
 }
 
 fn manual_named(sections: &ArrayOfTables, title: &str) -> Option<usize> {
     sections
         .iter()
-        .position(|table| title_of(table) == title && source_of(table) == Some("manual"))
+        .position(|table| title_of(table) == title && has_source(table, "manual"))
 }
 
 /// A manual entry is either the bare parsing name or `{ title, target }`.
@@ -388,7 +395,7 @@ mod tests {
         let manual = parsed
             .sections
             .iter()
-            .find(|s| s.source == crate::config::Source::Manual)
+            .find(|s| s.source.contains(crate::config::Source::Manual))
             .unwrap();
         assert_eq!(manual.items.len(), 3);
     }
@@ -440,6 +447,30 @@ mod tests {
         // "Launch" exists but is a taskbar section, so it cannot take a pin.
         assert_eq!(add_to(&path, Some("Launch"), r"D:\x").as_deref(), Some("Places"));
         assert_eq!(manual(&path, "Places").len(), 4);
+    }
+
+    /// A merged section is one header over two lists. Pins go in `items` and
+    /// taskbar order goes in `order`, and both have to find it — this file
+    /// reads the raw TOML, where `source` is a list rather than a string.
+    #[test]
+    fn a_merged_section_takes_both_a_pin_and_a_taskbar_order() {
+        let path = scratch("merged");
+        std::fs::write(
+            &path,
+            "[[sections]]\ntitle = \"Launch\"\nsource = [\"taskbar\", \"manual\"]\n\
+             items = [\"R:\\\\dev\"]\n",
+        )
+        .unwrap();
+
+        assert_eq!(add_to(&path, None, r"D:\x").as_deref(), Some("Launch"));
+        assert_eq!(manual(&path, "Launch"), [r"R:\dev", r"D:\x"]);
+
+        assert!(set_order_in(&path, "Launch", &["Firefox".into(), "Steam".into()]));
+        let parsed: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let launch = parsed.sections.iter().find(|s| s.title == "Launch").unwrap();
+        assert_eq!(launch.order, ["Firefox", "Steam"]);
+        // The pin list survived the order write.
+        assert_eq!(launch.items.len(), 2);
     }
 
     #[test]

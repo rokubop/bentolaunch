@@ -5,7 +5,8 @@ Where DashPick stands and what to pick up next.
 `DESIGN.md` is the source of truth for *why*. This file is *where*.
 
 Last updated: 2026-08-16, end of the third implementation session.
-Renamed from flick to DashPick at the end of it.
+Renamed from flick to DashPick at the end of it, then installed and merged the
+sections down to two.
 
 ## Working
 
@@ -18,7 +19,7 @@ forward.
 | Window model | `EnumWindows` + `SetWinEventHook`, MRU order, never scans on the hotkey |
 | Grid | Composition visual tree, sections with headers, grow-then-scroll |
 | Density | 140x100 tiles, 9 column cap, ~60 visible on 1080p |
-| Grouping | `match` rules per section, first section claims a window |
+| Grouping | Sections merge sources: `source = ["windows", "tabs"]`. Two by default. `match` rules split them back out, first section claims a window |
 | Icons | `IShellItemImageFactory` on 2 MTA workers, cached, never blocks the UI |
 | Activation | Focus for windows, `ShellExecuteW` for everything else |
 | Targets | Paths, folders, `.lnk`, Store apps, `ms-settings:`, `https:`, browser tabs |
@@ -27,7 +28,7 @@ forward.
 | Tray | Show, add app/folder/file, edit settings, exit |
 | Filtering | Type to narrow. 72px strip shows the query and "3 of 47", its text sized from its own height. Width frozen for the query's duration |
 | Keyboard | Arrows move a selection, Enter takes it, Home/End jump. Esc clears the query, then hides |
-| Tabs | Loopback WebSocket, MV3 extension. Favicons deduped by origin. Section sits next to `Browsing`. Off until enabled and paired |
+| Tabs | Loopback WebSocket, MV3 extension. Favicons deduped by origin. Share the `Active` section with the windows. Off until enabled and paired |
 | Arranging | No mode. Drag past the shell's threshold to reorder, right-click to pin/unpin, drop from Explorer. Off while filtering |
 | Keep open | Pushpin button, or the right-click menu. Off by default, resets on hide. **Slated for removal, see below** |
 | Safety | `asInvoker`, panic hook, watchdog, no `WH_KEYBOARD_LL` |
@@ -153,8 +154,8 @@ Live concerns, none urgent:
 - Firefox needs its own extension build.
 - A filtered grid cannot be rearranged. Deliberate — see `DESIGN.md` — but it
   means a section has to be fully on screen to reorder it.
-- Dragging moves a tile within its own section only. Moving one between sections
-  is a config edit.
+- Dragging moves a tile within its own source's run only. Moving one between
+  sections, or across the seam inside a merged section, is a config edit.
 - Config edits need the file or the tray. No in-app settings UI.
 
 ## Outside the repo

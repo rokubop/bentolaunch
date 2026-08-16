@@ -18,7 +18,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     OBJID_WINDOW, PostMessageW, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP,
 };
 
-use crate::config::{ManualItem, SectionConfig, Source};
+use crate::config::{ManualItem, SectionConfig, Source, Sources};
 // Imported by name rather than as a module: `windows` would otherwise shadow the
 // `windows` crate throughout this file.
 use crate::model::taskbar;
@@ -32,11 +32,13 @@ pub const WM_MODEL_CHANGED: u32 = WM_APP + 1;
 /// One configured section, with whatever could be resolved up front.
 struct Group {
     title: String,
-    source: Source,
+    sources: Sources,
     /// Lowercased process names this section claims. Empty means catch-all.
     matches: Vec<String>,
-    /// Pre-resolved for taskbar and manual sources; empty for windows.
-    fixed: Vec<Item>,
+    /// Pre-resolved per source: taskbar pins and manual entries both touch the
+    /// disk, so they are read once. Windows and tabs are absent — they are read
+    /// at show time.
+    fixed: Vec<(Source, Vec<Item>)>,
 }
 
 impl Group {
@@ -80,13 +82,19 @@ fn build_groups(sections: &[SectionConfig]) -> Vec<Group> {
         .iter()
         .map(|section| Group {
             title: section.title.clone(),
-            source: section.source,
+            sources: section.source.clone(),
             matches: section.matches.iter().map(|m| m.to_lowercase()).collect(),
-            fixed: match section.source {
-                Source::Taskbar => taskbar::pins_in_order(&section.order),
-                Source::Manual => section.items.iter().filter_map(manual_item).collect(),
-                Source::Windows | Source::Tabs => Vec::new(),
-            },
+            fixed: section
+                .source
+                .iter()
+                .filter_map(|source| match source {
+                    Source::Taskbar => Some((source, taskbar::pins_in_order(&section.order))),
+                    Source::Manual => {
+                        Some((source, section.items.iter().filter_map(manual_item).collect()))
+                    }
+                    Source::Windows | Source::Tabs => None,
+                })
+                .collect(),
         })
         .collect()
 }
@@ -121,8 +129,8 @@ pub fn init(exclude: HWND, sections: &[SectionConfig]) {
         log_info!(
             "section \"{}\" ({:?}): {} fixed item(s)",
             group.title,
-            group.source,
-            group.fixed.len()
+            group.sources.iter().collect::<Vec<_>>(),
+            group.fixed.iter().map(|(_, items)| items.len()).sum::<usize>()
         );
     }
 
@@ -156,6 +164,7 @@ fn manual_item(entry: &ManualItem) -> Option<Item> {
         detail: shorten_detail(target),
         target: Target::Shell(target.to_owned()),
         icon_source: Some(target.to_owned()),
+        origin: Source::Manual,
     })
 }
 
@@ -274,6 +283,7 @@ fn tab_items() -> Vec<Item> {
                 .icon
                 .as_ref()
                 .map(|key| format!("{}{key}", crate::shell::icons::FAVICON)),
+            origin: Source::Tabs,
         })
         .collect()
 }
@@ -288,28 +298,35 @@ pub fn sections() -> Vec<Section> {
     let mut out = Vec::with_capacity(s.groups.len());
 
     for group in &s.groups {
-        let items = match group.source {
-            Source::Windows => {
-                let mut items = Vec::new();
-                for (index, window) in s.windows.iter().enumerate() {
-                    if claimed[index] || !group.claims(window) {
-                        continue;
+        // Sources contribute in the order they are listed, so a merged section
+        // still has a fixed shape: the tabs never land among the windows.
+        let mut items = Vec::new();
+        for source in group.sources.iter() {
+            match source {
+                Source::Windows => {
+                    for (index, window) in s.windows.iter().enumerate() {
+                        if claimed[index] || !group.claims(window) {
+                            continue;
+                        }
+                        claimed[index] = true;
+                        items.push(window.to_item());
                     }
-                    claimed[index] = true;
-                    items.push(window.to_item());
                 }
-                items
+                // Read at show time, not resolved up front: they change as fast
+                // as the browser does.
+                Source::Tabs => items.extend(tab_items()),
+                Source::Taskbar | Source::Manual => {
+                    if let Some((_, fixed)) = group.fixed.iter().find(|(s, _)| *s == source) {
+                        items.extend(fixed.iter().cloned());
+                    }
+                }
             }
-            // Read at show time, not resolved up front: they change as fast
-            // as the browser does.
-            Source::Tabs => tab_items(),
-            _ => group.fixed.clone(),
-        };
+        }
 
         if !items.is_empty() {
             out.push(Section {
                 title: group.title.clone(),
-                source: group.source,
+                sources: group.sources.clone(),
                 items,
             });
         }

@@ -327,6 +327,34 @@ pub fn reordered(count: usize, from: usize, to: usize) -> Vec<usize> {
     slots
 }
 
+/// The stretch of tiles a drag may move within: the neighbours inside
+/// `(band_first, band_count)` that share the dragged tile's origin.
+///
+/// A merged section holds tiles from more than one source, and no config can
+/// express a taskbar pin sitting between two manual ones — those two orders are
+/// separate lists. So a drag rearranges its own run and stops at the seam.
+///
+/// Here for the same reason as `reordered`: pure index arithmetic, and an
+/// off-by-one silently scrambles a user's pinned layout.
+pub fn origin_run<T: PartialEq>(
+    origins: &[T],
+    band_first: usize,
+    band_count: usize,
+    tile: usize,
+) -> (usize, usize) {
+    let Some(origin) = origins.get(tile) else {
+        return (tile, 0);
+    };
+    let same = |index: usize| origins.get(index) == Some(origin);
+
+    let mut first = tile;
+    while first > band_first && same(first - 1) {
+        first -= 1;
+    }
+    let end = (band_first + band_count).min(origins.len());
+    (first, (first..end).take_while(|index| same(*index)).count())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -751,6 +779,53 @@ mod tests {
             assert_eq!(reordered(5, slot, slot), vec![0, 1, 2, 3, 4]);
             assert_eq!(reordered(5, slot, slot + 1), vec![0, 1, 2, 3, 4]);
         }
+    }
+
+    /// A merged section: 3 taskbar pins then 2 manual ones, one band of 5.
+    const MERGED: [char; 5] = ['t', 't', 't', 'm', 'm'];
+
+    #[test]
+    fn a_run_covers_only_the_neighbours_from_the_same_source() {
+        for tile in 0..3 {
+            assert_eq!(origin_run(&MERGED, 0, 5, tile), (0, 3), "taskbar tile {tile}");
+        }
+        for tile in 3..5 {
+            assert_eq!(origin_run(&MERGED, 0, 5, tile), (3, 2), "manual tile {tile}");
+        }
+    }
+
+    #[test]
+    fn a_run_never_leaves_its_band() {
+        // Same origins either side of the seam at 3: the band is the wall.
+        let origins = ['m', 'm', 'm', 'm', 'm'];
+        assert_eq!(origin_run(&origins, 3, 2, 4), (3, 2));
+        assert_eq!(origin_run(&origins, 0, 3, 1), (0, 3));
+    }
+
+    #[test]
+    fn a_single_source_section_is_one_whole_run() {
+        let origins = ['w'; 6];
+        assert_eq!(origin_run(&origins, 0, 6, 3), (0, 6));
+    }
+
+    #[test]
+    fn a_run_stops_at_the_end_of_the_list() {
+        // A band claiming more tiles than exist must not walk off the end.
+        assert_eq!(origin_run(&MERGED, 0, 99, 0), (0, 3));
+        assert_eq!(origin_run(&MERGED, 0, 5, 99), (99, 0));
+    }
+
+    /// The whole point of the seam: reordering inside one run leaves every tile
+    /// belonging to the other source exactly where it was.
+    #[test]
+    fn reordering_a_run_cannot_disturb_the_other_source() {
+        let (first, count) = origin_run(&MERGED, 0, 5, 3);
+        let moved: Vec<char> = reordered(count, 3 - first, 2)
+            .iter()
+            .map(|slot| MERGED[first + slot])
+            .collect();
+        assert_eq!(moved, ['m', 'm']);
+        assert_eq!(&MERGED[..first], ['t', 't', 't']);
     }
 
     #[test]

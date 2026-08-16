@@ -43,7 +43,7 @@ use crate::safety;
 use crate::shell::{activate, icons, picker};
 use crate::ui::dropzone;
 use crate::ui::filter;
-use crate::ui::grid::{Layout, Metrics, Rect as GridRect, SectionShape, reordered};
+use crate::ui::grid::{Layout, Metrics, Rect as GridRect, SectionShape, origin_run, reordered};
 use crate::ui::menu;
 use crate::ui::render::{PIN_GLYPH, Renderer, TextColors, TilePaint, d2d_color};
 use crate::ui::tray;
@@ -149,14 +149,17 @@ pub struct Panel {
 struct Press {
     /// Flat index of the tile under the press.
     tile: usize,
-    /// Its section, if that section's order is dashpick's to rearrange.
+    /// Its section, if this tile's order is dashpick's to rearrange.
     band: Option<usize>,
+    /// The tiles this drag may reorder: flat index of the first, and how many.
+    /// One source's run inside the band. See `Panel::origin_run`.
+    run: (usize, usize),
     /// Where in the tile it was pressed, so a drag does not jump to the cursor.
     grab: (f32, f32),
     start: (f32, f32),
     /// Past the slop threshold: no longer a click.
     dragging: bool,
-    /// Insertion slot within the section the cursor is currently over.
+    /// Insertion slot within the run the cursor is currently over.
     slot: usize,
 }
 
@@ -1105,7 +1108,7 @@ impl Panel {
     /// taskbar, and unpinning it there is Windows' business, not dashpick's
     /// (safety rule 3).
     fn removable(&self, tile: usize) -> bool {
-        self.section_of(tile).is_some_and(|s| s.source == Source::Manual)
+        self.items.get(tile).is_some_and(|i| i.origin == Source::Manual)
     }
 
     /// Window tiles are MRU ordered by the foreground hook, so a saved order
@@ -1117,15 +1120,25 @@ impl Panel {
     fn draggable(&self, tile: usize) -> bool {
         self.query.is_empty()
             && self
-                .section_of(tile)
-                .is_some_and(|s| matches!(s.source, Source::Manual | Source::Taskbar))
+                .items
+                .get(tile)
+                .is_some_and(|i| matches!(i.origin, Source::Manual | Source::Taskbar))
+    }
+
+    /// The tiles a drag may move within. See `grid::origin_run`.
+    fn origin_run(&self, tile: usize) -> Option<(usize, usize)> {
+        let band = self.layout.bands().get(self.layout.band_of(tile)?)?;
+        let origins: Vec<Source> = self.items.iter().map(|item| item.origin).collect();
+        Some(origin_run(&origins, band.first, band.count, tile))
     }
 
     /// Take a press on a tile. Whether it turns out to be a click or a drag is
     /// decided later, by how far the cursor travels.
     fn begin_press(&mut self, tile: usize, x: f32, y: f32) {
         let rect = self.layout.tile_rect(tile, self.scroll);
-        let band = self.layout.band_of(tile).filter(|_| self.draggable(tile));
+        let run = self.origin_run(tile).filter(|_| self.draggable(tile));
+        let band = self.layout.band_of(tile).filter(|_| run.is_some());
+        let run = run.unwrap_or((tile, 0));
         // SAFETY: our own window. Capture keeps the moves coming when the cursor
         // leaves the panel mid-drag, and makes the release ours whatever it is
         // over.
@@ -1135,10 +1148,11 @@ impl Panel {
         self.press = Some(Press {
             tile,
             band,
+            run,
             grab: (x - rect.x, y - rect.y),
             start: (x, y),
             dragging: false,
-            slot: band.map_or(0, |band| tile - self.layout.bands()[band].first),
+            slot: tile - run.0,
         });
     }
 
@@ -1173,7 +1187,12 @@ impl Panel {
         }
 
         if let Some(band) = press.band {
-            press.slot = self.layout.insert_slot(band, x, y, self.scroll);
+            // The slot comes back measured against the whole band. Clamp it to
+            // this run so a pin cannot be dropped past the seam into tiles a
+            // different source owns.
+            let offset = press.run.0 - self.layout.bands()[band].first;
+            let slot = self.layout.insert_slot(band, x, y, self.scroll);
+            press.slot = slot.clamp(offset, offset + press.run.1) - offset;
             self.preview(&press);
 
             if let Some(tile) = self.tiles.get(press.tile) {
@@ -1190,16 +1209,17 @@ impl Panel {
     /// Slide the section's other tiles into the order they would take if the
     /// drag ended here.
     fn preview(&self, press: &Press) {
-        let Some(band) = press.band.and_then(|band| self.layout.bands().get(band)) else {
+        if press.band.is_none() {
             return;
-        };
-        let from = press.tile - band.first;
-        for (position, slot) in reordered(band.count, from, press.slot).iter().enumerate() {
+        }
+        let (first, count) = press.run;
+        let from = press.tile - first;
+        for (position, slot) in reordered(count, from, press.slot).iter().enumerate() {
             if *slot == from {
                 continue;
             }
-            let rect = self.layout.tile_rect(band.first + position, self.scroll);
-            if let Some(tile) = self.tiles.get(band.first + slot) {
+            let rect = self.layout.tile_rect(first + position, self.scroll);
+            if let Some(tile) = self.tiles.get(first + slot) {
                 let _ = tile.root.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 });
             }
         }
@@ -1232,22 +1252,30 @@ impl Panel {
             return;
         };
 
-        let from = press.tile - band.first;
-        let slots = reordered(band.count, from, press.slot);
+        let (first, count) = press.run;
+        let from = press.tile - first;
+        let slots = reordered(count, from, press.slot);
         if slots.iter().enumerate().all(|(position, slot)| position == *slot) {
             self.cancel_press(press);
             return;
         }
 
+        // Which of the section's sources was dragged decides both how an entry
+        // is named and which list it is written back to.
+        let Some(origin) = self.items.get(press.tile).map(|i| i.origin) else {
+            self.cancel_press(press);
+            return;
+        };
+
         // What identifies an entry in config: manual sections list parsing
         // names, taskbar sections list pin names.
-        let key = |item: &Item| match section.source {
+        let key = |item: &Item| match origin {
             Source::Manual => item.shell_target().map(str::to_owned),
             _ => Some(item.title.clone()),
         };
         let Some(keys) = slots
             .iter()
-            .map(|slot| self.items.get(band.first + slot).and_then(key))
+            .map(|slot| self.items.get(first + slot).and_then(key))
             .collect::<Option<Vec<String>>>()
         else {
             log_warn!("could not identify every tile in \"{}\"; order not saved", section.title);
@@ -1256,7 +1284,7 @@ impl Panel {
         };
 
         let title = section.title.clone();
-        let saved = match section.source {
+        let saved = match origin {
             Source::Manual => pins::reorder(&title, &keys),
             Source::Taskbar => pins::set_order(&title, &keys),
             // Ordered by the foreground hook and the browser, not by dashpick.
@@ -1442,11 +1470,11 @@ impl Panel {
             .layout
             .band_at(x, y, self.scroll)
             .filter(|band| {
-                self.section_in_band(*band).is_some_and(|s| s.source == Source::Manual)
+                self.section_in_band(*band).is_some_and(|s| s.sources.contains(Source::Manual))
             });
         under.or_else(|| {
             (0..self.layout.bands().len()).find(|band| {
-                self.section_in_band(*band).is_some_and(|s| s.source == Source::Manual)
+                self.section_in_band(*band).is_some_and(|s| s.sources.contains(Source::Manual))
             })
         })
     }

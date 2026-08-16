@@ -60,6 +60,7 @@ impl WindowInfo {
             target: Target::Window(self.handle),
             // A filesystem path is already a valid shell parsing name.
             icon_source: self.exe.as_ref().map(|p| p.to_string_lossy().into_owned()),
+            origin: crate::config::Source::Windows,
         }
     }
 }

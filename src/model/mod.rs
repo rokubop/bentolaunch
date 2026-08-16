@@ -91,6 +91,10 @@ pub struct Item {
     /// Shell parsing name to source the icon from. `None` for windows whose
     /// process path could not be read.
     pub icon_source: Option<String>,
+    /// Which of a section's sources produced this tile. A merged section holds
+    /// more than one, and what may be dragged, removed and written back to
+    /// config is a property of the tile, not of the header above it.
+    pub origin: crate::config::Source,
 }
 
 impl Item {
@@ -127,9 +131,9 @@ impl Item {
 #[derive(Debug, Clone)]
 pub struct Section {
     pub title: String,
-    /// Carried through from config so the panel knows what it may rearrange:
-    /// pinned sections have an order dashpick owns, window sections are MRU and
-    /// belong to the foreground hook.
-    pub source: crate::config::Source,
+    /// Carried through from config. Which tiles may be rearranged is decided
+    /// per item now — see `Item::origin` — but a drop from Explorer still needs
+    /// to find a section that takes pins at all.
+    pub sources: crate::config::Sources,
     pub items: Vec<Item>,
 }

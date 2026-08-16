@@ -217,12 +217,9 @@ from its network process, which owns no windows.
 
 ### Browser things sit together
 
-The `Tabs` section goes directly after `Browsing`, the windows section that
-claims the browser executables. Two headers back to back, one group. Both answer
-the same intent: get me back to a page.
-
-One merged section is still open. It would need a section to take more than one
-`source`, which nothing else needs yet.
+**Resolved:** they share one section. A section takes a list of sources, and the
+default is `source = ["windows", "tabs"]`. Both answer the same intent — get me
+back to a page — and two headers back to back cost two rows to say it.
 
 ### Bookmarks — via the extension, not the files
 
@@ -434,9 +431,28 @@ Two exceptions, both in `shell/icons.rs`:
 
 ## Sections
 
-Ordered list, each with a title and a source (`taskbar`, `windows`, `manual`),
-configured in `dashpick.toml`. They stack under their own headers and share one
-column count so tiles line up. Empty sections do not render.
+Ordered list, each with a title and one or more sources (`taskbar`, `windows`,
+`manual`, `tabs`), configured in `dashpick.toml`. They stack under their own
+headers and share one column count so tiles line up. Empty sections do not
+render.
+
+**A section can merge sources.** `source = "windows"` or
+`source = ["windows", "tabs"]`. A section costs a header plus a whole row even
+for one tile, so six sections on a quiet machine spent most of the panel on
+whitespace: one browser window, one Explorer window and three tabs took three
+rows to show five tiles. The default is two sections, `["windows", "tabs"]` over
+`["taskbar", "manual"]`. Sources contribute in the order listed, so a merged
+section still has a fixed shape and the tabs never land among the windows.
+
+**Rejected: merging pins with windows.** Unchanged, and merging sources does not
+weaken it — the two default sections are exactly that line. See below.
+
+**Dragging stops at the seam.** A merged section holds tiles from more than one
+source, and no config can express a taskbar pin sitting between two manual ones:
+taskbar order is a list of names, manual order is a list of parsing names, and
+they are separate keys. So a drag rearranges the run of tiles sharing its own
+source and clamps there. What a tile allows — drag, unpin — is a property of the
+tile, not of the header above it (`Item::origin`).
 
 **Pins and windows never merge.** Steam pinned and Steam running are two tiles.
 The redundancy is the point: a pin never moves, so its position is learnable, and
@@ -554,8 +570,8 @@ A tool that eats your comments is a tool you stop hand-editing.
 
 ## Open questions
 
-- Tabs and bookmarks arrive with the extension (Milestone 4). Own sections, or
-  merged into existing ones, still open.
+- Bookmarks arrive with the extension (Milestone 4). Own section, or merged into
+  an existing one, still open. Tabs are settled: merged with the windows.
 
 **Resolved:** where a dropped item lands with several manual sections. The one it
 was dropped on. Bands cover the whole panel, so the drop point already names a

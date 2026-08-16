@@ -91,5 +91,6 @@ fn item_for(path: &std::path::Path) -> Option<Item> {
         detail: "taskbar".into(),
         target: Target::Shell(name.clone()),
         icon_source: Some(name),
+        origin: crate::config::Source::Taskbar,
     })
 }
