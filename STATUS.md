@@ -130,7 +130,7 @@ have never been run.
 - A client can set what DashPick shows and receive focus commands. Nothing reaches
   `ShellExecuteW` from a tab's title or URL.
 - `dashpick.toml` is gitignored, so the token is not in the repo.
-- The token lives in `%LOCALAPPDATA%lickridge-token`, not beside the exe.
+- The token lives in `%LOCALAPPDATA%\dashpick\bridge-token`, not beside the exe.
   A portable build can land in `Program Files`, where a file next to it is
   readable by every account on the machine. Migrated out of `dashpick.toml` on
   startup.
@@ -159,8 +159,9 @@ Live concerns, none urgent:
 
 ## Pending, outside the repo
 
-The folder is still `R:\devlick`; the docs already say `R:\dev\dashpick`.
-Renaming it needs no editor or shell sitting inside it. It also changes the
+The folder is still `R:\dev\flick`; the docs already say `R:\dev\dashpick`.
+Nothing may sit inside it while it is renamed, editors and shells included.
+It also changes the
 unpacked extension's Chrome id, so remove and re-load it from the new path.
 Both ids are allowlisted in `dashpick.toml`; drop the flick one afterwards.
 

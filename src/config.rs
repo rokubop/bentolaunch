@@ -39,7 +39,7 @@ pub struct Browser {
     /// `chrome-extension://<id>` origins allowed to connect. Empty rejects
     /// everything. Refused origins are logged, so pairing is copy from the log.
     pub allow: Vec<String>,
-    /// Legacy. The token now lives in `%LOCALAPPDATA%lickridge-token`,
+    /// Legacy. The token now lives in `%LOCALAPPDATA%\dashpick\bridge-token`,
     /// which Windows restricts to this account. Anything left here is moved
     /// there on startup and this is blanked.
     pub token: String,
