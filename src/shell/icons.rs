@@ -100,10 +100,42 @@ pub fn start(notify: HWND) {
     log_info!("icon workers started");
 }
 
+/// Marks an `icon_source` as a favicon the browser already sent, rather than a
+/// shell parsing name.
+pub const FAVICON: &str = "tabicon:";
+
+/// Favicons keep their own store: they arrive decoded, so there is nothing to
+/// fetch, and they are shared by origin rather than scaled per request.
+static FAVICONS: OnceLock<Mutex<HashMap<String, Arc<IconPixels>>>> = OnceLock::new();
+
+fn favicons() -> &'static Mutex<HashMap<String, Arc<IconPixels>>> {
+    FAVICONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Bounded so a long session cannot accumulate icons without limit. Far above
+/// the number of distinct origins anyone has open.
+const MAX_FAVICONS: usize = 512;
+
+/// Store a favicon the extension sent, and wake the panel to paint it.
+pub fn put_favicon(key: &str, pixels: IconPixels) {
+    let Ok(mut map) = favicons().lock() else { return };
+    if map.len() >= MAX_FAVICONS {
+        log_warn!("favicon store full ({MAX_FAVICONS}); clearing it");
+        map.clear();
+    }
+    map.insert(key.to_owned(), Arc::new(pixels));
+    drop(map);
+    notify();
+}
+
 /// Non-blocking. Returns the icon if it is already cached, otherwise queues it
 /// and returns `None` — the caller draws without an icon and repaints on
 /// `WM_ICON_READY`.
 pub fn request(parsing_name: &str, size: u32) -> Option<Arc<IconPixels>> {
+    if let Some(key) = parsing_name.strip_prefix(FAVICON) {
+        return favicons().lock().ok()?.get(key).cloned();
+    }
+
     let key = Key { name: parsing_name.to_owned(), size };
 
     {
@@ -167,22 +199,27 @@ fn worker(rx: Arc<Mutex<Receiver<Key>>>) {
             c.entries.insert(key, pixels);
         }
 
-        let notify = NOTIFY.load(Ordering::SeqCst);
-        if notify != 0 {
-            // SAFETY: an asynchronous post; harmless if the window is gone.
-            unsafe {
-                let _ = PostMessageW(
-                    Some(HWND(notify as *mut core::ffi::c_void)),
-                    WM_ICON_READY,
-                    Default::default(),
-                    Default::default(),
-                );
-            }
-        }
+        notify();
     }
 
     // SAFETY: pairs with the CoInitializeEx above.
     unsafe { CoUninitialize() };
+}
+
+fn notify() {
+    let target = NOTIFY.load(Ordering::SeqCst);
+    if target == 0 {
+        return;
+    }
+    // SAFETY: an asynchronous post; harmless if the window is gone.
+    unsafe {
+        let _ = PostMessageW(
+            Some(HWND(target as *mut core::ffi::c_void)),
+            WM_ICON_READY,
+            Default::default(),
+            Default::default(),
+        );
+    }
 }
 
 fn fetch(key: &Key) -> Option<IconPixels> {
@@ -317,5 +354,26 @@ unsafe fn read_bitmap(bitmap: HBITMAP) -> Option<IconPixels> {
         }
 
         Some(IconPixels { width, height, bgra })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_stored_favicon_comes_back_under_the_name_a_tab_tile_asks_for() {
+        let key = "https://example.test";
+        put_favicon(key, IconPixels { width: 2, height: 1, bgra: vec![9; 8] });
+
+        // Exactly the string `model::store::tab_items` builds.
+        let source = format!("{FAVICON}{key}");
+        let found = request(&source, 32).expect("a stored favicon must resolve");
+        assert_eq!((found.width, found.height), (2, 1));
+
+        // Size is ignored: favicons are stored once, not per request size.
+        assert!(request(&source, 256).is_some());
+        // And a miss is a miss, not a queued shell lookup.
+        assert!(request(&format!("{FAVICON}https://nothing.test"), 32).is_none());
     }
 }

@@ -250,8 +250,6 @@ pub fn browser_pids() -> Vec<u32> {
     pids
 }
 
-/// No icon: favicons are URLs, which `IShellItemImageFactory` cannot resolve
-/// and flick will not fetch. Known gap.
 fn tab_items() -> Vec<Item> {
     crate::browser::server::tabs()
         .into_iter()
@@ -271,7 +269,11 @@ fn tab_items() -> Vec<Item> {
                 tab_id: owned.tab.id,
                 window_id: owned.tab.window_id,
             },
-            icon_source: None,
+            icon_source: owned
+                .tab
+                .icon
+                .as_ref()
+                .map(|key| format!("{}{key}", crate::shell::icons::FAVICON)),
         })
         .collect()
 }

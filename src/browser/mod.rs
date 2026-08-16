@@ -5,6 +5,7 @@
 //!
 //! Off unless configured. `gate` has what a connection must prove.
 
+pub mod base64;
 pub mod gate;
 pub mod protocol;
 pub mod server;

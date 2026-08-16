@@ -51,9 +51,14 @@ Empty until the extension connects, and empty sections do not render.
 
 ## What it can see
 
-`tabs` permission: the title and URL of every open tab, sent to flick over
-loopback. Nothing leaves the machine. No host permissions, no content scripts,
-no network access beyond `127.0.0.1`.
+`tabs`: the title and URL of every open tab.
+`favicon`: site icons, from Chrome's own cache.
+
+Both go to flick over loopback. Nothing leaves the machine. No host permissions,
+no content scripts, no network access beyond `127.0.0.1` and `_favicon`.
+
+Favicons are decoded here, not in flick: a service worker already has an image
+decoder, so flick needs none. One bitmap per origin, sent once per connection.
 
 ## Security
 

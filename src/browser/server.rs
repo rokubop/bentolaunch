@@ -277,8 +277,18 @@ fn handle(text: &str, connection: u64) -> bool {
     };
 
     match message {
-        Inbound::Tabs { tabs } => {
-            log_info!("browser connection {connection}: {} tab(s)", tabs.len());
+        Inbound::Tabs { tabs, icons } => {
+            log_info!(
+                "browser connection {connection}: {} tab(s), {} new icon(s)",
+                tabs.len(),
+                icons.len()
+            );
+            for (key, icon) in &icons {
+                match icon.to_pixels() {
+                    Some(pixels) => crate::shell::icons::put_favicon(key, pixels),
+                    None => log_warn!("browser sent an unusable favicon for {key}"),
+                }
+            }
             if let Ok(mut state) = state().lock() {
                 state.tabs.insert(connection, tabs);
             }

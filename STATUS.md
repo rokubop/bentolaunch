@@ -26,7 +26,7 @@ forward.
 | Tray | Show, add app/folder/file, edit settings, exit |
 | Filtering | Type to narrow. 72px strip shows the query and "3 of 47", its text sized from its own height. Width frozen for the query's duration |
 | Keyboard | Arrows move a selection, Enter takes it, Home/End jump. Esc clears the query, then hides |
-| Tabs | Loopback WebSocket, MV3 extension. `source = "tabs"` section. Off until enabled and paired |
+| Tabs | Loopback WebSocket, MV3 extension. `source = "tabs"` section. Favicons, deduped by origin. Off until enabled and paired |
 | Arranging | No mode. Drag past the shell's threshold to reorder, right-click to pin/unpin, drop from Explorer. Off while filtering |
 | Keep open | Pushpin button, or the right-click menu. Off by default, resets on hide. **Slated for removal, see below** |
 | Safety | `asInvoker`, panic hook, watchdog, no `WH_KEYBOARD_LL` |
@@ -117,8 +117,6 @@ have never been run.
 
 - Window tiles show icons, not live previews.
 - No bookmarks yet. Same channel, not built.
-- Tab tiles have no icon. Favicons arrive as URLs, which `IShellItemImageFactory`
-  cannot resolve and flick will not fetch. The extension should send the bytes.
 - Firefox needs its own extension build.
 - A filtered grid cannot be rearranged. Deliberate — see `DESIGN.md` — but it
   means a section has to be fully on screen to reorder it.
@@ -151,9 +149,6 @@ Tabs work. What is left:
 
 - **Load the extension in real Chrome.** Everything so far was driven by a
   stand-in client. See `extension/README.md` for the three pairing steps.
-- **Favicons.** The extension sends the bytes over the socket it already has.
-  Avoids giving flick network access, and 40 identical Chrome icons would make
-  the section unreadable.
 - **Bookmarks.** Same channel, `chrome.bookmarks`. A bookmark picker is another
   tray entry over the existing pin-writing path.
 - **"Bookmark this tab"** in the right-click menu, over the same path.
