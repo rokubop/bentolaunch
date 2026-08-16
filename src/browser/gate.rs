@@ -1,25 +1,15 @@
-//! Who is allowed to talk to flick's socket.
+//! Who is allowed on flick's socket. Two callers, two gates.
 //!
-//! A loopback WebSocket is not a private channel. Two different callers can
-//! reach it, and they need two different answers:
+//! Web page: can script a WebSocket to localhost, so without a check any site
+//! could enumerate your tabs. The browser stamps `Origin` on the handshake and
+//! page JS cannot forge it, so an allowlist closes it.
 //!
-//! - **A web page.** Any site you have open can script
-//!   `new WebSocket("ws://127.0.0.1:8777/")`. Browsers attach an `Origin`
-//!   header to that handshake and page JavaScript cannot forge or suppress it,
-//!   so an origin allowlist stops this completely. This is the threat that
-//!   matters: without the check, a random tab could enumerate every other tab
-//!   you have open, titles and URLs both.
+//! Local program: not a browser, so `Origin` is whatever it types. Only the
+//! token stops it.
 //!
-//! - **Another program on this machine.** Not a browser, so `Origin` is
-//!   whatever it feels like typing. Only a shared secret stops that, hence the
-//!   token in the request path.
-//!
-//! Neither gate defends against code already running as you with your files in
-//! reach — such code has better targets than this socket. They defend against
-//! the drive-by cases, which are the realistic ones.
+//! Neither stops code already running as you. That code has better targets.
 
-/// Why a connection was refused. Logged, never sent back: a caller that failed
-/// the gate learns only that it failed.
+/// Logged, never sent back. A refused caller learns only that it failed.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Refusal {
     NotLoopback,
@@ -49,10 +39,8 @@ pub struct Policy {
 }
 
 impl Policy {
-    /// `None` when the bridge is not configured to a point where it would be
-    /// safe to listen. Both halves are required: an allowlist with no token
-    /// lets any local process in, and a token with no allowlist lets any web
-    /// page that learns the token in.
+    /// `None` refuses to listen. Both halves required: no token lets any local
+    /// process in, no allowlist lets in any page that learns the token.
     pub fn new(allow: &[String], token: &str) -> Option<Policy> {
         if token.len() < MIN_TOKEN_LEN || allow.is_empty() {
             return None;
@@ -63,7 +51,6 @@ impl Policy {
         })
     }
 
-    /// Every gate, in order. `Ok` means the handshake may proceed.
     pub fn admit(&self, loopback: bool, origin: Option<&str>, path: &str) -> Result<(), Refusal> {
         if !loopback {
             return Err(Refusal::NotLoopback);
@@ -80,12 +67,10 @@ impl Policy {
     }
 }
 
-/// Short tokens are refused outright rather than accepted weakly.
 const MIN_TOKEN_LEN: usize = 24;
 
-/// Compared without an early return. Over loopback a timing attack is already
-/// impractical, but a secret comparison that leaks its progress is the kind of
-/// thing that stops being harmless once something else changes.
+/// No early return. A secret comparison that leaks its progress stops being
+/// harmless as soon as something else changes.
 fn token_matches(expected: &str, given: &str) -> bool {
     let (expected, given) = (expected.as_bytes(), given.as_bytes());
     if expected.len() != given.len() {
@@ -98,10 +83,8 @@ fn token_matches(expected: &str, given: &str) -> bool {
     differences == 0
 }
 
-/// A fresh token from the OS CSPRNG, hex encoded.
-///
-/// `BCryptGenRandom` rather than anything derived from the clock or a pid: this
-/// is the only thing standing between a local process and the tab list.
+/// OS CSPRNG, hex encoded. Not the clock or a pid: this is the only thing
+/// between a local process and the tab list.
 pub fn generate_token() -> Option<String> {
     use windows::Win32::Security::Cryptography::{
         BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom,
@@ -135,8 +118,6 @@ mod tests {
 
     #[test]
     fn a_web_page_is_refused_however_right_its_token_is() {
-        // The whole point: a page that somehow learned the token still fails,
-        // because a browser stamps its own origin on the handshake.
         let path = format!("/{TOKEN}");
         for origin in ["https://evil.example", "http://localhost:3000", "null"] {
             assert_eq!(
@@ -148,8 +129,6 @@ mod tests {
 
     #[test]
     fn a_local_program_is_refused_however_right_its_origin_is() {
-        // Not a browser, so it can claim any origin it likes. The token is what
-        // it cannot guess.
         assert_eq!(
             policy().admit(true, Some(ORIGIN), "/not-the-token"),
             Err(Refusal::BadToken)

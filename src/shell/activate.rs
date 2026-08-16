@@ -33,19 +33,12 @@ pub fn activate(item: &Item) {
     }
 }
 
-/// Switch to a browser tab, and let the browser raise its own window.
+/// Hand the foreground right over and let the browser raise itself.
 ///
-/// The tab switch itself needs nothing from Windows. Raising the window does,
-/// and the browser cannot do it unaided: the foreground right belongs to flick,
-/// because the hotkey made flick the last process to receive input.
-/// `AllowSetForegroundWindow` hands that right over for the next attempt.
-///
-/// Done this way round rather than flick raising the window itself, because
-/// flick has no way to map a browser's internal window id onto an HWND. The
-/// browser does.
+/// flick cannot map a browser `windowId` onto an HWND. The browser can.
 fn switch_to_tab(connection: u64, tab_id: i64, window_id: i64, title: &str) {
-    // Granted to named browser processes rather than `ASFW_ANY`, which would
-    // let anything on the machine steal foreground for the same window.
+    // Named browser pids, not ASFW_ANY: that would let anything steal
+    // foreground for the same window.
     for pid in crate::model::store::browser_pids() {
         // SAFETY: a stale pid fails harmlessly. This grants a right, it never
         // takes one away.

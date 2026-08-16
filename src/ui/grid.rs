@@ -41,21 +41,13 @@ pub struct Metrics {
     pub max_fraction: f32,
     /// Hard cap on columns. 0 means "whatever fits".
     pub max_cols: usize,
-    /// Use exactly this many columns rather than deriving them from the item
-    /// count. 0 means "derive them".
-    ///
-    /// Only type-to-filter sets it. Without it the panel would change width on
-    /// every keystroke as the match count fell, and a grid that jumps sideways
-    /// while you are reading it is worse than one that is momentarily too wide.
-    /// Still bounded by `max_cols` and the screen, so a stale value cannot push
-    /// the panel off a smaller monitor.
+    /// Exact column count, 0 to derive it. Only filtering sets it, so the
+    /// panel cannot change width per keystroke. Still bounded by the screen.
     pub fixed_cols: usize,
     pub header_h: f32,
     pub section_gap: f32,
-    /// Strip reserved above the grid for the filter query. 0 when not filtering.
-    ///
-    /// It does not scroll — it is the one thing on screen explaining why most of
-    /// the grid is missing, so it cannot be carried off the top.
+    /// Filter strip above the grid, 0 when not filtering. Does not scroll: it
+    /// is what explains why most of the grid is missing.
     pub search_h: f32,
 }
 
@@ -181,10 +173,8 @@ impl Layout {
         let content_h = y + m.padding;
         let panel_h = content_h.min(max_h);
 
-        // Stretch the bands over the padding at both ends and over the gaps
-        // between them, so they cover the panel with nothing in between. The
-        // search strip is the exception: it is chrome, not a section, so a drop
-        // on it belongs to nobody.
+        // Stretch bands over the padding and gaps so they cover the panel with
+        // nothing in between. The strip is chrome, so a drop on it hits nobody.
         for i in 0..bands.len() {
             let top = if i == 0 { m.search_h } else { bands[i].rect.y };
             let bottom = bands.get(i + 1).map_or(content_h, |next| next.rect.y);
@@ -262,7 +252,6 @@ impl Layout {
     pub fn chrome(&self) -> Rect {
         let m = self.metrics;
         let h = m.header_h.max(16.0).min(self.panel.h);
-        // Below the filter strip when there is one, so the two never overlap.
         let top = m.search_h;
         let y = if m.header_h >= 16.0 { top + m.padding } else { (top + m.padding - h).max(top) };
         // A panel barely taller than one tile still has to keep it inside.
@@ -271,11 +260,8 @@ impl Layout {
         Rect { x: self.panel.w - m.padding - w, y, w, h }
     }
 
-    /// The filter strip, panel-local. Empty when `search_h` is 0, which is
-    /// every moment there is no query.
-    ///
-    /// Like `chrome`, it is fixed to the panel rather than the content: the grid
-    /// scrolls underneath it.
+    /// Panel-local, fixed to the panel rather than the content. Empty when
+    /// `search_h` is 0.
     pub fn search_rect(&self) -> Rect {
         let m = self.metrics;
         Rect {

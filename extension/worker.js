@@ -1,8 +1,7 @@
 // Dials flick, streams the tab list, switches tabs on request.
 //
-// The extension connects out rather than flick connecting in: an MV3 service
-// worker is killed when idle, and socket traffic is what keeps it alive.
-// flick pings every 20s, which is what actually holds this worker open.
+// Connects out rather than being connected to: an MV3 worker is killed when
+// idle, and socket traffic keeps it alive. flick's 20s ping is what holds it.
 
 const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
@@ -26,7 +25,7 @@ async function connect() {
     return;
   }
   const { port, token } = await settings();
-  // Unpaired. Stay quiet rather than hammering a socket that will refuse us.
+  // Unpaired. Stay quiet rather than hammer a socket that will refuse us.
   if (!token) return;
 
   socket = new WebSocket(`ws://127.0.0.1:${port}/${encodeURIComponent(token)}`);
@@ -39,7 +38,6 @@ async function connect() {
     socket = null;
     retry();
   };
-  // A refused handshake surfaces here; onclose follows and handles the retry.
   socket.onerror = () => {};
 }
 
@@ -53,7 +51,7 @@ function send(message) {
   try {
     socket.send(JSON.stringify(message));
   } catch (e) {
-    // Nothing to do about it here; onclose will reconnect.
+    // onclose reconnects.
   }
 }
 
@@ -72,7 +70,7 @@ async function sendTabs() {
   });
 }
 
-// Tab events arrive in bursts, so coalesce them into one list.
+// Tab events arrive in bursts.
 function scheduleTabs() {
   if (debounce) clearTimeout(debounce);
   debounce = setTimeout(() => {
@@ -95,8 +93,8 @@ function receive(data) {
   }
 
   if (message.type === "focus") {
-    // The tab switch needs no foreground rights; raising the window does, and
-    // flick hands those over with AllowSetForegroundWindow before asking.
+    // The switch needs no foreground rights. Raising the window does, and
+    // flick grants them with AllowSetForegroundWindow before asking.
     chrome.tabs.update(message.tabId, { active: true });
     chrome.windows.update(message.windowId, { focused: true });
   }
@@ -114,8 +112,7 @@ for (const event of [
   event.addListener(scheduleTabs);
 }
 
-// The worker still gets killed eventually. An alarm wakes it back up and the
-// connection is re-established from scratch.
+// The worker still gets killed eventually. The alarm wakes it back up.
 chrome.alarms.create("flick-reconnect", { periodInMinutes: 1 });
 chrome.alarms.onAlarm.addListener(connect);
 chrome.runtime.onStartup.addListener(connect);

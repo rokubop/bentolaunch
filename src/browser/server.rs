@@ -1,12 +1,10 @@
 //! The loopback WebSocket the extension dials into.
 //!
-//! flick listens; the extension connects out. That direction is not a
-//! preference — MV3 service workers die on idle, and an open socket carrying
-//! traffic is what keeps one alive (DESIGN.md, "Browser tabs").
+//! The extension connects out, not the reverse: MV3 service workers die on
+//! idle and socket traffic is what keeps one alive.
 //!
-//! One thread accepts, one thread per connection after that. A connection
-//! thread owns its socket outright: commands from the UI reach it through a
-//! channel it drains between reads, so nothing else ever writes to the stream.
+//! One thread per connection, owning its socket. Commands from the UI arrive
+//! on a channel it drains between reads, so nothing else writes to the stream.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -34,8 +32,8 @@ const READ_TIMEOUT: Duration = Duration::from_millis(250);
 /// Comfortably inside Chrome's ~30s service worker idle timeout.
 const PING_EVERY: Duration = Duration::from_secs(20);
 
-/// Which connection a tab came from, so a focus command goes back to the
-/// browser that owns it rather than to whichever one answered last.
+/// Tabs carry their connection: focus goes back to the browser that owns the
+/// tab, not whichever answered last.
 #[derive(Debug, Clone)]
 pub struct Owned {
     pub connection: u64,
@@ -43,7 +41,6 @@ pub struct Owned {
 }
 
 struct State {
-    /// Tabs per live connection. Two browsers can be connected at once.
     tabs: HashMap<u64, Vec<Tab>>,
     outbox: HashMap<u64, Sender<Outbound>>,
 }
@@ -55,7 +52,6 @@ fn state() -> &'static Mutex<State> {
     })
 }
 
-/// Every tab from every connected browser, connection order.
 pub fn tabs() -> Vec<Owned> {
     let Ok(state) = state().lock() else {
         log_warn!("browser state is poisoned; reporting no tabs");
@@ -72,10 +68,7 @@ pub fn tabs() -> Vec<Owned> {
     out
 }
 
-/// Ask the browser that owns this tab to switch to it.
-///
-/// Fire and forget: the switch happens in the browser, and flick has already
-/// hidden itself by the time it lands.
+/// Fire and forget. flick has already hidden by the time the switch lands.
 pub fn focus(connection: u64, tab_id: i64, window_id: i64) -> bool {
     let Ok(state) = state().lock() else {
         return false;
@@ -87,17 +80,13 @@ pub fn focus(connection: u64, tab_id: i64, window_id: i64) -> bool {
     outbox.send(Outbound::Focus { tab_id, window_id }).is_ok()
 }
 
-/// Start listening, if config says to and pairing is complete.
-///
-/// Silent no-op when the bridge is off, which is the default. Nothing binds a
-/// port until the user has both enabled it and paired an extension.
+/// No-op unless enabled and paired. Nothing binds a port otherwise.
 pub fn start(hwnd: HWND, config: &crate::config::Browser) {
     if !config.enabled {
         return;
     }
 
-    // First run with the bridge on: mint a token and write it back, so pairing
-    // is copy-paste rather than "invent your own secret".
+    // Mint on first use so pairing is copy-paste, not invent-your-own-secret.
     let mut token = config.token.clone();
     if token.is_empty()
         && let Some(fresh) = crate::browser::gate::generate_token()
@@ -115,8 +104,8 @@ pub fn start(hwnd: HWND, config: &crate::config::Browser) {
         return;
     };
 
-    // Loopback explicitly. Binding the unspecified address would put the tab
-    // list on every interface on the machine.
+    // Explicit loopback. The unspecified address would put the tab list on
+    // every interface.
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, config.port));
     let listener = match TcpListener::bind(address) {
         Ok(listener) => listener,
@@ -156,15 +145,14 @@ fn accept_loop(listener: TcpListener, policy: Policy, hwnd: isize) {
     }
 }
 
-/// Run one connection from handshake to close.
 fn serve(stream: TcpStream, loopback: bool, policy: &Policy, connection: u64, hwnd: isize) {
     if stream.set_read_timeout(Some(READ_TIMEOUT)).is_err() {
         log_warn!("browser connection {connection}: could not set a read timeout");
         return;
     }
 
-    // Interior mutability because a failed handshake hands the callback back
-    // inside the error, so a plain `&mut` capture would still be borrowed here.
+    // RefCell because a failed handshake hands the callback back inside the
+    // error, so a `&mut` capture would still be borrowed below.
     let refusal: RefCell<Option<Refusal>> = RefCell::new(None);
     let handshake = tungstenite::accept_hdr(
         stream,
@@ -176,8 +164,8 @@ fn serve(stream: TcpStream, loopback: bool, policy: &Policy, connection: u64, hw
             match policy.admit(loopback, origin, request.uri().path()) {
                 Ok(()) => Ok(response),
                 Err(reason) => {
-                    // The caller is told nothing but "no". Which gate it failed
-                    // is a hint worth withholding.
+                    // The caller is told only "no". Which gate it failed is a
+                    // hint worth withholding.
                     *refusal.borrow_mut() = Some(reason);
                     Err(ErrorResponse::new(None))
                 }
@@ -192,9 +180,8 @@ fn serve(stream: TcpStream, loopback: bool, policy: &Policy, connection: u64, hw
             match refused {
                 Some(Refusal::UnknownOrigin(origin)) => {
                     log_warn!("browser connection refused: origin {origin} is not paired");
-                    // Offered only for an extension. A page origin reaching
-                    // this socket is a site trying its luck, and telling anyone
-                    // how to allowlist it would be advice worth not giving.
+                    // Extensions only. A page origin here is a site trying its
+                    // luck; do not tell anyone how to allowlist it.
                     if origin.starts_with("chrome-extension://")
                         || origin.starts_with("moz-extension://")
                     {
@@ -218,7 +205,6 @@ fn serve(stream: TcpStream, loopback: bool, policy: &Policy, connection: u64, hw
     let _ = socket.close(None);
 }
 
-/// Read until the socket closes, draining outgoing commands between reads.
 fn pump(
     socket: &mut WebSocket<TcpStream>,
     commands: &Receiver<Outbound>,
@@ -235,9 +221,7 @@ fn pump(
                 }
             }
             Ok(Message::Close(_)) => break,
-            // Ping/pong at the protocol level is handled by tungstenite on the
-            // next write; binary and continuation frames are not part of this
-            // protocol and are ignored rather than treated as an error.
+            // Binary and continuation frames are not part of this protocol.
             Ok(_) => {}
             Err(tungstenite::Error::Io(e))
                 if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
@@ -330,9 +314,7 @@ mod tests {
     const ORIGIN: &str = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
     const TOKEN: &str = "0123456789abcdef0123456789abcdef";
 
-    /// A real listener on a real loopback port, served by the real accept loop.
-    /// The gate is unit-tested on its own; this is here to prove it is actually
-    /// wired into the handshake.
+    /// Proves the gate is wired into the handshake, not just correct alone.
     fn serving() -> u16 {
         let policy = Policy::new(&[ORIGIN.to_string()], TOKEN).unwrap();
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
@@ -362,9 +344,7 @@ mod tests {
     #[test]
     fn a_page_origin_never_gets_past_the_handshake() {
         let port = serving();
-        // Right token, wrong origin: this is the drive-by case.
         assert!(!dial(port, Some("https://evil.example"), TOKEN));
-        // And no origin at all, which is what a non-browser sends.
         assert!(!dial(port, None, TOKEN));
     }
 

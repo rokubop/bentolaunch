@@ -101,14 +101,12 @@ pub struct Panel {
     sections: Vec<Section>,
     /// Every item flattened in section order. Tile index == this index.
     items: Vec<Item>,
-    /// How many items existed before the query took a bite out of them, for the
-    /// "3 of 47" on the filter strip.
+    /// Unfiltered count, for the strip's "3 of 47".
     total: usize,
     layout: Layout,
     scroll: f32,
     hover: Option<usize>,
-    /// The tile Enter would take, and what the arrow keys move. Independent of
-    /// `hover`: the cursor and the keyboard are allowed to disagree.
+    /// Independent of `hover`: cursor and keyboard may disagree.
     selected: Option<usize>,
     tiles: Vec<Tile>,
     /// Header visuals, in the same order as `layout.headers()`.
@@ -126,11 +124,8 @@ pub struct Panel {
     caller: HWND,
     hotkey_bound: bool,
 
-    /// What has been typed since the panel came up. Empty means no filtering,
-    /// and no strip.
     query: String,
-    /// Column count held for the duration of a query, 0 when there is none.
-    /// Taken from the unfiltered grid the moment the first character arrives.
+    /// Held for the query's duration, from the unfiltered grid. 0 when idle.
     frozen_cols: usize,
 
     /// Keep the panel up when it loses focus. Off by default — the panel's whole
@@ -317,7 +312,6 @@ impl Panel {
             fixed_cols: self.frozen_cols,
             header_h: g.header_height * scale,
             section_gap: g.section_gap * scale,
-            // The strip costs nothing until there is something to put in it.
             search_h: if self.query.is_empty() { 0.0 } else { g.search_height * scale },
         }
     }
@@ -329,8 +323,7 @@ impl Panel {
             .collect()
     }
 
-    /// Pull the current model, apply the query, and recompute geometry. Shared
-    /// by show and by the live-update path.
+    /// Pull the model, apply the query, recompute geometry.
     fn reload(&mut self) {
         let all = store::sections();
         self.total = all.iter().map(|s| s.items.len()).sum();
@@ -345,13 +338,8 @@ impl Panel {
         self.layout = Layout::compute(&self.shapes(), self.metrics(), work_area());
     }
 
-    /// Drop everything the query does not match, and name the tile Enter should
-    /// start on.
-    ///
-    /// Sections that lose every item stay in the list rather than being removed.
-    /// The layout already skips empty ones, and leaving them in place keeps
-    /// every band pointing at the section it actually came from — which is what
-    /// unpinning and the context menu resolve through.
+    /// Emptied sections stay in the list: the layout skips them, and removing
+    /// them would break the band-to-section mapping unpin resolves through.
     fn filtered(&self, sections: Vec<Section>) -> (Vec<Section>, Option<usize>) {
         if self.query.trim().is_empty() {
             return (sections, None);
@@ -368,9 +356,8 @@ impl Panel {
                 let Some(score) = filter::score(&self.query, &item.title, &item.detail) else {
                     continue;
                 };
-                // Best score, then the shortest title, then whatever came
-                // first. Displacing takes a strict improvement, so an exact tie
-                // leaves the selection on the tile nearest the top of the grid.
+                // Strict improvement to displace, so ties keep the tile
+                // nearest the top.
                 let length = item.title.chars().count();
                 if best.is_none_or(|(top, len)| score > top || (score == top && length < len)) {
                     best = Some((score, length));
@@ -400,9 +387,7 @@ impl Panel {
 
         // SAFETY: plain query about current system state.
         self.caller = unsafe { GetForegroundWindow() };
-        // A query belongs to one summoning. Coming back to a grid still filtered
-        // by what was typed a day ago would look like flick had lost most of the
-        // system.
+        // A query belongs to one summoning.
         self.query.clear();
         self.frozen_cols = 0;
         self.reload();
@@ -594,15 +579,13 @@ impl Panel {
         }
 
         self.tiles = built;
-        // Both are built after the tiles so they sit above them: the grid
-        // scrolls underneath rather than carrying them off the top.
+        // After the tiles, so the grid scrolls underneath them.
         self.build_search();
         self.build_chrome(radius);
         Ok(())
     }
 
-    /// The filter strip. Nothing to build when there is no query, which is most
-    /// of the time.
+    /// Nothing to build without a query, which is most of the time.
     fn build_search(&mut self) {
         let Some(renderer) = &self.renderer else { return };
         let rect = self.layout.search_rect();
@@ -624,8 +607,6 @@ impl Panel {
             sprite.SetSize(Vector2 { X: rect.w, Y: rect.h })?;
             sprite.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 })?;
             sprite.SetBrush(&self.compositor.CreateSurfaceBrushWithSurface(&surface)?)?;
-            // The tree owns it from here; nothing repositions or recolours it,
-            // so there is no handle worth keeping.
             self.content.Children()?.InsertAtTop(&sprite)?;
             Ok(())
         })();
@@ -635,7 +616,6 @@ impl Panel {
         }
     }
 
-    /// "3 of 47", or why the grid is empty.
     fn match_count(&self) -> String {
         match self.items.len() {
             0 => "no matches".into(),
@@ -702,12 +682,8 @@ impl Panel {
         self.chrome.is_some() && self.layout.chrome().contains(x, y)
     }
 
-    /// The filter strip swallows clicks. It is the one part of the panel that
-    /// looks like something to interact with, and dismissing on a click there —
-    /// which the click-the-padding rule would otherwise do — reads as a bug.
-    ///
-    /// The whole row counts, not just the drawn text: the padding either side of
-    /// it belongs to the strip as much as the glyph does.
+    /// The strip swallows clicks. Dismissing on a click there would read as a
+    /// bug. Whole row, not just the drawn text.
     fn search_hit(&self, y: f32) -> bool {
         !self.query.is_empty() && y >= 0.0 && y < self.layout.search_rect().h
     }
@@ -767,10 +743,8 @@ impl Panel {
         }
     }
 
-    /// What a tile's face should be right now.
-    ///
-    /// Hover beats selection. The cursor is the more immediate of the two, and a
-    /// tile that did not light up under the pointer would read as dead.
+    /// Hover beats selection: a tile that did not light up under the pointer
+    /// reads as dead.
     fn tile_color(&self, index: usize) -> Color {
         let theme = &self.config.theme;
         color_of(if self.hover == Some(index) {
@@ -919,9 +893,8 @@ impl Panel {
         self.reload();
         self.scroll = self.layout.clamp_scroll(self.scroll);
 
-        // `reload` picks the query's best match; that is right when the query
-        // changed and wrong when a window merely opened somewhere. Put the
-        // selection back where the user left it whenever it still exists.
+        // `reload` picks the query's best match, which is wrong when a window
+        // merely opened. Put the selection back if it still exists.
         if let Some(id) = held
             && let Some(moved) = self.items.iter().position(|i| i.id == id)
         {
@@ -966,13 +939,9 @@ impl Panel {
 
     // --- type to filter ---
 
-    /// Apply a new query and rebuild around it.
-    ///
-    /// The column count is taken from the unfiltered grid on the first
-    /// character and held until the query is gone, so narrowing the results
-    /// only ever shortens the panel. Letting it re-derive the width per
-    /// keystroke would slide the grid sideways under the eye reading it, which
-    /// is the one thing a filter must not do.
+    /// Column count freezes on the first character, so narrowing only shortens
+    /// the panel. Re-deriving width per keystroke would slide the grid sideways
+    /// under the eye reading it.
     fn set_query(&mut self, query: String) {
         if self.query == query {
             return;
@@ -984,8 +953,7 @@ impl Panel {
         if self.query.is_empty() {
             self.frozen_cols = 0;
         }
-        // A changed query gets a fresh answer to "what would Enter take", so
-        // the previous selection is dropped rather than carried across.
+        // A changed query gets a fresh answer to what Enter takes.
         self.selected = None;
         self.on_model_changed();
         let p = self.layout.panel;
@@ -1000,18 +968,16 @@ impl Panel {
         );
     }
 
-    /// Printable characters extend the query, backspace shortens it. The control
-    /// codes that also arrive here — Escape, Enter, Tab — were already handled
-    /// as key presses.
+    /// Printable extends, backspace shortens. Escape, Enter and Tab arrive
+    /// here too and were already handled as key presses.
     fn on_char(&mut self, code: u32) {
         const BACKSPACE: u32 = 0x08;
-        /// Ctrl+Backspace. Every text field on Windows reads it as "delete
-        /// more"; with no words to walk back through, the whole query goes.
+        /// Ctrl+Backspace. No words to walk back through, so all of it goes.
         const CTRL_BACKSPACE: u32 = 0x7F;
 
-        // WM_CHAR carries UTF-16 code units, so anything outside the BMP arrives
-        // as an unpaired surrogate and is dropped. Nothing worth filtering on is
-        // spelled in astral characters.
+        // WM_CHAR is UTF-16, so astral characters arrive as unpaired
+        // surrogates and are dropped. Nothing worth filtering on is spelled
+        // in them.
         let Some(c) = char::from_u32(code) else { return };
 
         let mut query = self.query.clone();
@@ -1020,8 +986,7 @@ impl Panel {
                 query.pop();
             }
             CTRL_BACKSPACE => query.clear(),
-            // A space only ever separates terms, so one typed before any term
-            // means nothing and would raise a strip with nothing in it.
+            // A leading space would raise an empty strip and mean nothing.
             _ if c == ' ' && query.is_empty() => return,
             _ if c.is_control() => return,
             _ => query.push(c),
@@ -1029,10 +994,8 @@ impl Panel {
         self.set_query(query);
     }
 
-    /// Keys the panel claims. `false` hands the key back to `DefWindowProcW`.
-    ///
-    /// The arrows and Enter are not filter-specific — they work on the whole
-    /// grid, filtered or not. A selection only has to exist for them to move.
+    /// `false` hands the key back to `DefWindowProcW`. Arrows and Enter work
+    /// on the whole grid, filtered or not.
     fn on_key(&mut self, vk: u16) -> bool {
         const ESCAPE: u16 = VK_ESCAPE.0;
         const ENTER: u16 = VK_RETURN.0;
@@ -1045,9 +1008,8 @@ impl Panel {
 
         let row = self.layout.cols.max(1) as isize;
         match vk {
-            // Escape unwinds one step at a time: the query first, the panel only
-            // once there is no query left to lose. Backspacing out of a long
-            // mistyped filter is not what anyone reaches for Escape to do.
+            // Query first, panel second. Backspacing out of a long mistyped
+            // filter is not what Escape is reached for.
             ESCAPE => {
                 if self.query.is_empty() {
                     self.hide(true);
@@ -1072,17 +1034,15 @@ impl Panel {
         }
     }
 
-    /// Move the keyboard selection, clamped to the grid. Always claims the key:
-    /// an arrow that fell through to the shell would be worse than one that did
-    /// nothing.
+    /// Clamped to the grid. Always claims the key: an arrow falling through to
+    /// the shell is worse than one doing nothing.
     fn move_selection(&mut self, delta: isize) -> bool {
         if self.items.is_empty() {
             return true;
         }
         let last = self.items.len() as isize - 1;
         let next = match self.selected {
-            // The first arrow press picks an end rather than the middle:
-            // forwards starts at the top, backwards at the bottom.
+            // First press picks an end, not the middle.
             None if delta > 0 => 0,
             None => last,
             Some(current) => (current as isize).saturating_add(delta).clamp(0, last),
@@ -1090,11 +1050,8 @@ impl Panel {
         self.select_index(next as usize)
     }
 
-    /// Jump the selection to an absolute position, clamped to the grid.
-    ///
-    /// Home and End name a place rather than a direction, so they do not go
-    /// through `move_selection` — its rule for the first press would read End as
-    /// "forwards from nowhere" and land on the first tile.
+    /// Home and End name a place, not a direction. Through `move_selection`,
+    /// End would read as "forwards from nowhere" and land on the first tile.
     fn select_index(&mut self, index: usize) -> bool {
         if self.items.is_empty() {
             return true;
@@ -1105,14 +1062,13 @@ impl Panel {
         true
     }
 
-    /// Bring a tile fully inside the panel, so the selection cannot be walked
-    /// off the end of a grid that scrolls.
+    /// Keeps the selection from being walked off a scrolling grid.
     fn scroll_into_view(&mut self, index: usize) {
         if self.layout.max_scroll <= 0.0 {
             return;
         }
         let rect = self.layout.tile_rect(index, self.scroll);
-        // The strip and the grid overlap by design, so "visible" starts below it.
+        // The grid scrolls under the strip, so visible starts below it.
         let top = self.layout.search_rect().h;
         let above = top - rect.y;
         let below = (rect.y + rect.h) - self.layout.panel.h;
@@ -1156,9 +1112,8 @@ impl Panel {
     /// would fight the hook on every focus change. Pinned sections have an order
     /// that is flick's to keep.
     ///
-    /// Never while a query is active. A filtered section shows a subset in a
-    /// subset's order, and writing that back would silently drop every pin the
-    /// query hid. Rearranging waits until the whole section is on screen again.
+    /// Never while filtering: writing back a subset's order would drop every
+    /// pin the query hid.
     fn draggable(&self, tile: usize) -> bool {
         self.query.is_empty()
             && self
@@ -1304,8 +1259,7 @@ impl Panel {
         let saved = match section.source {
             Source::Manual => pins::reorder(&title, &keys),
             Source::Taskbar => pins::set_order(&title, &keys),
-            // Both are ordered by something that is not flick's to keep: the
-            // foreground hook, and the browser.
+            // Ordered by the foreground hook and the browser, not by flick.
             Source::Windows | Source::Tabs => false,
         };
         if saved {
@@ -1375,8 +1329,7 @@ impl Panel {
                         entries.push(Some(menu::Entry::new(menu::CMD_UNPIN, "Unpin")));
                     }
                 }
-                // Nothing to pin or unpin yet. Bookmarking a tab arrives with
-                // the rest of Milestone 4.
+                // Bookmarking a tab arrives with the rest of Milestone 4.
                 Target::Tab { .. } => {}
             }
             if self.locatable(index) {
@@ -1722,9 +1675,8 @@ impl Panel {
                 self.scroll_by(delta);
                 Some(LRESULT(0))
             }
-            // A hidden panel has no keyboard. Focus alone normally guarantees
-            // that, but a posted message does not go through focus, and acting
-            // on one would leave a query behind that nothing is displaying.
+            // A hidden panel has no keyboard. Focus guarantees that, except
+            // for posted messages, which bypass it.
             WM_KEYDOWN if self.visible => self.on_key(wparam.0 as u16).then_some(LRESULT(0)),
             WM_CHAR if self.visible => {
                 self.on_char(wparam.0 as u32);

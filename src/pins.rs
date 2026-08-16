@@ -245,10 +245,7 @@ fn stack(items: &mut Array) {
     items.set_trailing_comma(true);
 }
 
-/// Write a freshly generated bridge token back into `[browser]`.
-///
-/// Through `toml_edit` like every other write, so a hand-tuned config keeps its
-/// comments. Returns the token on success.
+/// Through `toml_edit` like every other write, so comments survive.
 pub fn set_browser_token(token: &str) -> Option<String> {
     let path = Config::path()?;
     let mut doc = read(&path)?;

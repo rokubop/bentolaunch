@@ -227,11 +227,8 @@ fn shorten_detail(spec: &str) -> String {
 /// Each window is claimed by the first section whose `match` accepts it, so a
 /// filtered section listed above the catch-all is what pulls the browsers, or
 /// Explorer, out into their own group. No window appears twice.
-/// Processes that own a browser window right now.
-///
-/// Used to hand foreground rights over before asking a browser to raise itself.
-/// The socket's own peer process is the wrong target: Chrome opens sockets from
-/// its network process, which owns no windows.
+/// Who gets foreground rights before a browser raises itself. Not the socket's
+/// peer: Chrome opens sockets from its network process, which owns no windows.
 pub fn browser_pids() -> Vec<u32> {
     let Ok(s) = store().lock() else {
         return Vec::new();
@@ -253,19 +250,16 @@ pub fn browser_pids() -> Vec<u32> {
     pids
 }
 
-/// Live tabs as tiles.
-///
-/// The icon source is the browser's own executable rather than the site's
-/// favicon: favicons arrive as URLs, which `IShellItemImageFactory` cannot
-/// resolve and flick will not fetch. Left as a known gap in STATUS.md.
+/// No icon: favicons are URLs, which `IShellItemImageFactory` cannot resolve
+/// and flick will not fetch. Known gap.
 fn tab_items() -> Vec<Item> {
     crate::browser::server::tabs()
         .into_iter()
         .map(|owned| Item {
             id: ItemId::Tab(owned.connection, owned.tab.id),
             kind: Kind::Tab,
-            // The host is what makes a tab findable when its title is generic,
-            // and type-to-filter searches this line too.
+            // Filtering searches this line, so a generic title is still
+            // findable by host.
             detail: owned.tab.host().to_string(),
             title: if owned.tab.title.is_empty() {
                 owned.tab.host().to_string()
@@ -304,9 +298,8 @@ pub fn sections() -> Vec<Section> {
                 }
                 items
             }
-            // Tabs are the one source read at show time rather than resolved up
-            // front: they live on the socket thread and change as fast as the
-            // browser does, so there is nothing to cache.
+            // Read at show time, not resolved up front: they change as fast
+            // as the browser does.
             Source::Tabs => tab_items(),
             _ => group.fixed.clone(),
         };

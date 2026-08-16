@@ -1,36 +1,17 @@
-//! Type-to-filter matching. Pure arithmetic on strings, so the rules are
-//! testable without a window.
+//! Type-to-filter matching.
 //!
-//! Two decisions shape everything here.
-//!
-//! **Filtering hides, it never reorders.** A tile that survives the query stays
-//! in its section, in that section's own order — MRU for windows, the pinned
-//! order for the rest. The grid's positions are the thing that makes it
-//! learnable (DESIGN.md, "Resolved"), and a list that re-sorts on every
-//! keystroke throws that away. The score below exists only to decide which
-//! surviving tile the keyboard selection starts on.
-//!
-//! **Every term must match.** A query splits on whitespace and each term is
-//! required, so typing more always narrows. `chr git` finds the Chrome window
-//! about a repo, not every Chrome window plus every git one.
-//!
-//! Matching is prefix and substring only. Subsequence ("fuzzy") matching was
-//! left out on purpose: over ~60 tiles it mostly widens the result set with
-//! matches the user cannot predict, which is the opposite of what filtering is
-//! for here.
+//! Hides, never reorders: stable tile positions are what make the grid
+//! learnable. Score only decides where the keyboard selection starts.
+//! Every term must match, so typing always narrows.
+//! No fuzzy subsequence: it adds matches you cannot predict.
 
-/// Title matched from its first character.
 const TITLE_PREFIX: u32 = 100;
-/// A word inside the title started with the term.
 const WORD_PREFIX: u32 = 80;
-/// The term appears somewhere in the title.
 const TITLE_SUBSTRING: u32 = 55;
-/// The detail line — a process name, or a shortened path — starts with it.
 const DETAIL_PREFIX: u32 = 30;
 const DETAIL_SUBSTRING: u32 = 20;
 
-/// `None` when the item does not match. An empty query matches everything with
-/// a score of 0, which keeps the caller from special-casing it.
+/// Empty query matches everything at 0, so callers need no special case.
 pub fn score(query: &str, title: &str, detail: &str) -> Option<u32> {
     let terms: Vec<String> = query
         .split_whitespace()
@@ -50,9 +31,7 @@ pub fn score(query: &str, title: &str, detail: &str) -> Option<u32> {
     Some(total)
 }
 
-/// Best score this one term can claim, or `None` if it is absent from both
-/// lines. Ordered strongest first and returns on the first hit, so a term never
-/// scores twice for the same item.
+/// Strongest match wins. A term never scores twice for the same item.
 fn term_score(term: &str, title: &str, detail: &str) -> Option<u32> {
     if title.starts_with(term) {
         return Some(TITLE_PREFIX);
@@ -72,11 +51,8 @@ fn term_score(term: &str, title: &str, detail: &str) -> Option<u32> {
     None
 }
 
-/// Does any word in `text` begin with `term`?
-///
-/// Window titles are punctuation-heavy — `DESIGN.md - flick - Code`,
-/// `R:\dev\flick` — so a word is any run of alphanumerics, not just something
-/// with spaces around it. That is what lets `flick` find both of those.
+/// A word is any run of alphanumerics. Window titles are punctuation-heavy:
+/// `DESIGN.md - flick - Code`, `R:\dev\flick`.
 fn starts_a_word(text: &str, term: &str) -> bool {
     text.split(|c: char| !c.is_alphanumeric())
         .any(|word| word.starts_with(term))
@@ -86,7 +62,6 @@ fn starts_a_word(text: &str, term: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// Sugar: did it match at all?
     fn hit(query: &str, title: &str) -> bool {
         score(query, title, "").is_some()
     }
@@ -111,7 +86,6 @@ mod tests {
     #[test]
     fn every_term_has_to_match() {
         assert!(hit("design flick", "DESIGN.md - flick - Code"));
-        // Second term is nowhere in the title: the whole query misses.
         assert!(!hit("design zzz", "DESIGN.md - flick - Code"));
     }
 
@@ -137,7 +111,6 @@ mod tests {
 
     #[test]
     fn a_word_inside_a_punctuated_title_is_reachable() {
-        // The cases that made `starts_a_word` split on non-alphanumerics.
         assert!(hit("flick", "DESIGN.md - flick - Code"));
         assert!(hit("flick", r"R:\dev\flick"));
         assert!(hit("md", "DESIGN.md - flick - Code"));
@@ -145,7 +118,6 @@ mod tests {
 
     #[test]
     fn the_detail_line_is_searchable_too() {
-        // Nothing in the title says "chrome"; the process name does.
         assert!(score("chrome", "Wikipedia", "chrome.exe").is_some());
         assert!(score("chrome", "Wikipedia", "").is_none());
     }
@@ -163,7 +135,6 @@ mod tests {
 
     #[test]
     fn a_term_scores_once_even_when_it_matches_several_ways() {
-        // "code" is both the title's prefix and a word start; it must not stack.
         assert_eq!(score("code", "Code - code", ""), Some(TITLE_PREFIX));
     }
 
@@ -176,7 +147,6 @@ mod tests {
 
     #[test]
     fn a_term_may_be_split_across_the_two_lines() {
-        // "flick" from the title, "chrome" from the process name.
         assert!(score("flick chrome", "flick - the grid", "chrome.exe").is_some());
     }
 

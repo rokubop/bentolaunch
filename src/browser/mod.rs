@@ -1,11 +1,9 @@
-//! The browser bridge: open tabs in, focus commands out.
+//! Open tabs in, focus commands out.
 //!
-//! No OS API exposes browser tabs, so this needs an extension. The alternatives
-//! are closed for reasons recorded in DESIGN.md: UI Automation on the tab strip
-//! has no URLs, the DevTools port needs a launch flag, and the profile files are
-//! locked and off limits.
+//! No OS API exposes tabs, so this needs an extension. Alternatives and why
+//! they are closed: DESIGN.md.
 //!
-//! Off unless configured. See `gate` for what a connection has to prove.
+//! Off unless configured. `gate` has what a connection must prove.
 
 pub mod gate;
 pub mod protocol;

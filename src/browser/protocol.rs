@@ -2,7 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 
-/// One open tab, as the extension sees it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tab {
     pub id: i64,
@@ -17,8 +16,7 @@ pub struct Tab {
 }
 
 impl Tab {
-    /// Host without the `www.`, for the tile's second line. Falls back to the
-    /// whole URL when it does not look like one.
+    /// Tile's second line. Whole URL if it does not parse as one.
     pub fn host(&self) -> &str {
         let rest = self
             .url
@@ -33,7 +31,6 @@ impl Tab {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Inbound {
-    /// The full tab list. Sent on connect and whenever it changes.
     Tabs { tabs: Vec<Tab> },
     Pong,
 }
@@ -42,16 +39,14 @@ pub enum Inbound {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Outbound {
-    /// Switch to this tab and bring its window forward.
     Focus {
         #[serde(rename = "tabId")]
         tab_id: i64,
         #[serde(rename = "windowId")]
         window_id: i64,
     },
-    /// Keeps the MV3 service worker alive. Chrome resets its idle timer on
-    /// socket traffic, so flick drives this rather than trusting the worker to
-    /// wake itself up.
+    /// Keeps the MV3 worker alive. flick drives it: the worker cannot be
+    /// trusted to wake itself.
     Ping,
 }
 
@@ -80,8 +75,7 @@ mod tests {
 
     #[test]
     fn a_tab_missing_optional_fields_still_parses() {
-        // A tab still loading has no title yet. Dropping the whole list over
-        // one of them would be the wrong trade.
+        // A loading tab has no title yet. Do not drop the whole list for it.
         let json = r#"{"type":"tabs","tabs":[{"id":1,"windowId":1}]}"#;
         let Inbound::Tabs { tabs } = serde_json::from_str(json).unwrap() else {
             panic!("expected a tab list");

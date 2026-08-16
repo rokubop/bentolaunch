@@ -66,7 +66,7 @@ pub struct TilePaint<'a> {
 /// from the shell's own icon font rather than a bitmap flick has to ship.
 pub const PIN_GLYPH: &str = "\u{E718}";
 
-/// Marks the filter strip as a search box without a border or a caret.
+/// Reads as a search box without needing a border or a caret.
 const SEARCH_GLYPH: &str = "\u{E721}";
 
 pub struct Renderer {
@@ -76,8 +76,7 @@ pub struct Renderer {
     header_format: IDWriteTextFormat,
     /// Segoe MDL2 Assets, for the pushpin.
     glyph_format: IDWriteTextFormat,
-    /// Kept so the filter strip can size its text against the strip itself
-    /// rather than a constant. See `draw_search`.
+    /// The filter strip sizes its text per call. See `draw_search`.
     dwrite: IDWriteFactory,
     /// Held so the D2D device outlives every context it hands out.
     _d2d_device: ID2D1Device,
@@ -285,19 +284,15 @@ impl Renderer {
         result
     }
 
-    /// The filter strip: a search glyph, what has been typed, and how much of
-    /// the grid survived it.
+    /// Search glyph, the query, and how much of the grid survived it.
     ///
-    /// The count is the half that matters. Without it, a query that matches
-    /// nothing and a query that matches everything look alike — an empty grid
-    /// and no explanation.
+    /// The count matters: without it, matching nothing and matching everything
+    /// both look like an empty grid.
     ///
-    /// Everything here is sized from `height` rather than from constants,
-    /// because the strip is the one surface whose height the user sets directly
-    /// (`grid.search_height`) *and* which the DPI scale then multiplies. Fixed
-    /// point sizes would leave small text stranded in a tall strip on a scaled
-    /// display. The formats are built per call: that is once per keystroke,
-    /// against the sixty tile repaints happening alongside it.
+    /// Sized from `height`, not constants. The user sets that height and DPI
+    /// then multiplies it, so fixed point sizes would strand small text in a
+    /// tall strip. Built per call, which is once per keystroke against sixty
+    /// tile repaints.
     pub fn draw_search(
         &self,
         surface: &CompositionDrawingSurface,
@@ -307,10 +302,7 @@ impl Renderer {
         count: &str,
         colors: TextColors,
     ) -> Result<()> {
-        // The query is the strip. It gets the space, and the other two are
-        // sized to sit beside it without competing.
-        // The ratios are the design; the clamps only catch an absurd
-        // `search_height`, so they sit well clear of any sane one.
+        // Ratios are the design. The clamps only catch an absurd height.
         let query_format = text_format(
             &self.dwrite,
             DWRITE_FONT_WEIGHT_SEMI_BOLD,
@@ -331,8 +323,7 @@ impl Renderer {
             DWRITE_TEXT_ALIGNMENT_CENTER,
         )?;
 
-        // The query gets whatever is left between the glyph and the count, and
-        // ellipsizes inside it rather than running under either.
+        // The query takes what is left and ellipsizes inside it.
         let glyph_w = (height * 0.78).clamp(16.0, 104.0).min(width);
         let count_w = (height * 2.6).clamp(70.0, 340.0);
         let text_right = (width - count_w).max(glyph_w);

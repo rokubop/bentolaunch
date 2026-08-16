@@ -43,8 +43,7 @@ pub enum Target {
     Window(Handle),
     /// Hand this to the shell.
     Shell(String),
-    /// Switch to this browser tab. The one thing flick cannot reach itself: it
-    /// goes back over the socket the extension is connected on.
+    /// The one thing flick cannot reach itself. Goes back over the socket.
     Tab { connection: u64, tab_id: i64, window_id: i64 },
 }
 
@@ -77,8 +76,7 @@ impl Kind {
 pub enum ItemId {
     Window(isize),
     Shell(String),
-    /// Scoped by connection: two browsers hand out tab ids from their own
-    /// counters, so the id alone is not unique across them.
+    /// Scoped by connection: two browsers number their tabs independently.
     Tab(u64, i64),
 }
 

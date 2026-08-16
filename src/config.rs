@@ -25,26 +25,22 @@ pub struct Config {
     pub browser: Browser,
 }
 
-/// The browser bridge: a loopback WebSocket the extension dials into.
+/// Loopback WebSocket the extension dials into.
 ///
-/// Off by default, and it stays off until it has been paired. A listening
-/// socket that will hand anyone a list of your open tabs is not something to
-/// switch on by accident, so `enabled` alone is not enough — see
-/// `browser::server` for the two gates every connection has to pass.
+/// Off by default and until paired: `enabled` alone is not enough. A socket
+/// that hands out your open tabs is not something to switch on by accident.
+/// The two gates are in `browser::gate`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Browser {
     pub enabled: bool,
     /// Loopback only. Never bound on any other interface.
     pub port: u16,
-    /// Extension origins allowed to connect, as `chrome-extension://<id>`.
-    /// Empty rejects everything, which is the default.
-    ///
-    /// flick logs the origin of every refused connection, so pairing is: turn
-    /// it on, connect once, copy the id out of the log.
+    /// `chrome-extension://<id>` origins allowed to connect. Empty rejects
+    /// everything. Refused origins are logged, so pairing is copy from the log.
     pub allow: Vec<String>,
-    /// Shared secret the extension presents in the request path. Generated on
-    /// first use and written back here. Empty keeps the socket shut.
+    /// Presented in the request path. Generated on first use. Empty keeps the
+    /// socket shut.
     pub token: String,
 }
 
@@ -161,12 +157,8 @@ pub struct Grid {
     /// Extra space above each section after the first.
     pub section_gap: f32,
     pub corner_radius: f32,
-    /// Height of the strip showing what has been typed. It only appears while
-    /// there is a query, so this costs nothing the rest of the time. 0 filters
-    /// silently, with no strip.
-    ///
-    /// The strip's text is sized from this, so raising it makes the query
-    /// bigger rather than just adding space around it.
+    /// Filter strip. Only appears while there is a query. 0 filters silently.
+    /// Its text is sized from this, so raising it makes the query bigger.
     pub search_height: f32,
 }
 
@@ -182,9 +174,8 @@ pub struct Theme {
     /// Fill for a tile being dragged, and for the keep-open button while it is
     /// holding the panel open.
     pub tile_drag: String,
-    /// Fill for the tile Enter would activate. Distinct from `tile_hover`
-    /// because the cursor and the keyboard can point at different tiles at the
-    /// same time, and it has to be obvious which one the keyboard has.
+    /// The tile Enter would take. Distinct from `tile_hover`: cursor and
+    /// keyboard can point at different tiles.
     pub tile_selected: String,
 }
 
