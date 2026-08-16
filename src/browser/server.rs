@@ -104,14 +104,13 @@ pub fn start(hwnd: HWND, config: &crate::config::Browser) {
         return;
     }
 
-    // Mint on first use so pairing is copy-paste, not invent-your-own-secret.
-    let mut token = config.token.clone();
-    if token.is_empty()
-        && let Some(fresh) = crate::browser::gate::generate_token()
-        && let Some(written) = crate::pins::set_browser_token(&fresh)
-    {
-        log_info!("generated a browser bridge token; it is in flick.toml under [browser]");
-        token = written;
+    let Some(token) = crate::browser::gate::resolve_token(&config.token) else {
+        log_warn!("no bridge token and none could be written; the bridge stays off");
+        return;
+    };
+    // The config copy is the readable one, so it does not get to linger.
+    if !config.token.is_empty() {
+        crate::pins::set_browser_token("");
     }
 
     let Some(policy) = Policy::new(&config.allow, &token) else {

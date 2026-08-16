@@ -9,6 +9,8 @@
 //!
 //! Neither stops code already running as you. That code has better targets.
 
+use crate::{log_info, log_warn};
+
 /// Logged, never sent back. A refused caller learns only that it failed.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Refusal {
@@ -81,6 +83,46 @@ fn token_matches(expected: &str, given: &str) -> bool {
         differences |= a ^ b;
     }
     differences == 0
+}
+
+/// Where the token lives: flick's own directory under `%LOCALAPPDATA%`, which
+/// Windows already restricts to this account.
+///
+/// Not beside the exe. A portable build can be dropped in `Program Files`,
+/// where a file next to it is readable by every account on the machine, and
+/// other accounts are the one case the token is actually meant to stop.
+fn token_path() -> Option<std::path::PathBuf> {
+    crate::log::cache_dir().map(|dir| dir.join("bridge-token"))
+}
+
+/// The token to admit against, generating one on first use.
+///
+/// `legacy` is the `browser.token` an older build wrote into `flick.toml`. It
+/// is migrated out and the caller clears it from the config.
+pub fn resolve_token(legacy: &str) -> Option<String> {
+    let path = token_path()?;
+
+    if let Ok(stored) = std::fs::read_to_string(&path) {
+        let stored = stored.trim().to_owned();
+        if stored.len() >= MIN_TOKEN_LEN {
+            return Some(stored);
+        }
+    }
+
+    let token = if legacy.len() >= MIN_TOKEN_LEN {
+        log_info!("moving the bridge token out of flick.toml into {}", path.display());
+        legacy.to_owned()
+    } else {
+        generate_token()?
+    };
+
+    match std::fs::write(&path, &token) {
+        Ok(()) => Some(token),
+        Err(e) => {
+            log_warn!("could not write {} ({e}); the bridge stays off", path.display());
+            None
+        }
+    }
 }
 
 /// OS CSPRNG, hex encoded. Not the clock or a pid: this is the only thing

@@ -3,8 +3,9 @@ name = "flick"
 version = "0.3.0"
 edition = "2024"
 rust-version = "1.89"
-description = "Hotkey-summoned grid of everything worth switching to: windows, taskbar pins, folders, apps, settings pages, links"
+description = "Hotkey-summoned grid of everything worth switching to: windows, browser tabs, taskbar pins, folders, apps, settings pages, links"
 readme = "README.md"
+license = "MIT"
 publish = false
 
 [dependencies]

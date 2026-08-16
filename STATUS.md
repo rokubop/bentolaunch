@@ -129,6 +129,10 @@ have never been run.
 - A client can set what flick shows and receive focus commands. Nothing reaches
   `ShellExecuteW` from a tab's title or URL.
 - `flick.toml` is gitignored, so the token is not in the repo.
+- The token lives in `%LOCALAPPDATA%lickridge-token`, not beside the exe.
+  A portable build can land in `Program Files`, where a file next to it is
+  readable by every account on the machine. Migrated out of `flick.toml` on
+  startup.
 
 Live concerns, none urgent:
 
@@ -136,8 +140,8 @@ Live concerns, none urgent:
   and disables the panel until restart. Socket code is `Result`/`Option`
   throughout, but nothing enforces that. Catching panics per connection would
   close it.
-- **The token is weaker than it reads.** Plaintext in `flick.toml`, so anything
-  running as you can read it. It stops other users and blind attempts only.
+- **The token is weaker than it reads.** Readable by anything running as you.
+  It stops other accounts and blind attempts only.
 - **The extension can read every tab title and URL.** Inherent to the feature.
   The mitigation is that `worker.js` is ~150 lines and yours.
 

@@ -1,12 +1,19 @@
 # flick
 
 A hotkey-summoned grid of everything worth switching to: running windows,
-taskbar pins, folders, apps, settings pages, links.
+browser tabs, taskbar pins, folders, apps, settings pages, links.
 
-Press `` Alt+` ``. Click a tile. Esc closes and puts you back where you were.
+Press `` Alt+` ``. Type to narrow. Enter takes the top match, or click a tile.
+Esc closes and puts you back where you were.
 
-Windows 11 only. `DESIGN.md` for architecture and decisions, `STATUS.md` for
-what works and what is next.
+Windows 11 only. Never asks for admin, and writes nothing outside its own
+config and `%LOCALAPPDATA%\flick`.
+
+`DESIGN.md` for architecture and decisions, `STATUS.md` for what works and what
+is still unverified.
+
+Early days. It does what this README says, but plenty is listed as unverified in
+`STATUS.md` and it has only ever run on one machine.
 
 ## Running
 
@@ -29,6 +36,27 @@ Right-click the tray icon:
 | Exit | Quit |
 
 Log: `%LOCALAPPDATA%\flick\flick.log`
+
+## Finding
+
+Just type. The grid narrows on every character, and a strip at the top shows
+what you typed and how much survived it.
+
+| Key | Does |
+|---|---|
+| Any letter | Narrow the grid |
+| Arrows | Move the selection |
+| Enter | Take the selected tile |
+| Home / End | First tile, last tile |
+| Esc | Clear the query, then close the panel |
+
+Every word has to match, so typing more always narrows. Both the title and the
+second line are searched, which is how `github` finds a tab whose title never
+says so.
+
+Filtering hides tiles, it never reorders them. Tile positions are what make the
+grid learnable, and the panel keeps its width while you type so it cannot slide
+sideways under you.
 
 ## Arranging
 
@@ -134,6 +162,44 @@ A manual `target` is anything the shell can open:
 Bare strings get their title from the path. Use the `{ title, target }` form to
 choose one.
 
+### Browser tabs
+
+Off by default. Windows has no API for browser tabs, so this needs an extension:
+`extension/`, Chromium only for now.
+
+```toml
+[[sections]]
+title  = "Tabs"
+source = "tabs"      # empty until the extension connects
+
+[browser]
+enabled = true
+port    = 8777
+allow   = ["chrome-extension://<id from the options page>"]
+```
+
+`extension/README.md` has the pairing steps. Tabs sit next to your browser
+windows by default, since both answer the same question.
+
+**Read this before turning it on.** It opens a port on your machine that only
+your own computer can reach, and it installs an extension that can read the
+title and URL of every tab you have open. Both are the feature working as
+intended, and both are your call.
+
+What guards that port:
+
+- It only opens if you set `enabled = true` *and* list an extension in `allow`.
+- Websites cannot get in. Any page can try to open a connection to your own
+  machine, but browsers stamp every connection with who is making it and pages
+  cannot fake that stamp. Only the extension you listed is let through.
+- A secret token, generated on first run, kept in
+  `%LOCALAPPDATA%\flick\bridge-token`, which Windows restricts to your account.
+
+What it does not guard against: software already running under your own account.
+That software can read the token, but it can also read your browser profile
+directly, so this is not the interesting way in. `DESIGN.md` has the full
+reasoning under "Who is allowed on the socket".
+
 ### Appearance
 
 Tile size is fixed. It never changes with item count, which is what makes tile
@@ -163,7 +229,13 @@ tile = "#FF2A2A32"
 tile_hover = "#FF3C3C48"
 text = "#FFE8E8EC"
 header = "#FF9A9AA8"
-tile_drag = "#FF4A4460"   # a tile being dragged, and the pushpin when it is on
+tile_drag = "#FF4A4460"    # a tile being dragged, and the pushpin when it is on
+tile_selected = "#FF4C5A78"  # the tile Enter would take
+```
+
+```toml
+[grid]
+search_height = 72.0     # the filter strip; its text is sized from this
 ```
 
 ## Known gaps
@@ -171,7 +243,9 @@ tile_drag = "#FF4A4460"   # a tile being dragged, and the pushpin when it is on
 - Taskbar pin order is alphabetical until you arrange it. Windows keeps its own
   order in an undocumented registry blob, so dragging a tile writes an `order`
   list instead.
-- Browser tabs and bookmarks need a browser extension. Not built yet.
+- Bookmarks are not built. Same extension, same channel.
+- Firefox needs its own extension build.
+- Tab tiles cannot be rearranged, and neither can a filtered grid.
 - Dragging moves a tile within its own section. Moving one between sections
   means editing `flick.toml`.
 - Window tiles show icons, not live previews.
