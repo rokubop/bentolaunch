@@ -5,6 +5,7 @@ Where DashPick stands and what to pick up next.
 `DESIGN.md` is the source of truth for *why*. This file is *where*.
 
 Last updated: 2026-08-16, end of the third implementation session.
+Renamed from flick to DashPick at the end of it.
 
 ## Working
 
@@ -155,6 +156,13 @@ Live concerns, none urgent:
 - Dragging moves a tile within its own section only. Moving one between sections
   is a config edit.
 - Config edits need the file or the tray. No in-app settings UI.
+
+## Pending, outside the repo
+
+The folder is still `R:\devlick`; the docs already say `R:\dev\dashpick`.
+Renaming it needs no editor or shell sitting inside it. It also changes the
+unpacked extension's Chrome id, so remove and re-load it from the new path.
+Both ids are allowlisted in `dashpick.toml`; drop the flick one afterwards.
 
 ## Next steps
 
