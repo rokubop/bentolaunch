@@ -211,6 +211,9 @@ impl Default for Config {
             // something new, so it gets the top of the panel.
             sections: vec![
                 section("Browsing", Source::Windows, BROWSERS),
+                // Next to the browser windows, not filed under something else.
+                // Both are the same intent: get me back to a page.
+                section("Tabs", Source::Tabs, &[]),
                 section("Files", Source::Windows, &["explorer.exe"]),
                 section("Active", Source::Windows, &[]),
                 section("Launch", Source::Taskbar, &[]),
@@ -510,19 +513,28 @@ mod tests {
         let text = toml::to_string_pretty(&Config::default()).unwrap();
         let back: Config = toml::from_str(&text).unwrap();
         assert_eq!(back.hotkey, Config::default().hotkey);
-        assert_eq!(back.sections.len(), 5);
+        assert_eq!(back.sections.len(), 6);
         assert!(back.sections[0].matches.iter().any(|m| m == "chrome.exe"));
     }
 
     #[test]
     fn running_things_are_listed_before_launchable_ones() {
+        let running = |s: Source| matches!(s, Source::Windows | Source::Tabs);
         let sections = Config::default().sections;
-        let last_window = sections.iter().rposition(|s| s.source == Source::Windows).unwrap();
-        let first_launch = sections.iter().position(|s| s.source != Source::Windows).unwrap();
+        let last_running = sections.iter().rposition(|s| running(s.source)).unwrap();
+        let first_launch = sections.iter().position(|s| !running(s.source)).unwrap();
         assert!(
-            last_window < first_launch,
-            "every windows section must come before the launchers"
+            last_running < first_launch,
+            "everything already open must come before the launchers"
         );
+    }
+
+    #[test]
+    fn tabs_sit_next_to_the_browser_windows() {
+        let sections = Config::default().sections;
+        let browsing = sections.iter().position(|s| s.title == "Browsing").unwrap();
+        let tabs = sections.iter().position(|s| s.source == Source::Tabs).unwrap();
+        assert_eq!(tabs, browsing + 1, "the two browser sections must be adjacent");
     }
 
     #[test]

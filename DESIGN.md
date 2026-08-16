@@ -215,6 +215,15 @@ which pids own browser windows.
 Note the socket's own peer process is the wrong target: Chrome opens sockets
 from its network process, which owns no windows.
 
+### Browser things sit together
+
+The `Tabs` section goes directly after `Browsing`, the windows section that
+claims the browser executables. Two headers back to back, one group. Both answer
+the same intent: get me back to a page.
+
+One merged section is still open. It would need a section to take more than one
+`source`, which nothing else needs yet.
+
 ### Bookmarks — via the extension, not the files
 
 Once the WebSocket channel exists, take bookmarks from `chrome.bookmarks` rather

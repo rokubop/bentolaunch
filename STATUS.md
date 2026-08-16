@@ -4,7 +4,7 @@ Where flick stands and what to pick up next.
 
 `DESIGN.md` is the source of truth for *why*. This file is *where*.
 
-Last updated: 2026-08-15, end of the third implementation session.
+Last updated: 2026-08-16, end of the third implementation session.
 
 ## Working
 
@@ -26,7 +26,7 @@ forward.
 | Tray | Show, add app/folder/file, edit settings, exit |
 | Filtering | Type to narrow. 72px strip shows the query and "3 of 47", its text sized from its own height. Width frozen for the query's duration |
 | Keyboard | Arrows move a selection, Enter takes it, Home/End jump. Esc clears the query, then hides |
-| Tabs | Loopback WebSocket, MV3 extension. `source = "tabs"` section. Favicons, deduped by origin. Off until enabled and paired |
+| Tabs | Loopback WebSocket, MV3 extension. Favicons deduped by origin. Section sits next to `Browsing`. Off until enabled and paired |
 | Arranging | No mode. Drag past the shell's threshold to reorder, right-click to pin/unpin, drop from Explorer. Off while filtering |
 | Keep open | Pushpin button, or the right-click menu. Off by default, resets on hide. **Slated for removal, see below** |
 | Safety | `asInvoker`, panic hook, watchdog, no `WH_KEYBOARD_LL` |
@@ -63,7 +63,7 @@ Type-to-filter, driven end to end against a dry-run copy in a scratch directory
   Escape cleared it before the second Escape hid the panel.
 
 The browser bridge, against a stand-in extension (a PowerShell `ClientWebSocket`
-setting its own `Origin`), not real Chrome:
+setting its own `Origin`):
 
 - Paired origin plus token connected, sent 4 tabs, and they became tiles:
   `show: 5 items in 2 section(s)`.
@@ -79,6 +79,14 @@ setting its own `Origin`), not real Chrome:
 - A client killed mid-connection was logged and cleaned up, and its tabs left
   the grid.
 
+**Then against real Chrome**, which settled the three unknowns:
+
+- The MV3 worker does send `Origin: chrome-extension://<id>`, and a loopback
+  WebSocket needs no host permissions.
+- `AllowSetForegroundWindow` plus `chrome.windows.update` raises the window.
+  Clicking a tab tile switches to it. This was the riskiest guess in the design.
+- Favicons arrive and paint. `_favicon` needs no network access from flick.
+
 Input for those was posted, not typed. Covers everything except what the OS owns:
 real capture, and the OLE drag loop.
 
@@ -90,12 +98,7 @@ have never been run.
 
 - **Everything since edit mode came out**: drag threshold, right-click menu,
   "Pin this app", pushpin. Compiles, passes tests, never run.
-- **The bridge against real Chrome.** Every test used a stand-in client. What
-  that leaves open: whether Chrome's service worker actually sets
-  `Origin: chrome-extension://<id>` on the handshake, whether a WebSocket to
-  loopback works without host permissions, and whether
-  `AllowSetForegroundWindow` plus `chrome.windows.update` really raises the
-  window. The gate holds either way — a wrong origin fails closed.
+- Two browsers connected at once. One connection is all that has ever run.
 - **What the filter strip looks like.** Its geometry is verified from the logged
   panel size and its draw call reports no error, but the pixels have never been
   seen — `WS_EX_NOREDIRECTIONBITMAP` means nothing can read them back off a
@@ -112,6 +115,31 @@ have never been run.
   DC reads nothing.
 - A second monitor at a different DPI. Scale is read per show; a mid-session
   change is untested.
+
+## Security
+
+`DESIGN.md`, "Who is allowed on the socket", has the reasoning. What stands:
+
+- Off by default. Loopback only, never the unspecified address. Half a
+  configuration refuses to listen.
+- Origin allowlist is the gate that matters. A page cannot forge its origin, so
+  a site cannot enumerate your tabs. Verified against a live listener with the
+  correct token.
+- Capped past the gate: 4 MiB messages, 1 MiB frames, 8 connections, 2000 tabs.
+- A client can set what flick shows and receive focus commands. Nothing reaches
+  `ShellExecuteW` from a tab's title or URL.
+- `flick.toml` is gitignored, so the token is not in the repo.
+
+Live concerns, none urgent:
+
+- **The panic hook is global.** A panic on a socket thread calls `neutralize`
+  and disables the panel until restart. Socket code is `Result`/`Option`
+  throughout, but nothing enforces that. Catching panics per connection would
+  close it.
+- **The token is weaker than it reads.** Plaintext in `flick.toml`, so anything
+  running as you can read it. It stops other users and blind attempts only.
+- **The extension can read every tab title and URL.** Inherent to the feature.
+  The mitigation is that `worker.js` is ~150 lines and yours.
 
 ## Known gaps
 
@@ -145,10 +173,8 @@ fire, delete both.
 
 **2. Finish Milestone 4**
 
-Tabs work. What is left:
+Tabs work end to end in Chrome. What is left:
 
-- **Load the extension in real Chrome.** Everything so far was driven by a
-  stand-in client. See `extension/README.md` for the three pairing steps.
 - **Bookmarks.** Same channel, `chrome.bookmarks`. A bookmark picker is another
   tray entry over the existing pin-writing path.
 - **"Bookmark this tab"** in the right-click menu, over the same path.
@@ -178,8 +204,9 @@ documented.
 
 - Does `WM_HOTKEY` fire during another process's drag loop? Decides whether
   drop-to-pin survives. See step 1 above.
-- Whether tabs get their own section or merge into `Browsing`. Leaning own
-  section, since filtering is how anyone will reach a specific tab.
+- **Resolved:** tabs keep their own section, placed directly after `Browsing`.
+  Roku's call, one group for browser things. Merging them into one section is
+  still open, and would need a section to take more than one `source`.
 - Whether the score should also weigh recency, so `ch` lands on the Chrome window
   used a minute ago rather than the shortest-titled one. Deferred until there are
   enough tiles for it to matter.
