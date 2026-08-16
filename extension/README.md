@@ -17,22 +17,27 @@ No OS API exposes browser tabs. The alternatives are closed:
 
 ## Pairing
 
-Three steps, because the socket refuses everything until both halves are set.
+The socket stays shut until both halves are set, so this is a round trip.
 
 1. In `flick.toml`, set `enabled = true` under `[browser]`. Restart flick.
    It generates `token` and writes it back to the same file.
 2. Load this folder: `chrome://extensions`, Developer mode on, Load unpacked.
-   Open its options page, paste the token, Save.
-3. The extension connects and is refused. flick logs the origin it saw:
+3. Open its options page. Paste the token in, Save. Copy the origin it shows.
+4. Put that origin in `browser.allow`. Restart flick.
 
-   ```
-   WARN  browser connection refused: origin chrome-extension://abc... is not paired
-   INFO  to pair it, add "chrome-extension://abc..." to browser.allow in flick.toml
-   ```
+flick only listens once `allow` is non-empty, so nothing connects before step 4.
 
-   Paste that into `browser.allow`. Restart flick.
+```
+INFO  browser bridge listening on 127.0.0.1:8777
+INFO  browser connected (connection 1)
+INFO  browser connection 1: 37 tab(s)
+```
 
-Log lives at `%LOCALAPPDATA%\flick\flick.log`.
+Log lives at `%LOCALAPPDATA%\flick\flick.log`. A wrong origin says so:
+
+```
+WARN  browser connection refused: origin chrome-extension://abc... is not paired
+```
 
 ## Add a tab section
 

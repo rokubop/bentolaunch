@@ -99,7 +99,7 @@ pub fn start(hwnd: HWND, config: &crate::config::Browser) {
     let Some(policy) = Policy::new(&config.allow, &token) else {
         log_warn!(
             "browser bridge is enabled but not paired; not listening. \
-             Needs browser.token and at least one browser.allow origin"
+             Add the origin from the extension's options page to browser.allow"
         );
         return;
     };
