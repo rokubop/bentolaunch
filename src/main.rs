@@ -3,6 +3,7 @@
 //! Milestone 1 is a **dry run**: it enumerates and renders the real system, but
 //! every activation is a no-op that logs what it would have done. See DESIGN.md.
 
+mod browser;
 mod config;
 mod log;
 mod model;
@@ -30,6 +31,7 @@ fn main() {
 
     let config = Config::load();
     let sections = config.sections.clone();
+    let bridge = config.browser.clone();
     log_info!(
         "flick starting — dry_run={}, hotkey={}",
         config.dry_run,
@@ -54,6 +56,7 @@ fn main() {
     icons::start(hwnd);
     watch::start(hwnd);
     tray::install(hwnd);
+    browser::server::start(hwnd, &bridge);
 
     log_info!("ready — press the hotkey to summon, or use the tray icon");
     pump();

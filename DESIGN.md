@@ -155,6 +155,54 @@ flow, so a low-rate heartbeat gives a genuinely persistent channel.
 One Chromium extension covers Chrome/Edge/Brave/Vivaldi. Firefox needs a
 separate build.
 
+### Who is allowed on the socket
+
+A loopback WebSocket is not a private channel. Two callers can reach it and they
+need different answers.
+
+**A web page.** Any site you have open can script
+`new WebSocket("ws://127.0.0.1:8777/")`. Without a check it could enumerate every
+tab you have open, titles and URLs. Browsers attach `Origin` to the handshake and
+page JavaScript cannot forge or suppress it, so an origin allowlist closes this
+completely. This is the threat that actually matters.
+
+**Another local program.** Not a browser, so `Origin` is whatever it types. Only
+a shared secret stops it: a token from `BCryptGenRandom`, presented in the
+request path, compared without an early return.
+
+Both are required, so half a configuration refuses to listen. The bridge is off
+by default and binds `127.0.0.1` explicitly — never the unspecified address,
+which would put the tab list on every interface on the machine.
+
+Neither gate defends against code already running as you with your files in
+reach. Such code has better targets than this socket.
+
+Pairing is trust-on-first-use by hand: connect once, read the refused origin out
+of the log, paste it into `browser.allow`. No pairing UI, and no default
+allowlist to leak.
+
+### Raising the browser: hand the right over, do not guess the window
+
+Switching a tab needs nothing from Windows. Raising the window does, and the
+browser cannot do it unaided — the foreground right belongs to flick, because
+the hotkey made flick the last process to receive input.
+
+So flick calls `AllowSetForegroundWindow` for the processes that own browser
+windows, then asks the extension to do both halves. `chrome.windows.update`
+then succeeds.
+
+Rejected: flick raising the window itself. It has no way to map a browser's
+internal `windowId` onto an HWND, and matching on title is a race — the title
+only becomes correct *after* the tab switch. The browser already knows the
+mapping. Give it the right and let it do the work.
+
+Rejected: `AllowSetForegroundWindow(ASFW_ANY)`. Simpler, but it lets anything on
+the machine steal foreground for the same window. The window store already knows
+which pids own browser windows.
+
+Note the socket's own peer process is the wrong target: Chrome opens sockets
+from its network process, which owns no windows.
+
 ### Bookmarks — via the extension, not the files
 
 Once the WebSocket channel exists, take bookmarks from `chrome.bookmarks` rather

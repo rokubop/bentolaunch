@@ -43,6 +43,9 @@ pub enum Target {
     Window(Handle),
     /// Hand this to the shell.
     Shell(String),
+    /// Switch to this browser tab. The one thing flick cannot reach itself: it
+    /// goes back over the socket the extension is connected on.
+    Tab { connection: u64, tab_id: i64, window_id: i64 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -53,6 +56,8 @@ pub enum Kind {
     Folder,
     /// A URI target: settings pages, web links.
     Link,
+    /// An open browser tab.
+    Tab,
 }
 
 impl Kind {
@@ -62,6 +67,7 @@ impl Kind {
             Kind::App => "launch",
             Kind::Folder => "open folder",
             Kind::Link => "open",
+            Kind::Tab => "switch to tab",
         }
     }
 }
@@ -71,6 +77,9 @@ impl Kind {
 pub enum ItemId {
     Window(isize),
     Shell(String),
+    /// Scoped by connection: two browsers hand out tab ids from their own
+    /// counters, so the id alone is not unique across them.
+    Tab(u64, i64),
 }
 
 #[derive(Debug, Clone)]
@@ -92,7 +101,7 @@ impl Item {
     pub fn shell_target(&self) -> Option<&str> {
         match &self.target {
             Target::Shell(name) => Some(name),
-            Target::Window(_) => None,
+            Target::Window(_) | Target::Tab { .. } => None,
         }
     }
 
@@ -108,6 +117,9 @@ impl Item {
                 self.detail
             ),
             Target::Shell(name) => format!("{} \"{}\" -> {}", self.kind.verb(), self.title, name),
+            Target::Tab { tab_id, .. } => {
+                format!("{} {} \"{}\" ({})", self.kind.verb(), tab_id, self.title, self.detail)
+            }
         }
     }
 }

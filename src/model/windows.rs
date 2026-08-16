@@ -39,6 +39,9 @@ pub struct WindowInfo {
     pub title: String,
     pub class: String,
     pub exe: Option<PathBuf>,
+    /// Owning process. Kept so foreground rights can be handed to a browser
+    /// that is about to raise one of its own windows.
+    pub pid: u32,
 }
 
 impl WindowInfo {
@@ -203,6 +206,7 @@ fn describe(hwnd: HWND) -> Option<WindowInfo> {
             title,
             class: class_name(hwnd),
             exe: process_path(pid),
+            pid,
         })
     }
 }

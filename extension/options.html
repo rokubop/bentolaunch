@@ -1,0 +1,50 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>flick bridge</title>
+    <style>
+      body {
+        font: 14px/1.5 "Segoe UI", system-ui, sans-serif;
+        margin: 24px;
+        max-width: 40rem;
+      }
+      h1 { font-size: 1.2rem; margin: 0 0 1rem; }
+      label { display: block; margin: 1rem 0 0.25rem; font-weight: 600; }
+      input { width: 100%; padding: 0.4rem; font-family: ui-monospace, monospace; }
+      code {
+        display: block;
+        padding: 0.5rem;
+        margin-top: 0.25rem;
+        background: #f2f2f4;
+        word-break: break-all;
+        user-select: all;
+      }
+      button { margin-top: 1rem; padding: 0.4rem 1rem; }
+      #saved { margin-left: 0.75rem; color: #0a7; }
+      ol { padding-left: 1.2rem; }
+    </style>
+  </head>
+  <body>
+    <h1>flick bridge</h1>
+
+    <ol>
+      <li>Set <code>enabled = true</code> under <code>[browser]</code> in flick.toml, and restart flick.</li>
+      <li>Copy the token flick generated there into the field below.</li>
+      <li>Add the origin below to <code>browser.allow</code> in flick.toml, and restart flick.</li>
+    </ol>
+
+    <label>This extension's origin</label>
+    <code id="origin"></code>
+
+    <label for="port">Port</label>
+    <input id="port" type="number" min="1" max="65535" />
+
+    <label for="token">Token</label>
+    <input id="token" type="text" spellcheck="false" autocomplete="off" />
+
+    <button id="save">Save</button><span id="saved"></span>
+
+    <script src="options.js"></script>
+  </body>
+</html>

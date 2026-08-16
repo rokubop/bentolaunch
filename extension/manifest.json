@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "flick bridge",
+  "version": "0.1.0",
+  "description": "Sends open tabs to flick, and switches to one when flick asks.",
+  "permissions": ["tabs", "storage", "alarms"],
+  "background": {
+    "service_worker": "worker.js"
+  },
+  "options_page": "options.html"
+}

@@ -22,6 +22,41 @@ pub struct Config {
     pub sections: Vec<SectionConfig>,
     pub grid: Grid,
     pub theme: Theme,
+    pub browser: Browser,
+}
+
+/// The browser bridge: a loopback WebSocket the extension dials into.
+///
+/// Off by default, and it stays off until it has been paired. A listening
+/// socket that will hand anyone a list of your open tabs is not something to
+/// switch on by accident, so `enabled` alone is not enough — see
+/// `browser::server` for the two gates every connection has to pass.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Browser {
+    pub enabled: bool,
+    /// Loopback only. Never bound on any other interface.
+    pub port: u16,
+    /// Extension origins allowed to connect, as `chrome-extension://<id>`.
+    /// Empty rejects everything, which is the default.
+    ///
+    /// flick logs the origin of every refused connection, so pairing is: turn
+    /// it on, connect once, copy the id out of the log.
+    pub allow: Vec<String>,
+    /// Shared secret the extension presents in the request path. Generated on
+    /// first use and written back here. Empty keeps the socket shut.
+    pub token: String,
+}
+
+impl Default for Browser {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: 8777,
+            allow: Vec::new(),
+            token: String::new(),
+        }
+    }
 }
 
 /// Where a section's tiles come from.
@@ -34,6 +69,8 @@ pub enum Source {
     Windows,
     /// Whatever is listed in `items`.
     Manual,
+    /// Open browser tabs, from the extension. Empty until one connects.
+    Tabs,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -153,7 +190,7 @@ pub struct Theme {
 
 /// Browsers, grouped together because that is how they are thought about. Any
 /// browser not listed simply lands in the catch-all section instead.
-const BROWSERS: &[&str] = &[
+pub const BROWSERS: &[&str] = &[
     "chrome.exe",
     "msedge.exe",
     "firefox.exe",
@@ -192,6 +229,7 @@ impl Default for Config {
             ],
             grid: Grid::default(),
             theme: Theme::default(),
+            browser: Browser::default(),
         }
     }
 }

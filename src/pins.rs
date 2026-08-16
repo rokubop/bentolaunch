@@ -245,6 +245,17 @@ fn stack(items: &mut Array) {
     items.set_trailing_comma(true);
 }
 
+/// Write a freshly generated bridge token back into `[browser]`.
+///
+/// Through `toml_edit` like every other write, so a hand-tuned config keeps its
+/// comments. Returns the token on success.
+pub fn set_browser_token(token: &str) -> Option<String> {
+    let path = Config::path()?;
+    let mut doc = read(&path)?;
+    doc["browser"]["token"] = value(token);
+    write(&path, &doc).then(|| token.to_owned())
+}
+
 fn write(path: &Path, doc: &DocumentMut) -> bool {
     match std::fs::write(path, doc.to_string()) {
         Ok(()) => true,

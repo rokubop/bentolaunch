@@ -1304,7 +1304,9 @@ impl Panel {
         let saved = match section.source {
             Source::Manual => pins::reorder(&title, &keys),
             Source::Taskbar => pins::set_order(&title, &keys),
-            Source::Windows => false,
+            // Both are ordered by something that is not flick's to keep: the
+            // foreground hook, and the browser.
+            Source::Windows | Source::Tabs => false,
         };
         if saved {
             self.reload_config();
@@ -1373,6 +1375,9 @@ impl Panel {
                         entries.push(Some(menu::Entry::new(menu::CMD_UNPIN, "Unpin")));
                     }
                 }
+                // Nothing to pin or unpin yet. Bookmarking a tab arrives with
+                // the rest of Milestone 4.
+                Target::Tab { .. } => {}
             }
             if self.locatable(index) {
                 entries.push(Some(menu::Entry::new(
@@ -1606,7 +1611,7 @@ impl Panel {
                 }
                 Some(LRESULT(0))
             }
-            store::WM_MODEL_CHANGED => {
+            store::WM_MODEL_CHANGED | crate::browser::server::WM_TABS_CHANGED => {
                 self.on_model_changed();
                 Some(LRESULT(0))
             }

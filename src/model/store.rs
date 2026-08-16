@@ -85,7 +85,7 @@ fn build_groups(sections: &[SectionConfig]) -> Vec<Group> {
             fixed: match section.source {
                 Source::Taskbar => taskbar::pins_in_order(&section.order),
                 Source::Manual => section.items.iter().filter_map(manual_item).collect(),
-                Source::Windows => Vec::new(),
+                Source::Windows | Source::Tabs => Vec::new(),
             },
         })
         .collect()
@@ -227,6 +227,61 @@ fn shorten_detail(spec: &str) -> String {
 /// Each window is claimed by the first section whose `match` accepts it, so a
 /// filtered section listed above the catch-all is what pulls the browsers, or
 /// Explorer, out into their own group. No window appears twice.
+/// Processes that own a browser window right now.
+///
+/// Used to hand foreground rights over before asking a browser to raise itself.
+/// The socket's own peer process is the wrong target: Chrome opens sockets from
+/// its network process, which owns no windows.
+pub fn browser_pids() -> Vec<u32> {
+    let Ok(s) = store().lock() else {
+        return Vec::new();
+    };
+    let mut pids: Vec<u32> = s
+        .windows
+        .iter()
+        .filter(|w| {
+            w.exe
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().to_lowercase())
+                .is_some_and(|exe| crate::config::BROWSERS.contains(&exe.as_str()))
+        })
+        .map(|w| w.pid)
+        .collect();
+    pids.sort_unstable();
+    pids.dedup();
+    pids
+}
+
+/// Live tabs as tiles.
+///
+/// The icon source is the browser's own executable rather than the site's
+/// favicon: favicons arrive as URLs, which `IShellItemImageFactory` cannot
+/// resolve and flick will not fetch. Left as a known gap in STATUS.md.
+fn tab_items() -> Vec<Item> {
+    crate::browser::server::tabs()
+        .into_iter()
+        .map(|owned| Item {
+            id: ItemId::Tab(owned.connection, owned.tab.id),
+            kind: Kind::Tab,
+            // The host is what makes a tab findable when its title is generic,
+            // and type-to-filter searches this line too.
+            detail: owned.tab.host().to_string(),
+            title: if owned.tab.title.is_empty() {
+                owned.tab.host().to_string()
+            } else {
+                owned.tab.title.clone()
+            },
+            target: Target::Tab {
+                connection: owned.connection,
+                tab_id: owned.tab.id,
+                window_id: owned.tab.window_id,
+            },
+            icon_source: None,
+        })
+        .collect()
+}
+
 pub fn sections() -> Vec<Section> {
     let Ok(s) = store().lock() else {
         log_warn!("item store is poisoned; showing an empty grid");
@@ -249,6 +304,10 @@ pub fn sections() -> Vec<Section> {
                 }
                 items
             }
+            // Tabs are the one source read at show time rather than resolved up
+            // front: they live on the socket thread and change as fast as the
+            // browser does, so there is nothing to cache.
+            Source::Tabs => tab_items(),
             _ => group.fixed.clone(),
         };
 

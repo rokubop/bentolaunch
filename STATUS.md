@@ -20,19 +20,21 @@ forward.
 | Grouping | `match` rules per section, first section claims a window |
 | Icons | `IShellItemImageFactory` on 2 MTA workers, cached, never blocks the UI |
 | Activation | Focus for windows, `ShellExecuteW` for everything else |
-| Targets | Paths, folders, `.lnk`, Store apps, `ms-settings:`, `https:` |
+| Targets | Paths, folders, `.lnk`, Store apps, `ms-settings:`, `https:`, browser tabs |
 | Taskbar pins | Read from the `User Pinned\TaskBar` `.lnk` folder |
 | Config | Live reload on save, tray pickers write pins via `toml_edit` |
 | Tray | Show, add app/folder/file, edit settings, exit |
 | Filtering | Type to narrow. 72px strip shows the query and "3 of 47", its text sized from its own height. Width frozen for the query's duration |
 | Keyboard | Arrows move a selection, Enter takes it, Home/End jump. Esc clears the query, then hides |
+| Tabs | Loopback WebSocket, MV3 extension. `source = "tabs"` section. Off until enabled and paired |
 | Arranging | No mode. Drag past the shell's threshold to reorder, right-click to pin/unpin, drop from Explorer. Off while filtering |
 | Keep open | Pushpin button, or the right-click menu. Off by default, resets on hide. **Slated for removal, see below** |
 | Safety | `asInvoker`, panic hook, watchdog, no `WH_KEYBOARD_LL` |
 
-79 tests: layout, bands, chrome placement, drop slots, reorder arithmetic,
+97 tests: layout, bands, chrome placement, drop slots, reorder arithmetic,
 hotkey and colour parsing, section claiming, every config-writing path, match
-ranking, and the frozen-width and search-strip geometry.
+ranking, the frozen-width and search-strip geometry, and the socket gate both
+as a unit and against a real listener.
 `cargo clippy --all-targets` clean.
 
 ## Verified on the real machine
@@ -60,6 +62,23 @@ Type-to-filter, driven end to end against a dry-run copy in a scratch directory
 - A query matching nothing left the panel at full width with Enter inert, and
   Escape cleared it before the second Escape hid the panel.
 
+The browser bridge, against a stand-in extension (a PowerShell `ClientWebSocket`
+setting its own `Origin`), not real Chrome:
+
+- Paired origin plus token connected, sent 4 tabs, and they became tiles:
+  `show: 5 items in 2 section(s)`.
+- Typing `zombo` narrowed 5 to 1; Enter logged
+  `asked the browser to switch to "Zombocom"` and the client received
+  `{"type":"focus","tabId":104,"windowId":2}`.
+- flick's 20s ping arrived and the client's pong came back. That heartbeat is
+  what keeps an MV3 service worker alive.
+- Refused, all with the correct token: a `https://` page origin, an unpaired
+  extension id. Refused with the paired origin: a wrong token.
+- First run with `enabled = true` generated a token and wrote it back through
+  `toml_edit`, leaving the rest of the file intact.
+- A client killed mid-connection was logged and cleaned up, and its tabs left
+  the grid.
+
 Input for those was posted, not typed. Covers everything except what the OS owns:
 real capture, and the OLE drag loop.
 
@@ -71,6 +90,12 @@ have never been run.
 
 - **Everything since edit mode came out**: drag threshold, right-click menu,
   "Pin this app", pushpin. Compiles, passes tests, never run.
+- **The bridge against real Chrome.** Every test used a stand-in client. What
+  that leaves open: whether Chrome's service worker actually sets
+  `Origin: chrome-extension://<id>` on the handshake, whether a WebSocket to
+  loopback works without host permissions, and whether
+  `AllowSetForegroundWindow` plus `chrome.windows.update` really raises the
+  window. The gate holds either way — a wrong origin fails closed.
 - **What the filter strip looks like.** Its geometry is verified from the logged
   panel size and its draw call reports no error, but the pixels have never been
   seen — `WS_EX_NOREDIRECTIONBITMAP` means nothing can read them back off a
@@ -91,7 +116,10 @@ have never been run.
 ## Known gaps
 
 - Window tiles show icons, not live previews.
-- No browser tabs or bookmarks.
+- No bookmarks yet. Same channel, not built.
+- Tab tiles have no icon. Favicons arrive as URLs, which `IShellItemImageFactory`
+  cannot resolve and flick will not fetch. The extension should send the bytes.
+- Firefox needs its own extension build.
 - A filtered grid cannot be rearranged. Deliberate — see `DESIGN.md` — but it
   means a section has to be fully on screen to reorder it.
 - Dragging moves a tile within its own section only. Moving one between sections
@@ -117,22 +145,18 @@ without stealing focus (`SWP_NOACTIVATE`), drop. That is better than keep-open
 ever was and would save the drop target. ~10 minutes to answer. If it does not
 fire, delete both.
 
-**2. Browser tabs and bookmarks** (Milestone 4)
+**2. Finish Milestone 4**
 
-The largest gap in coverage, and where Roku wants to go: every tab in every
-Chrome window. Unblocked now that filtering exists.
+Tabs work. What is left:
 
-`chrome.tabs.query({})` returns them all with title, url, favIcon, windowId.
-Switching is `chrome.tabs.update(id, {active:true})` plus
-`chrome.windows.update(windowId, {focused:true})`. Localhost WebSocket server
-here, extension connects. Test against a separate Chrome profile first.
-
-Rejected again, for the record: UI Automation on the tab strip gives titles but
-not URLs and turns on Chrome's accessibility mode; DevTools port 9222 needs
-Chrome launched with a flag; profile files are locked and off limits.
-
-Bookmarks are the same channel, and a bookmark picker is another tray entry over
-the existing pin-writing path.
+- **Load the extension in real Chrome.** Everything so far was driven by a
+  stand-in client. See `extension/README.md` for the three pairing steps.
+- **Favicons.** The extension sends the bytes over the socket it already has.
+  Avoids giving flick network access, and 40 identical Chrome icons would make
+  the section unreadable.
+- **Bookmarks.** Same channel, `chrome.bookmarks`. A bookmark picker is another
+  tray entry over the existing pin-writing path.
+- **"Bookmark this tab"** in the right-click menu, over the same path.
 
 **3. Live previews** (Milestone 3)
 

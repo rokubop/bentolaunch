@@ -10,7 +10,8 @@
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    IsIconic, IsWindow, SW_RESTORE, SW_SHOWNORMAL, SetForegroundWindow, ShowWindow,
+    AllowSetForegroundWindow, IsIconic, IsWindow, SW_RESTORE, SW_SHOWNORMAL, SetForegroundWindow,
+    ShowWindow,
     SW_SHOW,
 };
 use windows::core::HSTRING;
@@ -26,6 +27,37 @@ pub fn activate(item: &Item) {
     match &item.target {
         Target::Window(handle) => focus(handle.hwnd(), &item.title),
         Target::Shell(name) => launch(name, &item.title),
+        Target::Tab { connection, tab_id, window_id } => {
+            switch_to_tab(*connection, *tab_id, *window_id, &item.title)
+        }
+    }
+}
+
+/// Switch to a browser tab, and let the browser raise its own window.
+///
+/// The tab switch itself needs nothing from Windows. Raising the window does,
+/// and the browser cannot do it unaided: the foreground right belongs to flick,
+/// because the hotkey made flick the last process to receive input.
+/// `AllowSetForegroundWindow` hands that right over for the next attempt.
+///
+/// Done this way round rather than flick raising the window itself, because
+/// flick has no way to map a browser's internal window id onto an HWND. The
+/// browser does.
+fn switch_to_tab(connection: u64, tab_id: i64, window_id: i64, title: &str) {
+    // Granted to named browser processes rather than `ASFW_ANY`, which would
+    // let anything on the machine steal foreground for the same window.
+    for pid in crate::model::store::browser_pids() {
+        // SAFETY: a stale pid fails harmlessly. This grants a right, it never
+        // takes one away.
+        unsafe {
+            let _ = AllowSetForegroundWindow(pid);
+        }
+    }
+
+    if crate::browser::server::focus(connection, tab_id, window_id) {
+        log_info!("asked the browser to switch to \"{title}\"");
+    } else {
+        log_warn!("could not reach the browser to switch to \"{title}\"");
     }
 }
 
