@@ -157,13 +157,26 @@ Live concerns, none urgent:
   is a config edit.
 - Config edits need the file or the tray. No in-app settings UI.
 
-## Pending, outside the repo
+## Outside the repo
 
-The folder is still `R:\dev\flick`; the docs already say `R:\dev\dashpick`.
-Nothing may sit inside it while it is renamed, editors and shells included.
-It also changes the
-unpacked extension's Chrome id, so remove and re-load it from the new path.
-Both ids are allowlisted in `dashpick.toml`; drop the flick one afterwards.
+Folder renamed to `R:\dev\dashpick` on 2026-08-16. The extension was re-loaded
+from the new path and the bridge reconnects; the old flick id is out of
+`browser.allow`.
+
+The installed copy — what actually runs day to day — is separate from the build
+tree:
+
+| | |
+|---|---|
+| `%LOCALAPPDATA%\Programs\dashpick\` | `dashpick.exe`, `dashpick.ico`, `dashpick.toml` |
+| `%APPDATA%\...\Start Menu\Programs\Startup\DashPick.lnk` | autostart, delete to reverse |
+| `%LOCALAPPDATA%\dashpick\` | `bridge-token`, `dashpick.log` — shared by every build |
+
+Installing a new build is a copy of the exe. It does not touch the config
+already there, so pins survive. The config the panel reads is the one beside
+whichever exe is running: the installed one edits
+`%LOCALAPPDATA%\Programs\dashpick\dashpick.toml`, a `cargo run` edits
+`target\debug\dashpick.toml`. Two separate files, easy to confuse.
 
 ## Next steps
 
@@ -210,8 +223,11 @@ documented.
 - Dragging a tile between sections. The write path exists already (remove plus
   add); the drag has to survive crossing a band boundary, which today clamps to
   the section it started in.
-- Release build and a real tray icon. Currently a stock system icon.
-- Auto-start entry, one of the four reversible footprint items in `DESIGN.md`.
+- A real tray icon. Currently a stock system icon. `rc.exe` is not on this
+  machine either, so the exe has no icon of its own — only the Startup shortcut
+  points at `dashpick.ico`. Both wait on the same missing tool.
+- Auto-start is **done**, as a Startup-folder shortcut — the reversible footprint
+  item in `DESIGN.md`. Not yet a tray toggle; adding or removing it is manual.
 
 ## Open questions
 

@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
 fn main() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    // Read at run time, not `env!`. Baking the path in survives a folder rename
+    // as a stale absolute path and the link fails on a directory that is gone.
+    let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
 
     // Embed the manifest directly via link.exe rather than pulling in a resource
     // crate. Gives us `asInvoker` (safety rule 1) and PerMonitorV2 DPI awareness.

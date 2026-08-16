@@ -3,6 +3,11 @@
 //! Milestone 1 is a **dry run**: it enumerates and renders the real system, but
 //! every activation is a no-op that logs what it would have done. See DESIGN.md.
 
+// Release builds are windowless: this autostarts at login, and a console flashing
+// up every boot is not acceptable. Debug builds keep the console so the stderr
+// mirror in `log` stays usable. The log file is written either way.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod browser;
 mod config;
 mod log;
