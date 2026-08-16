@@ -41,8 +41,22 @@ pub struct Metrics {
     pub max_fraction: f32,
     /// Hard cap on columns. 0 means "whatever fits".
     pub max_cols: usize,
+    /// Use exactly this many columns rather than deriving them from the item
+    /// count. 0 means "derive them".
+    ///
+    /// Only type-to-filter sets it. Without it the panel would change width on
+    /// every keystroke as the match count fell, and a grid that jumps sideways
+    /// while you are reading it is worse than one that is momentarily too wide.
+    /// Still bounded by `max_cols` and the screen, so a stale value cannot push
+    /// the panel off a smaller monitor.
+    pub fixed_cols: usize,
     pub header_h: f32,
     pub section_gap: f32,
+    /// Strip reserved above the grid for the filter query. 0 when not filtering.
+    ///
+    /// It does not scroll — it is the one thing on screen explaining why most of
+    /// the grid is missing, so it cannot be carried off the top.
+    pub search_h: f32,
 }
 
 /// What the layout needs to know about a section: its label and how many tiles.
@@ -106,14 +120,18 @@ impl Layout {
 
         // One column count for the whole panel, driven by the busiest section.
         let widest = sections.iter().map(|s| s.count).max().unwrap_or(0);
-        let cols = widest.clamp(1, capped);
+        let cols = if m.fixed_cols > 0 {
+            m.fixed_cols.clamp(1, capped)
+        } else {
+            widest.clamp(1, capped)
+        };
 
         let panel_w = cols as f32 * m.tile_w + (cols - 1) as f32 * m.gap + 2.0 * m.padding;
 
         let mut tiles = Vec::new();
         let mut headers = Vec::new();
         let mut bands: Vec<Band> = Vec::new();
-        let mut y = m.padding;
+        let mut y = m.search_h + m.padding;
 
         for (index, section) in sections.iter().enumerate() {
             if section.count == 0 {
@@ -164,9 +182,11 @@ impl Layout {
         let panel_h = content_h.min(max_h);
 
         // Stretch the bands over the padding at both ends and over the gaps
-        // between them, so they cover the panel with nothing in between.
+        // between them, so they cover the panel with nothing in between. The
+        // search strip is the exception: it is chrome, not a section, so a drop
+        // on it belongs to nobody.
         for i in 0..bands.len() {
-            let top = if i == 0 { 0.0 } else { bands[i].rect.y };
+            let top = if i == 0 { m.search_h } else { bands[i].rect.y };
             let bottom = bands.get(i + 1).map_or(content_h, |next| next.rect.y);
             bands[i].rect.y = top;
             bands[i].rect.h = bottom - top;
@@ -242,11 +262,28 @@ impl Layout {
     pub fn chrome(&self) -> Rect {
         let m = self.metrics;
         let h = m.header_h.max(16.0).min(self.panel.h);
-        let y = if m.header_h >= 16.0 { m.padding } else { (m.padding - h).max(0.0) };
+        // Below the filter strip when there is one, so the two never overlap.
+        let top = m.search_h;
+        let y = if m.header_h >= 16.0 { top + m.padding } else { (top + m.padding - h).max(top) };
         // A panel barely taller than one tile still has to keep it inside.
         let y = y.min((self.panel.h - h).max(0.0));
         let w = (h * 2.8).min(self.panel.w - 2.0 * m.padding).max(0.0);
         Rect { x: self.panel.w - m.padding - w, y, w, h }
+    }
+
+    /// The filter strip, panel-local. Empty when `search_h` is 0, which is
+    /// every moment there is no query.
+    ///
+    /// Like `chrome`, it is fixed to the panel rather than the content: the grid
+    /// scrolls underneath it.
+    pub fn search_rect(&self) -> Rect {
+        let m = self.metrics;
+        Rect {
+            x: m.padding,
+            y: 0.0,
+            w: (self.panel.w - 2.0 * m.padding).max(0.0),
+            h: m.search_h.min(self.panel.h),
+        }
     }
 
     /// Which band a panel-local point falls in. Unlike `hit_test`, gaps and
@@ -318,8 +355,10 @@ mod tests {
             padding: 20.0,
             max_fraction: 0.8,
             max_cols: 0,
+            fixed_cols: 0,
             header_h: 28.0,
             section_gap: 14.0,
+            search_h: 0.0,
         }
     }
 
@@ -550,6 +589,83 @@ mod tests {
         let button = l.chrome();
         assert!(button.x >= 0.0 && button.x + button.w <= l.panel.w + 0.01);
         assert!(button.y + button.h <= l.panel.h + 0.01);
+    }
+
+    // --- filtering ---
+
+    #[test]
+    fn a_fixed_column_count_holds_the_panel_still_as_matches_fall_away() {
+        let m = Metrics { fixed_cols: 9, ..metrics() };
+        let wide = Layout::compute(&one(40), m, WORK);
+        let narrow = Layout::compute(&one(2), m, WORK);
+
+        assert_eq!(narrow.cols, 9);
+        assert_eq!(narrow.panel.w, wide.panel.w);
+        assert_eq!(narrow.panel.x, wide.panel.x);
+        // Only the height gives way, and the first tile stays where it was.
+        assert!(narrow.panel.h < wide.panel.h);
+        assert_eq!(narrow.tile_rect(0, 0.0).x, wide.tile_rect(0, 0.0).x);
+    }
+
+    #[test]
+    fn a_fixed_count_still_yields_to_the_screen() {
+        // A width frozen on an ultrawide, then applied on a laptop panel.
+        const SMALL: Rect = Rect { x: 0.0, y: 0.0, w: 1280.0, h: 800.0 };
+        let m = Metrics { fixed_cols: 40, ..metrics() };
+        let l = Layout::compute(&one(40), m, SMALL);
+        assert!(l.panel.w <= SMALL.w * 0.8, "panel {} overflowed", l.panel.w);
+        assert_eq!(l.cols, Layout::compute(&one(40), metrics(), SMALL).cols);
+    }
+
+    #[test]
+    fn zero_matches_still_leave_a_panel_to_say_so_in() {
+        let m = Metrics { fixed_cols: 6, search_h: 30.0, ..metrics() };
+        let l = Layout::compute(&[], m, WORK);
+        assert_eq!(l.cols, 6, "the strip must not collapse to one column");
+        assert!(l.panel.h >= 30.0);
+        let strip = l.search_rect();
+        assert!(strip.w > 0.0 && strip.h > 0.0);
+    }
+
+    #[test]
+    fn the_search_strip_sits_above_every_tile_and_header() {
+        let m = Metrics { search_h: 30.0, ..metrics() };
+        let l = Layout::compute(&[shape("Pinned", 4)], m, WORK);
+        let strip = l.search_rect();
+
+        assert_eq!(strip.y, 0.0);
+        assert_eq!(strip.h, 30.0);
+        assert!(strip.y + strip.h <= l.headers(0.0).next().unwrap().1.y);
+        assert!(strip.y + strip.h <= l.tile_rect(0, 0.0).y);
+        // And it costs exactly its own height.
+        let without = Layout::compute(&[shape("Pinned", 4)], metrics(), WORK);
+        assert_eq!(l.content_h, without.content_h + 30.0);
+    }
+
+    #[test]
+    fn the_search_strip_is_chrome_not_a_section() {
+        let m = Metrics { search_h: 30.0, ..metrics() };
+        let l = Layout::compute(&[shape("Pinned", 4)], m, WORK);
+
+        assert_eq!(l.band_at(5.0, 5.0, 0.0), None, "a drop on the strip belongs to nobody");
+        assert_eq!(l.hit_test(5.0, 5.0, 0.0), None);
+        // Everything below it is still covered.
+        for y in 30..l.panel.h as i32 {
+            assert!(l.band_at(5.0, y as f32, 0.0).is_some(), "no band at y={y}");
+        }
+    }
+
+    #[test]
+    fn the_strip_does_not_scroll_with_the_grid() {
+        let m = Metrics { search_h: 30.0, ..metrics() };
+        let l = Layout::compute(&one(500), m, WORK);
+        assert!(l.max_scroll > 0.0);
+
+        // The grid slides under a strip that takes no scroll offset at all.
+        let strip = l.search_rect();
+        assert!(l.tile_rect(0, l.max_scroll).y < l.tile_rect(0, 0.0).y);
+        assert_eq!(strip.y, 0.0);
+        assert_eq!(strip.h, 30.0);
     }
 
     // --- bands and drop slots ---

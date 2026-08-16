@@ -272,7 +272,8 @@ original order. "What's active" and "what I can launch" want the same tile.
 with session caps and frame caching.
 
 **Milestone 4 — browser.** Localhost WebSocket server, Chromium extension, tabs
-+ bookmarks.
++ bookmarks. Type-to-filter was pulled ahead of this and is **done**; 40 tabs
+would have flooded the grid without it.
 
 **Milestone 5 — rearranging and drag-and-drop pinning. Done**, ahead of 3 and 4.
 `IDropTarget`, drag to reorder, unpinning, layout persistence.
@@ -399,6 +400,49 @@ is the same reason tile size is fixed.
 
 Running things sort above launchable ones. Switching to what exists is the more
 common intent, so it gets the top of the panel.
+
+### Type-to-filter
+
+Built before tabs, because it blocks them: 40 tabs would flood a 60-tile grid
+and push everything else off screen. The panel takes activation normally, so
+typing needs no plumbing beyond `WM_CHAR`, and no letter key was spoken for.
+
+Four decisions, all of them about not disturbing the grid:
+
+- **Filtering hides, it never reorders.** A surviving tile keeps its section and
+  its place in it — MRU for windows, the pinned order for the rest. Stable
+  positions are what make the grid learnable, and the same argument that fixed
+  the tile size and rejected auto-grouping applies here. A list that re-sorts on
+  every keystroke is a list you have to re-read every keystroke.
+
+- **The column count freezes for the duration of a query.** Taken from the
+  unfiltered grid on the first character. Without it the panel re-derives its
+  width per keystroke and walks sideways as matches fall away — 9 columns, then
+  6, then 2 — while the eye is trying to read it. Only the height gives way now.
+  Still bounded by the screen, so a width frozen on an ultrawide cannot follow
+  the panel onto a laptop display.
+
+- **Every term must match, and matching is prefix or substring only.** Typing
+  more always narrows. Subsequence ("fuzzy") matching was left out: across ~60
+  tiles it mostly widens the result set with matches the user cannot predict,
+  which is the opposite of the point. Both the title and the detail line are
+  searched, so `chrome` finds a window whose title never says so.
+
+- **Escape unwinds one step at a time.** The query first, the panel only once
+  there is no query left. Backspacing out of a long mistyped filter is not what
+  anyone reaches for Escape to do.
+
+The score is used for exactly one thing: which surviving tile the selection
+starts on, and therefore what Enter takes. Best score, then the shortest title,
+then whatever came first.
+
+Arrows plus Enter came with it. A selection had to exist for Enter to mean
+anything, and once it exists moving it is arithmetic — so keyboard navigation
+works on the unfiltered grid too, not only while filtering.
+
+Dragging is off while a query is active. A filtered section shows a subset in a
+subset's order, and writing that back as the new order would silently drop every
+pin the query hid.
 
 ## Configuring without hand-editing TOML
 

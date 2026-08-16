@@ -124,6 +124,13 @@ pub struct Grid {
     /// Extra space above each section after the first.
     pub section_gap: f32,
     pub corner_radius: f32,
+    /// Height of the strip showing what has been typed. It only appears while
+    /// there is a query, so this costs nothing the rest of the time. 0 filters
+    /// silently, with no strip.
+    ///
+    /// The strip's text is sized from this, so raising it makes the query
+    /// bigger rather than just adding space around it.
+    pub search_height: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,6 +145,10 @@ pub struct Theme {
     /// Fill for a tile being dragged, and for the keep-open button while it is
     /// holding the panel open.
     pub tile_drag: String,
+    /// Fill for the tile Enter would activate. Distinct from `tile_hover`
+    /// because the cursor and the keyboard can point at different tiles at the
+    /// same time, and it has to be obvious which one the keyboard has.
+    pub tile_selected: String,
 }
 
 /// Browsers, grouped together because that is how they are thought about. Any
@@ -199,6 +210,7 @@ impl Default for Grid {
             header_height: 22.0,
             section_gap: 10.0,
             corner_radius: 8.0,
+            search_height: 72.0,
         }
     }
 }
@@ -212,6 +224,7 @@ impl Default for Theme {
             text: "#FFE8E8EC".into(),
             header: "#FF9A9AA8".into(),
             tile_drag: "#FF4A4460".into(),
+            tile_selected: "#FF4C5A78".into(),
         }
     }
 }
@@ -300,6 +313,13 @@ impl Config {
         }
         if !(0.0..=128.0).contains(&g.corner_radius) {
             g.corner_radius = d.corner_radius;
+        }
+        if !(0.0..=200.0).contains(&g.search_height) {
+            log_warn!(
+                "search_height {} out of range; using {}",
+                g.search_height, d.search_height
+            );
+            g.search_height = d.search_height;
         }
 
         if self.sections.is_empty() {

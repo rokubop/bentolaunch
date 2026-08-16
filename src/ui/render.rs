@@ -26,7 +26,8 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
     DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_MEASURING_MODE_NATURAL,
     DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER,
-    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TRIMMING,
+    DWRITE_TRIMMING_GRANULARITY_CHARACTER,
     DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -65,6 +66,9 @@ pub struct TilePaint<'a> {
 /// from the shell's own icon font rather than a bitmap flick has to ship.
 pub const PIN_GLYPH: &str = "\u{E718}";
 
+/// Marks the filter strip as a search box without a border or a caret.
+const SEARCH_GLYPH: &str = "\u{E721}";
+
 pub struct Renderer {
     graphics: CompositionGraphicsDevice,
     title_format: IDWriteTextFormat,
@@ -72,6 +76,9 @@ pub struct Renderer {
     header_format: IDWriteTextFormat,
     /// Segoe MDL2 Assets, for the pushpin.
     glyph_format: IDWriteTextFormat,
+    /// Kept so the filter strip can size its text against the strip itself
+    /// rather than a constant. See `draw_search`.
+    dwrite: IDWriteFactory,
     /// Held so the D2D device outlives every context it hands out.
     _d2d_device: ID2D1Device,
     _d3d_device: ID3D11Device,
@@ -117,6 +124,7 @@ impl Renderer {
             detail_format,
             header_format,
             glyph_format,
+            dwrite,
             _d2d_device: d2d_device,
             _d3d_device: d3d_device,
         })
@@ -271,6 +279,106 @@ impl Renderer {
 
         // SAFETY: pairs with BeginDraw; must run even on failure or the surface
         // stays locked.
+        unsafe {
+            interop.EndDraw()?;
+        }
+        result
+    }
+
+    /// The filter strip: a search glyph, what has been typed, and how much of
+    /// the grid survived it.
+    ///
+    /// The count is the half that matters. Without it, a query that matches
+    /// nothing and a query that matches everything look alike — an empty grid
+    /// and no explanation.
+    ///
+    /// Everything here is sized from `height` rather than from constants,
+    /// because the strip is the one surface whose height the user sets directly
+    /// (`grid.search_height`) *and* which the DPI scale then multiplies. Fixed
+    /// point sizes would leave small text stranded in a tall strip on a scaled
+    /// display. The formats are built per call: that is once per keystroke,
+    /// against the sixty tile repaints happening alongside it.
+    pub fn draw_search(
+        &self,
+        surface: &CompositionDrawingSurface,
+        width: f32,
+        height: f32,
+        query: &str,
+        count: &str,
+        colors: TextColors,
+    ) -> Result<()> {
+        // The query is the strip. It gets the space, and the other two are
+        // sized to sit beside it without competing.
+        // The ratios are the design; the clamps only catch an absurd
+        // `search_height`, so they sit well clear of any sane one.
+        let query_format = text_format(
+            &self.dwrite,
+            DWRITE_FONT_WEIGHT_SEMI_BOLD,
+            (height * 0.46).clamp(11.0, 64.0),
+            DWRITE_TEXT_ALIGNMENT_LEADING,
+        )?;
+        let count_format = text_format(
+            &self.dwrite,
+            DWRITE_FONT_WEIGHT_NORMAL,
+            (height * 0.30).clamp(9.0, 36.0),
+            DWRITE_TEXT_ALIGNMENT_TRAILING,
+        )?;
+        let glyph_format = font_format(
+            &self.dwrite,
+            w!("Segoe MDL2 Assets"),
+            DWRITE_FONT_WEIGHT_NORMAL,
+            (height * 0.38).clamp(10.0, 48.0),
+            DWRITE_TEXT_ALIGNMENT_CENTER,
+        )?;
+
+        // The query gets whatever is left between the glyph and the count, and
+        // ellipsizes inside it rather than running under either.
+        let glyph_w = (height * 0.78).clamp(16.0, 104.0).min(width);
+        let count_w = (height * 2.6).clamp(70.0, 340.0);
+        let text_right = (width - count_w).max(glyph_w);
+
+        let interop: ICompositionDrawingSurfaceInterop = surface.cast()?;
+
+        // SAFETY: BeginDraw hands back a context valid until EndDraw, which the
+        // matching call below always runs.
+        let (context, offset): (ID2D1DeviceContext, POINT) = unsafe {
+            let mut offset = POINT::default();
+            let context = interop.BeginDraw(None, &mut offset)?;
+            (context, offset)
+        };
+
+        // SAFETY: the context is live until EndDraw.
+        let result = unsafe {
+            context.SetTransform(&Matrix3x2::translation(offset.x as f32, offset.y as f32));
+            context.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
+            self.draw_text(
+                &context,
+                SEARCH_GLYPH,
+                &glyph_format,
+                D2D_RECT_F { left: 0.0, top: 0.0, right: glyph_w, bottom: height },
+                colors.detail,
+            )
+            .and_then(|()| {
+                self.draw_text(
+                    &context,
+                    query,
+                    &query_format,
+                    D2D_RECT_F { left: glyph_w, top: 0.0, right: text_right, bottom: height },
+                    colors.title,
+                )
+            })
+            .and_then(|()| {
+                self.draw_text(
+                    &context,
+                    count,
+                    &count_format,
+                    D2D_RECT_F { left: text_right, top: 0.0, right: width, bottom: height },
+                    colors.detail,
+                )
+            })
+        };
+
+        // SAFETY: pairs with BeginDraw; must run even on failure.
         unsafe {
             interop.EndDraw()?;
         }

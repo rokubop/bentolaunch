@@ -4,11 +4,12 @@ Where flick stands and what to pick up next.
 
 `DESIGN.md` is the source of truth for *why*. This file is *where*.
 
-Last updated: 2026-08-15, end of the second implementation session.
+Last updated: 2026-08-15, end of the third implementation session.
 
 ## Working
 
-Milestones 1, 2 and 5 done, plus grouping and config UX pulled forward.
+Milestones 1, 2 and 5 done, plus grouping, config UX and type-to-filter pulled
+forward.
 
 | Area | State |
 |---|---|
@@ -23,12 +24,15 @@ Milestones 1, 2 and 5 done, plus grouping and config UX pulled forward.
 | Taskbar pins | Read from the `User Pinned\TaskBar` `.lnk` folder |
 | Config | Live reload on save, tray pickers write pins via `toml_edit` |
 | Tray | Show, add app/folder/file, edit settings, exit |
-| Arranging | No mode. Drag past the shell's threshold to reorder, right-click to pin/unpin, drop from Explorer |
+| Filtering | Type to narrow. 72px strip shows the query and "3 of 47", its text sized from its own height. Width frozen for the query's duration |
+| Keyboard | Arrows move a selection, Enter takes it, Home/End jump. Esc clears the query, then hides |
+| Arranging | No mode. Drag past the shell's threshold to reorder, right-click to pin/unpin, drop from Explorer. Off while filtering |
 | Keep open | Pushpin button, or the right-click menu. Off by default, resets on hide. **Slated for removal, see below** |
 | Safety | `asInvoker`, panic hook, watchdog, no `WH_KEYBOARD_LL` |
 
-61 tests: layout, bands, chrome placement, drop slots, reorder arithmetic,
-hotkey and colour parsing, section claiming, every config-writing path.
+79 tests: layout, bands, chrome placement, drop slots, reorder arithmetic,
+hotkey and colour parsing, section claiming, every config-writing path, match
+ranking, and the frozen-width and search-strip geometry.
 `cargo clippy --all-targets` clean.
 
 ## Verified on the real machine
@@ -43,6 +47,19 @@ hotkey and colour parsing, section claiming, every config-writing path.
 - Dragging a taskbar tile wrote an `order` list of pin names and applied it.
 - Unpinning removed that entry and left the rest alone.
 
+Type-to-filter, driven end to end against a dry-run copy in a scratch directory
+(its own `flick.toml`, its own hotkey, so the real instance was untouched):
+
+- `s` → 9 of 10, `st` → 4, `sto` → 1. Backspace walked it back to 4.
+- Panel went 926x290 → 926x362 the moment a query existed and back on clearing,
+  the 72px strip exactly. Width and column count did not move across any
+  keystroke.
+- Enter after `sou` logged `would open "Sound" -> ms-settings:sound`.
+- Down, Right, Enter with no query at all took the second tile.
+- End then Enter took the last tile, a live window.
+- A query matching nothing left the panel at full width with Enter inert, and
+  Escape cleared it before the second Escape hid the panel.
+
 Input for those was posted, not typed. Covers everything except what the OS owns:
 real capture, and the OLE drag loop.
 
@@ -54,6 +71,10 @@ have never been run.
 
 - **Everything since edit mode came out**: drag threshold, right-click menu,
   "Pin this app", pushpin. Compiles, passes tests, never run.
+- **What the filter strip looks like.** Its geometry is verified from the logged
+  panel size and its draw call reports no error, but the pixels have never been
+  seen — `WS_EX_NOREDIRECTIONBITMAP` means nothing can read them back off a
+  screen DC. Same constraint as every other visual in the app.
 - **Dropping from Explorer.** Needs a real cross-process mouse drag; cannot be
   posted. Everything under it is tested: the drop target answers, the
   section-under-cursor rule, the same `add` path the pickers use. Pin the panel
@@ -71,13 +92,15 @@ have never been run.
 
 - Window tiles show icons, not live previews.
 - No browser tabs or bookmarks.
+- A filtered grid cannot be rearranged. Deliberate — see `DESIGN.md` — but it
+  means a section has to be fully on screen to reorder it.
 - Dragging moves a tile within its own section only. Moving one between sections
   is a config edit.
 - Config edits need the file or the tray. No in-app settings UI.
 
 ## Next steps
 
-Decided at the end of session two, in this order.
+Session two's order, minus type-to-filter, which was step 2 and is now done.
 
 **1. Drop the pushpin and drop-to-pin**
 
@@ -94,18 +117,10 @@ without stealing focus (`SWP_NOACTIVATE`), drop. That is better than keep-open
 ever was and would save the drop target. ~10 minutes to answer. If it does not
 fire, delete both.
 
-**2. Type-to-filter**
-
-Promoted, because it blocks tabs. 40 tabs floods a 60-tile grid and pushes
-everything else off screen, so filtering has to exist before tabs arrive.
-
-The panel takes activation normally, so keyboard input needs no plumbing, and no
-letter key is spoken for.
-
-**3. Browser tabs and bookmarks** (Milestone 4)
+**2. Browser tabs and bookmarks** (Milestone 4)
 
 The largest gap in coverage, and where Roku wants to go: every tab in every
-Chrome window.
+Chrome window. Unblocked now that filtering exists.
 
 `chrome.tabs.query({})` returns them all with title, url, favIcon, windowId.
 Switching is `chrome.tabs.update(id, {active:true})` plus
@@ -119,7 +134,7 @@ Chrome launched with a flag; profile files are locked and off limits.
 Bookmarks are the same channel, and a bookmark picker is another tray entry over
 the existing pin-writing path.
 
-**4. Live previews** (Milestone 3)
+**3. Live previews** (Milestone 3)
 
 Window tiles become live captures. Needs a sparse package for
 `graphicsCaptureWithoutBorder`, one-time borderless consent, a session cap of
@@ -130,9 +145,10 @@ Still the biggest single risk in the project. The yellow capture border is
 unusable at 50 tiles and suppressing it depends on package identity behaving as
 documented.
 
-**5. Smaller things**
+**4. Smaller things**
 
-- Keyboard navigation, arrows plus Enter.
+- Page Up / Page Down, and letting the arrows wrap across a row edge rather than
+  clamping. Arrows, Enter and Home/End landed with type-to-filter.
 - Dragging a tile between sections. The write path exists already (remove plus
   add); the drag has to survive crossing a band boundary, which today clamps to
   the section it started in.
@@ -144,6 +160,9 @@ documented.
 - Does `WM_HOTKEY` fire during another process's drag loop? Decides whether
   drop-to-pin survives. See step 1 above.
 - Whether tabs get their own section or merge into `Browsing`. Leaning own
-  section, since filtering will be how anyone reaches a specific tab.
+  section, since filtering is how anyone will reach a specific tab.
+- Whether the score should also weigh recency, so `ch` lands on the Chrome window
+  used a minute ago rather than the shortest-titled one. Deferred until there are
+  enough tiles for it to matter.
 - Whether an in-app settings UI is worth building, given every control would be
   hand-drawn. See the rejected-alternatives reasoning in `DESIGN.md`.
