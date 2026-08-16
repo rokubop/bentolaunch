@@ -70,5 +70,8 @@ The socket is loopback-only and refuses a connection unless both hold:
 - The token matches. A non-browser process can claim any origin it likes; it
   cannot guess a 48-hex-character secret from the OS CSPRNG.
 
-Neither stops code already running as you with your files in reach. That code
-has better targets than this socket.
+The token lives in plaintext in `flick.toml`, so anything running as you can
+read it. It stops other users and blind attempts, not code running as you. The
+origin check is what stops the threat that actually exists.
+
+Caps past the gate: 4 MiB messages, 8 live connections, 2000 tabs.

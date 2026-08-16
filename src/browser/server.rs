@@ -10,12 +10,13 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use tungstenite::handshake::server::{ErrorResponse, Request, Response};
+use tungstenite::protocol::WebSocketConfig;
 use tungstenite::{Message, WebSocket};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
@@ -31,6 +32,23 @@ pub const WM_TABS_CHANGED: u32 = WM_APP + 0x40;
 const READ_TIMEOUT: Duration = Duration::from_millis(250);
 /// Comfortably inside Chrome's ~30s service worker idle timeout.
 const PING_EVERY: Duration = Duration::from_secs(20);
+
+/// Live connections. One browser needs one; the cap is here so nothing local
+/// can spend flick's threads and per-connection buffers by dialling in a loop.
+const MAX_CONNECTIONS: usize = 8;
+static LIVE: AtomicUsize = AtomicUsize::new(0);
+
+/// More tabs than anyone has open. A list past this is a bug or an attempt.
+const MAX_TABS: usize = 2_000;
+
+/// tungstenite defaults to 64 MiB messages and a 128 KiB buffer per connection.
+/// A tab list with favicons is tens of KiB, so these are still generous.
+fn limits() -> WebSocketConfig {
+    WebSocketConfig::default()
+        .max_message_size(Some(4 << 20))
+        .max_frame_size(Some(1 << 20))
+        .read_buffer_size(16 * 1024)
+}
 
 /// Tabs carry their connection: focus goes back to the browser that owns the
 /// tab, not whichever answered last.
@@ -136,11 +154,18 @@ fn accept_loop(listener: TcpListener, policy: Policy, hwnd: isize) {
             .map(|peer| peer.ip().is_loopback())
             .unwrap_or(false);
 
+        if LIVE.load(Ordering::Relaxed) >= MAX_CONNECTIONS {
+            log_warn!("browser bridge at {MAX_CONNECTIONS} connections; dropping this one");
+            continue;
+        }
+
         let connection = NEXT.fetch_add(1, Ordering::Relaxed);
         let policy = policy.clone();
+        LIVE.fetch_add(1, Ordering::Relaxed);
         std::thread::spawn(move || {
             serve(stream, loopback, &policy, connection, hwnd);
             disconnect(connection, hwnd);
+            LIVE.fetch_sub(1, Ordering::Relaxed);
         });
     }
 }
@@ -154,7 +179,7 @@ fn serve(stream: TcpStream, loopback: bool, policy: &Policy, connection: u64, hw
     // RefCell because a failed handshake hands the callback back inside the
     // error, so a `&mut` capture would still be borrowed below.
     let refusal: RefCell<Option<Refusal>> = RefCell::new(None);
-    let handshake = tungstenite::accept_hdr(
+    let handshake = tungstenite::accept_hdr_with_config(
         stream,
         |request: &Request, response: Response| -> Result<Response, ErrorResponse> {
             let origin = request
@@ -171,6 +196,7 @@ fn serve(stream: TcpStream, loopback: bool, policy: &Policy, connection: u64, hw
                 }
             }
         },
+        Some(limits()),
     );
 
     let mut socket = match handshake {
@@ -283,6 +309,13 @@ fn handle(text: &str, connection: u64) -> bool {
                 tabs.len(),
                 icons.len()
             );
+            if tabs.len() > MAX_TABS {
+                log_warn!(
+                    "browser connection {connection} sent {} tabs; ignoring the list",
+                    tabs.len()
+                );
+                return false;
+            }
             for (key, icon) in &icons {
                 match icon.to_pixels() {
                     Some(pixels) => crate::shell::icons::put_favicon(key, pixels),
@@ -363,6 +396,35 @@ mod tests {
         let port = serving();
         assert!(!dial(port, Some(ORIGIN), "guessed"));
         assert!(!dial(port, Some(ORIGIN), ""));
+    }
+
+    #[test]
+    fn the_connection_cap_holds_and_recovers() {
+        let port = serving();
+        // Hold the cap open, then prove the next one is turned away.
+        let held: Vec<_> = (0..MAX_CONNECTIONS)
+            .filter_map(|_| {
+                let mut request = format!("ws://127.0.0.1:{port}/{TOKEN}")
+                    .into_client_request()
+                    .unwrap();
+                request.headers_mut().insert("Origin", ORIGIN.parse().unwrap());
+                tungstenite::connect(request).ok()
+            })
+            .collect();
+        assert_eq!(held.len(), MAX_CONNECTIONS, "the cap must admit this many");
+        assert!(!dial(port, Some(ORIGIN), TOKEN), "one past the cap must be refused");
+
+        // Closing them frees the slots again.
+        drop(held);
+        let mut recovered = false;
+        for _ in 0..40 {
+            if dial(port, Some(ORIGIN), TOKEN) {
+                recovered = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(recovered, "slots must come back when connections close");
     }
 
     #[test]

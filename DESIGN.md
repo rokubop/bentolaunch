@@ -166,16 +166,28 @@ tab you have open, titles and URLs. Browsers attach `Origin` to the handshake an
 page JavaScript cannot forge or suppress it, so an origin allowlist closes this
 completely. This is the threat that actually matters.
 
-**Another local program.** Not a browser, so `Origin` is whatever it types. Only
-a shared secret stops it: a token from `BCryptGenRandom`, presented in the
-request path, compared without an early return.
+**Another local program.** Not a browser, so `Origin` is whatever it types. A
+token from `BCryptGenRandom` stands in the way, presented in the request path
+and compared without an early return.
+
+**Be honest about what the token is worth.** It lives in plaintext in
+`flick.toml`, so anything running as you can simply read it. It stops processes
+running as a *different* user, and it stops blind attempts. It does not stop
+code running as you — but such code can already read the file, your browser
+profile, and everything else you own, so this socket is not its best target.
+
+The origin check is the gate that does the real work, because the threat that
+actually exists is a web page, and a page cannot forge its origin.
 
 Both are required, so half a configuration refuses to listen. The bridge is off
 by default and binds `127.0.0.1` explicitly — never the unspecified address,
 which would put the tab list on every interface on the machine.
 
-Neither gate defends against code already running as you with your files in
-reach. Such code has better targets than this socket.
+Past the gate, the connection is still not trusted with much: a client can set
+what flick shows and receive focus commands, nothing else. There is no path
+from a tab's title or URL to `ShellExecuteW`. Message size, frame size, live
+connections and tab count are all capped, because a client that passed the gate
+can still be buggy.
 
 Pairing is trust-on-first-use by hand: connect once, read the refused origin out
 of the log, paste it into `browser.allow`. No pairing UI, and no default
