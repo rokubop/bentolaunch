@@ -22,9 +22,9 @@ Milestones 1, 2 and 5 done, plus grouping and config UX pulled forward.
 | Targets | Paths, folders, `.lnk`, Store apps, `ms-settings:`, `https:` |
 | Taskbar pins | Read from the `User Pinned\TaskBar` `.lnk` folder |
 | Config | Live reload on save, tray pickers write pins via `toml_edit` |
-| Tray | Show, add app/folder/file, arrange tiles, edit settings, exit |
+| Tray | Show, add app/folder/file, edit settings, exit |
 | Arranging | No mode. Drag past the shell's threshold to reorder, right-click to pin/unpin, drop from Explorer |
-| Keep open | Pushpin button, or the right-click menu. Off by default, resets on hide |
+| Keep open | Pushpin button, or the right-click menu. Off by default, resets on hide. **Slated for removal, see below** |
 | Safety | `asInvoker`, panic hook, watchdog, no `WH_KEYBOARD_LL` |
 
 61 tests: layout, bands, chrome placement, drop slots, reorder arithmetic,
@@ -77,33 +77,61 @@ have never been run.
 
 ## Next steps
 
-In recommended order. Each is independent; pick by what is most annoying in
-daily use.
+Decided at the end of session two, in this order.
 
-**1. Live previews** (Milestone 3)
+**1. Drop the pushpin and drop-to-pin**
 
-The visible upgrade: window tiles become live captures instead of icons. Needs a
-sparse package for `graphicsCaptureWithoutBorder`, one-time borderless consent,
-a session cap of 16-24, and frame caching with teardown on hide. The tile visual
-tree already takes a `CompositionDrawingSurface`, so previews drop into the
-existing structure without restructuring.
+Roku's call: the keep-open pin is not worth it. It exists only to serve Explorer
+drops, so both go together. Adding stays covered by right-click "Pin this app",
+the tray pickers, and hand-editing.
 
-Biggest single risk left in the project. The yellow capture border is unusable at
-50 tiles and suppressing it depends on package identity working as documented.
+Removes: `dropzone.rs`, the pushpin, `grid::chrome` and its 3 tests,
+`OleInitialize` back to `CoInitializeEx`. ~200 lines.
 
-**2. Browser tabs and bookmarks** (Milestone 4)
+**Test one thing first.** Does `WM_HOTKEY` fire while another process owns a drag
+loop? If it does, the flow is: drag a file, press the hotkey, panel appears
+without stealing focus (`SWP_NOACTIVATE`), drop. That is better than keep-open
+ever was and would save the drop target. ~10 minutes to answer. If it does not
+fire, delete both.
 
-The largest gap in coverage: tabs are a big share of what is worth switching to.
-Localhost WebSocket server plus a Chromium extension. Test against a separate
-Chrome profile first.
+**2. Type-to-filter**
 
-Once that channel exists, a bookmark picker is just another entry in the tray
-menu, reusing the pin-writing path.
+Promoted, because it blocks tabs. 40 tabs floods a 60-tile grid and pushes
+everything else off screen, so filtering has to exist before tabs arrive.
 
-**3. Smaller things**
+The panel takes activation normally, so keyboard input needs no plumbing, and no
+letter key is spoken for.
 
-- Type-to-filter. The panel already takes activation normally, so keyboard input
-  needs no extra plumbing, and no letter key is spoken for.
+**3. Browser tabs and bookmarks** (Milestone 4)
+
+The largest gap in coverage, and where Roku wants to go: every tab in every
+Chrome window.
+
+`chrome.tabs.query({})` returns them all with title, url, favIcon, windowId.
+Switching is `chrome.tabs.update(id, {active:true})` plus
+`chrome.windows.update(windowId, {focused:true})`. Localhost WebSocket server
+here, extension connects. Test against a separate Chrome profile first.
+
+Rejected again, for the record: UI Automation on the tab strip gives titles but
+not URLs and turns on Chrome's accessibility mode; DevTools port 9222 needs
+Chrome launched with a flag; profile files are locked and off limits.
+
+Bookmarks are the same channel, and a bookmark picker is another tray entry over
+the existing pin-writing path.
+
+**4. Live previews** (Milestone 3)
+
+Window tiles become live captures. Needs a sparse package for
+`graphicsCaptureWithoutBorder`, one-time borderless consent, a session cap of
+16-24, frame caching with teardown on hide. The tile tree already takes a
+`CompositionDrawingSurface`, so previews drop in without restructuring.
+
+Still the biggest single risk in the project. The yellow capture border is
+unusable at 50 tiles and suppressing it depends on package identity behaving as
+documented.
+
+**5. Smaller things**
+
 - Keyboard navigation, arrows plus Enter.
 - Dragging a tile between sections. The write path exists already (remove plus
   add); the drag has to survive crossing a band boundary, which today clamps to
@@ -113,6 +141,9 @@ menu, reusing the pin-writing path.
 
 ## Open questions
 
-- Whether tabs get their own section or merge into `Browsing`.
+- Does `WM_HOTKEY` fire during another process's drag loop? Decides whether
+  drop-to-pin survives. See step 1 above.
+- Whether tabs get their own section or merge into `Browsing`. Leaning own
+  section, since filtering will be how anyone reaches a specific tab.
 - Whether an in-app settings UI is worth building, given every control would be
   hand-drawn. See the rejected-alternatives reasoning in `DESIGN.md`.
