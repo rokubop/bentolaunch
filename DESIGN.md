@@ -90,6 +90,21 @@ Record `GetForegroundWindow()` *before* showing, so Esc restores the caller.
 keyboard input for type-to-filter, for no benefit in an app whose entire purpose
 is to switch away from the current window.
 
+### One instance, and a second launch means "show me"
+
+Named mutex, `Local\dashpick_single_instance`, claimed before the hotkey or the
+tray icon (`instance.rs`). A second copy has nowhere to put itself: the hotkey is
+taken so it starts deaf, and its tray icon sits next to the first one.
+
+So a second launch is read as what it actually is — a request to see the panel.
+It finds the running window by class, posts `WM_SUMMON`, exits. That makes a
+taskbar pin or a Start click behave like the hotkey instead of a duplicate.
+
+The new process is the one holding foreground rights, so it calls
+`AllowSetForegroundWindow` on the running instance before posting. This is the
+exception to "no `AllowSetForegroundWindow` dance" above: there is no hotkey in
+this path to earn the right.
+
 ---
 
 ## Data sources

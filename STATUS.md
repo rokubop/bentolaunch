@@ -32,6 +32,7 @@ forward.
 | Banding | Alternate groups take `theme.tile_alt`. The only cue left once a group lost its header; a rule or a spacer would break the uniform grid |
 | Arranging | No mode. Drag past the shell's threshold to reorder, right-click to pin/unpin, drop from Explorer. Off while filtering |
 | Keep open | Pushpin button, or the right-click menu. Off by default, resets on hide. **Slated for removal, see below** |
+| One instance | Named mutex. A second launch summons the running panel and exits, so a taskbar pin acts like the hotkey |
 | Safety | `asInvoker`, panic hook, watchdog, no `WH_KEYBOARD_LL` |
 
 97 tests: layout, bands, chrome placement, drop slots, reorder arithmetic,

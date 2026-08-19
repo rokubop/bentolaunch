@@ -37,6 +37,7 @@ use windows::core::{Interface, PCWSTR, Result, w};
 use windows_numerics::{Vector2, Vector3};
 
 use crate::config::{self, Config, Source};
+use crate::instance;
 use crate::model::store;
 use crate::model::{Item, Section, Target};
 use crate::safety;
@@ -1571,6 +1572,11 @@ impl Panel {
                 self.toggle();
                 Some(LRESULT(0))
             }
+            // A second copy was launched. Same intent as the hotkey.
+            instance::WM_SUMMON => {
+                self.toggle();
+                Some(LRESULT(0))
+            }
             WM_TIMER => {
                 safety::beat();
                 Some(LRESULT(0))
@@ -1850,7 +1856,7 @@ fn rect_to_grid(r: RECT) -> GridRect {
     }
 }
 
-const CLASS_NAME: PCWSTR = w!("dashpick_panel");
+pub const CLASS_NAME: PCWSTR = w!("dashpick_panel");
 
 unsafe fn create_window() -> Result<HWND> {
     unsafe {

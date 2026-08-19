@@ -24,7 +24,8 @@ cargo build
 target\debug\dashpick.exe
 ```
 
-Starts silent, tray icon only.
+Starts silent, tray icon only. Only one runs at a time: launch it again, from a
+taskbar pin or anywhere else, and the panel comes up instead of a second copy.
 
 Right-click the tray icon:
 

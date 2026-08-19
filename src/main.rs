@@ -10,6 +10,7 @@
 
 mod browser;
 mod config;
+mod instance;
 mod log;
 mod model;
 mod pins;
@@ -33,6 +34,10 @@ fn main() {
     // Installed before anything can panic, and before a window exists to strand.
     safety::install_panic_hook();
     safety::start_watchdog();
+
+    // Before anything that binds the hotkey or drops a tray icon: a second copy
+    // hands its summon to the first and stops here.
+    let Some(_instance) = instance::claim() else { return };
 
     let config = Config::load();
     let sections = config.sections.clone();
