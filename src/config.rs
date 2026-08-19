@@ -321,22 +321,26 @@ impl Default for Config {
         Self {
             dry_run: false,
             hotkey: "alt+`".into(),
-            // Two sections, not six. A section costs a header plus a full row
-            // even for one tile, and a machine with one browser window, one
-            // Explorer window and three tabs spent three rows showing five
-            // tiles. The groups survive inside the section: still ordered,
-            // still tinted apart, no longer a header and a row each.
+            // Three sections, not six. A section costs a header plus a full row
+            // even for one tile, so the ones that stayed had to earn the row.
+            // The groups survive inside a section: still ordered, still tinted
+            // apart, no longer a header and a row each.
+            //
+            // Browsing earns its own header. Browser windows and tabs answer
+            // one question — get me back to a page — and there are enough of
+            // them on any real machine to fill the row a header costs, which is
+            // what the other splits could not do.
             //
             // Running things first: switching to what exists beats launching
-            // something new, so it gets the top of the panel. Browser windows
-            // and tabs lead, and lead adjacent — same intent, get me back to a
-            // page.
+            // something new, so it gets the top of the panel.
             sections: vec![
+                section(
+                    "Browsing",
+                    &[group(Source::Windows, BROWSERS), SourceSpec::Plain(Source::Tabs)],
+                ),
                 section(
                     "Active",
                     &[
-                        group(Source::Windows, BROWSERS),
-                        SourceSpec::Plain(Source::Tabs),
                         group(Source::Windows, &["explorer.exe"]),
                         SourceSpec::Plain(Source::Windows),
                     ],
@@ -639,7 +643,7 @@ mod tests {
         let text = toml::to_string_pretty(&Config::default()).unwrap();
         let back: Config = toml::from_str(&text).unwrap();
         assert_eq!(back.hotkey, Config::default().hotkey);
-        assert_eq!(back.sections.len(), 2);
+        assert_eq!(back.sections.len(), 3);
         assert!(back.sections[0].source.contains(Source::Tabs));
     }
 
@@ -660,23 +664,36 @@ mod tests {
     }
 
     #[test]
-    fn tabs_share_a_section_with_the_windows() {
+    fn tabs_share_a_section_with_the_browser_windows() {
         let sections = Config::default().sections;
         let tabs = sections.iter().find(|s| s.source.contains(Source::Tabs)).unwrap();
+        let browser_windows = tabs
+            .source
+            .iter()
+            .find(|spec| spec.source() == Source::Windows)
+            .and_then(SourceSpec::matches)
+            .unwrap_or_default();
         assert!(
-            tabs.source.contains(Source::Windows),
-            "tabs and windows are one group: both answer get me back to what is open"
+            browser_windows.iter().any(|m| m == "chrome.exe"),
+            "tabs sit with the browser windows: both answer get me back to a page"
         );
     }
 
+    /// One group, across every section: a window is claimed once, so a second
+    /// unfiltered group would never see one and the first would swallow the
+    /// filtered groups listed after it.
     #[test]
-    fn exactly_one_windows_section_is_an_unfiltered_catch_all() {
+    fn exactly_one_windows_group_is_an_unfiltered_catch_all() {
         let catch_alls = Config::default()
             .sections
             .iter()
-            .filter(|s| s.source.contains(Source::Windows) && s.matches.is_empty())
+            .flat_map(|s| s.source.iter().map(move |spec| (s, spec)))
+            .filter(|(section, spec)| {
+                spec.source() == Source::Windows
+                    && spec.matches().unwrap_or(&section.matches).is_empty()
+            })
             .count();
-        assert_eq!(catch_alls, 1, "windows with no matching section must land somewhere");
+        assert_eq!(catch_alls, 1, "windows with no matching group must land somewhere");
     }
 
     #[test]
@@ -701,19 +718,21 @@ source = "taskbar"
         assert!(out.contains(r#"source = ["windows", "tabs"]"#), "{out}");
     }
 
-    /// Merging must not have flattened the grouping. Browser windows lead, and
-    /// the tabs sit directly behind them: same intent, get me back to a page.
+    /// The browsing section leads, and inside it the windows come before the
+    /// tabs. The catch-all sits behind both, or it would claim the browser
+    /// windows before the section above ever sees them.
     #[test]
-    fn browser_things_lead_the_active_section_and_stay_adjacent() {
-        let active = &Config::default().sections[0];
-        let groups: Vec<_> = active.source.iter().collect();
+    fn browsing_leads_and_the_catch_all_comes_after_it() {
+        let sections = Config::default().sections;
+        let browsing: Vec<_> = sections[0].source.iter().collect();
 
-        assert_eq!(groups[0].source(), Source::Windows);
-        assert!(groups[0].matches().unwrap().iter().any(|m| m == "chrome.exe"));
-        assert_eq!(groups[1].source(), Source::Tabs);
-        // And the catch-all is last, or it would swallow the groups behind it.
-        assert_eq!(groups.last().unwrap().source(), Source::Windows);
-        assert_eq!(groups.last().unwrap().matches(), None);
+        assert_eq!(browsing[0].source(), Source::Windows);
+        assert!(browsing[0].matches().unwrap().iter().any(|m| m == "chrome.exe"));
+        assert_eq!(browsing[1].source(), Source::Tabs);
+
+        let catch_all = sections[1].source.iter().last().unwrap();
+        assert_eq!(catch_all.source(), Source::Windows);
+        assert_eq!(catch_all.matches(), None);
     }
 
     #[test]

@@ -217,9 +217,14 @@ from its network process, which owns no windows.
 
 ### Browser things sit together
 
-**Resolved:** they share one section. A section takes a list of sources, and the
-default is `source = ["windows", "tabs"]`. Both answer the same intent — get me
-back to a page — and two headers back to back cost two rows to say it.
+**Resolved:** one section of their own, `source = ["windows", "tabs"]` with the
+windows group matched to `BROWSERS`. Browser windows and tabs answer the same
+intent — get me back to a page — so they were never going to be split from each
+other; the only question was whether that pair was worth a header.
+
+It is. A header costs a row, and the pair is the one part of the panel with
+enough tiles on a real machine to fill the row it costs. The other splits — one
+Explorer window, two stragglers — are what got merged instead.
 
 ### Bookmarks — via the extension, not the files
 
@@ -469,7 +474,8 @@ the list, not by source: two groups can share a source and still need telling
 apart. Set `tile_alt` equal to `tile` to switch it off.
 
 **Rejected: merging pins with windows.** Unchanged, and merging sources does not
-weaken it — the two default sections are exactly that line. See below.
+weaken it — the split between `Active` and `Launch` is exactly that line. See
+below.
 
 **Dragging stops at the seam.** A merged section holds tiles from more than one
 group, and no config can express a taskbar pin sitting between two manual ones:
@@ -595,8 +601,9 @@ A tool that eats your comments is a tool you stop hand-editing.
 
 ## Open questions
 
-- Bookmarks arrive with the extension (Milestone 4). Own section, or merged into
-  an existing one, still open. Tabs are settled: merged with the windows.
+- Bookmarks arrive with the extension (Milestone 4). Own section, or a third
+  group in `Browsing`, still open. Tabs are settled: `Browsing`, behind the
+  browser windows.
 
 **Resolved:** where a dropped item lands with several manual sections. The one it
 was dropped on. Bands cover the whole panel, so the drop point already names a

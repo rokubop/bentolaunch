@@ -109,7 +109,9 @@ dry_run = false      # true: log what a click would do, do nothing
 Order here is order on screen. Empty sections do not render.
 
 Running things are listed before launchable ones, because switching to something
-that exists beats starting something new.
+that exists beats starting something new. Out of the box that is three headers:
+`Browsing` (browser windows and tabs), `Active` (every other window), and
+`Launch` (taskbar pins and anything you pin yourself).
 
 ```toml
 [[sections]]
@@ -171,8 +173,11 @@ Off by default. Windows has no API for browser tabs, so this needs an extension:
 
 ```toml
 [[sections]]
-title  = "Tabs"
-source = "tabs"      # empty until the extension connects
+title  = "Browsing"  # the default: windows first, then tabs
+source = [
+    { source = "windows", match = ["chrome.exe", "msedge.exe", "firefox.exe"] },
+    "tabs",          # empty until the extension connects
+]
 
 [browser]
 enabled = true
@@ -180,8 +185,8 @@ port    = 8777
 allow   = ["chrome-extension://<id from the options page>"]
 ```
 
-`extension/README.md` has the pairing steps. Tabs sit next to your browser
-windows by default, since both answer the same question.
+`extension/README.md` has the pairing steps. Tabs sit under the same header as
+your browser windows, right behind them, since both answer the same question.
 
 **Read this before turning it on.** It opens a port on your machine that only
 your own computer can reach, and it installs an extension that can read the
