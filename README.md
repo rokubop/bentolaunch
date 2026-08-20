@@ -11,11 +11,17 @@ Esc closes and puts you back where you were.
 Windows 11 only. Never asks for admin, and writes nothing outside its own
 config and `%LOCALAPPDATA%\bentopick`.
 
-`DESIGN.md` for architecture and decisions, `STATUS.md` for what works and what
-is still unverified.
+### What it leaves on your machine
 
-Early days. It does what this README says, but plenty is listed as unverified in
-`STATUS.md` and it has only ever run on one machine.
+| Item | Reversal |
+|---|---|
+| Autostart shortcut (optional) | Delete it from the Startup folder |
+| Browser extension, per profile | Uninstall it in the browser |
+
+Nothing else changes. No installer, no registry keys, no elevation, ever.
+
+Early days. It does what this README says, but it has only ever run on one
+machine, and most of it has never been verified anywhere else.
 
 ## Running
 
@@ -197,8 +203,8 @@ What guards that port:
 
 What it does not guard against: software already running under your own account.
 That software can read the token, but it can also read your browser profile
-directly, so this is not the interesting way in. `DESIGN.md` has the full
-reasoning under "Who is allowed on the socket".
+directly, so this is not the interesting way in. `src/browser/gate.rs` has the
+full reasoning at the top of the file.
 
 ### Appearance
 
@@ -239,14 +245,41 @@ tile_selected = "#FF4C5A78"  # the tile Enter would take
 search_height = 72.0     # the filter strip; its text is sized from this
 ```
 
+## Why it's built this way
+
+Hand-written layout and hit-testing on Windows.UI.Composition, no GUI framework.
+The Rust GUI landscape is still weak, with a
+[2026 survey](https://alexzhang-5109.xlog.app/-yi--pan-dian-zai-WASM-shi-jie-zhong-yong-xian-de-ji-shi-ge-Rust-GUI?locale=en)
+putting 94.4% of crates at not production ready: Xilem isn't there, egui is a
+debug UI with limited styling, iced has doc gaps, Dioxus is WebView underneath.
+A framework earns its keep on complex UI anyway, and this is a uniform grid of
+identical tiles, so layout is a few hundred lines.
+
+C#, WPF or WinUI 3 would have been faster to build, but idle RSS runs 50-60MB or
+120MB against 15-20MB native, and this process is resident all day. Tauri and
+Electron add a second resident process on top of that, and can't reach the shell
+APIs that justify going native at all.
+
+The hotkey is `RegisterHotKey`, never `WH_KEYBOARD_LL`. A low-level hook sits in
+every keystroke on the machine, degrading input latency everywhere and
+attracting security tooling. `RegisterHotKey` is process-scoped, released by the
+OS even on a crash, and
+[counts as the last input event](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setforegroundwindow),
+which is what grants the foreground right to activate another window.
+
+Tabs arrive over a loopback WebSocket rather than native messaging, the
+documented transport. MV3 service workers die after ~30s idle, and there are
+[reports of them dying anyway](https://github.com/GoogleChrome/developer.chrome.com/issues/2688)
+at 5-6 minutes with `connectNative()`. Chrome 116+ keeps the worker alive as
+long as messages flow.
+
 ## Known gaps
 
 - Taskbar pin order is alphabetical until you arrange it. Windows keeps its own
   order in an undocumented registry blob, so dragging a tile writes an `order`
   list instead.
-- Bookmarks are not built. Same extension, same channel.
+- Bookmarks are not built.
 - Firefox needs its own extension build.
 - Tab tiles cannot be rearranged, and neither can a filtered grid.
 - Dragging moves a tile within its own section. Moving one between sections
   means editing `bentopick.toml`.
-- Window tiles show icons, not live previews.
