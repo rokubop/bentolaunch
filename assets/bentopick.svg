@@ -1,8 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
-  <title>DashPick</title>
+  <title>BentoPick</title>
 
   <!-- Four tiles. Three resting, one picked: lifted out of the grid, larger,
-       and the only thing wearing colour. The dash is in the lift. -->
+       and the only thing wearing colour. The lift is the pick. -->
 
   <defs>
     <linearGradient id="picked" x1="0" y1="0" x2="1" y2="1">

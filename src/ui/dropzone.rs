@@ -27,7 +27,7 @@ use windows::core::{Ref, Result, implement};
 use crate::{log_info, log_warn};
 
 /// Cursor moved over the panel mid-drag. lparam carries the client point;
-/// answering non-zero means "dashpick would take this".
+/// answering non-zero means "bentopick would take this".
 pub const WM_DRAG_OVER: u32 = WM_APP + 5;
 /// The drag left, or was cancelled.
 pub const WM_DRAG_LEAVE: u32 = WM_APP + 6;

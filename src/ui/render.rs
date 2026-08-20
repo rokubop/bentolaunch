@@ -63,11 +63,15 @@ pub struct TilePaint<'a> {
 }
 
 /// The pushpin on the panel's keep-open button. A Segoe MDL2 glyph, so it comes
-/// from the shell's own icon font rather than a bitmap dashpick has to ship.
+/// from the shell's own icon font rather than a bitmap bentopick has to ship.
 pub const PIN_GLYPH: &str = "\u{E718}";
 
 /// Reads as a search box without needing a border or a caret.
 const SEARCH_GLYPH: &str = "\u{E721}";
+
+/// Stands in for the query until the first keystroke, so a summoned panel
+/// says what it is.
+const WORDMARK: &str = "BentoPick";
 
 pub struct Renderer {
     graphics: CompositionGraphicsDevice,
@@ -364,6 +368,70 @@ impl Renderer {
                     count,
                     &count_format,
                     D2D_RECT_F { left: text_right, top: 0.0, right: width, bottom: height },
+                    colors.detail,
+                )
+            })
+        };
+
+        // SAFETY: pairs with BeginDraw; must run even on failure.
+        unsafe {
+            interop.EndDraw()?;
+        }
+        result
+    }
+
+    /// The name, where the query will go. Drawn in the detail colour at the
+    /// query's own metrics and left edge, so the first keystroke replaces it in
+    /// place rather than moving anything.
+    pub fn draw_wordmark(
+        &self,
+        surface: &CompositionDrawingSurface,
+        width: f32,
+        height: f32,
+        colors: TextColors,
+    ) -> Result<()> {
+        let name_format = text_format(
+            &self.dwrite,
+            DWRITE_FONT_WEIGHT_NORMAL,
+            (height * 0.46).clamp(11.0, 64.0),
+            DWRITE_TEXT_ALIGNMENT_LEADING,
+        )?;
+        let glyph_format = font_format(
+            &self.dwrite,
+            w!("Segoe MDL2 Assets"),
+            DWRITE_FONT_WEIGHT_NORMAL,
+            (height * 0.38).clamp(10.0, 48.0),
+            DWRITE_TEXT_ALIGNMENT_CENTER,
+        )?;
+        let glyph_w = (height * 0.78).clamp(16.0, 104.0).min(width);
+
+        let interop: ICompositionDrawingSurfaceInterop = surface.cast()?;
+
+        // SAFETY: BeginDraw hands back a context valid until EndDraw, which the
+        // matching call below always runs.
+        let (context, offset): (ID2D1DeviceContext, POINT) = unsafe {
+            let mut offset = POINT::default();
+            let context = interop.BeginDraw(None, &mut offset)?;
+            (context, offset)
+        };
+
+        // SAFETY: the context is live until EndDraw.
+        let result = unsafe {
+            context.SetTransform(&Matrix3x2::translation(offset.x as f32, offset.y as f32));
+            context.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
+            self.draw_text(
+                &context,
+                SEARCH_GLYPH,
+                &glyph_format,
+                D2D_RECT_F { left: 0.0, top: 0.0, right: glyph_w, bottom: height },
+                colors.detail,
+            )
+            .and_then(|()| {
+                self.draw_text(
+                    &context,
+                    WORDMARK,
+                    &name_format,
+                    D2D_RECT_F { left: glyph_w, top: 0.0, right: width, bottom: height },
                     colors.detail,
                 )
             })

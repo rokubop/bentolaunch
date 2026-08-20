@@ -1,4 +1,4 @@
-//! What dashpick and the extension say to each other. JSON over the socket.
+//! What bentopick and the extension say to each other. JSON over the socket.
 
 use std::collections::HashMap;
 
@@ -33,7 +33,7 @@ impl Tab {
     }
 }
 
-/// A favicon the extension already decoded. Raw RGBA rather than PNG, so dashpick
+/// A favicon the extension already decoded. Raw RGBA rather than PNG, so bentopick
 /// needs no image decoder and no COM on the socket thread.
 #[derive(Debug, Clone, Deserialize)]
 pub struct IconData {
@@ -65,20 +65,20 @@ impl IconData {
     }
 }
 
-/// Extension to dashpick.
+/// Extension to bentopick.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Inbound {
     Tabs {
         tabs: Vec<Tab>,
-        /// Only the ones dashpick has not been sent yet on this connection.
+        /// Only the ones bentopick has not been sent yet on this connection.
         #[serde(default)]
         icons: HashMap<String, IconData>,
     },
     Pong,
 }
 
-/// dashpick to the extension.
+/// bentopick to the extension.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Outbound {
@@ -88,7 +88,7 @@ pub enum Outbound {
         #[serde(rename = "windowId")]
         window_id: i64,
     },
-    /// Keeps the MV3 worker alive. dashpick drives it: the worker cannot be
+    /// Keeps the MV3 worker alive. bentopick drives it: the worker cannot be
     /// trusted to wake itself.
     Ping,
 }

@@ -1,11 +1,11 @@
 # Status
 
-Where DashPick stands and what to pick up next.
+Where BentoPick stands and what to pick up next.
 
 `DESIGN.md` is the source of truth for *why*. This file is *where*.
 
 Last updated: 2026-08-16, end of the third implementation session.
-Renamed from flick to DashPick at the end of it, then installed and merged the
+Renamed from flick to BentoPick at the end of it, then installed and merged the
 sections down to three headers, one of them `Browsing`.
 
 ## Working
@@ -54,7 +54,7 @@ as a unit and against a real listener.
 - Unpinning removed that entry and left the rest alone.
 
 Type-to-filter, driven end to end against a dry-run copy in a scratch directory
-(its own `dashpick.toml`, its own hotkey, so the real instance was untouched):
+(its own `bentopick.toml`, its own hotkey, so the real instance was untouched):
 
 - `s` → 9 of 10, `st` → 4, `sto` → 1. Backspace walked it back to 4.
 - Panel went 926x290 → 926x362 the moment a query existed and back on clearing,
@@ -74,7 +74,7 @@ setting its own `Origin`):
 - Typing `zombo` narrowed 5 to 1; Enter logged
   `asked the browser to switch to "Zombocom"` and the client received
   `{"type":"focus","tabId":104,"windowId":2}`.
-- DashPick's 20s ping arrived and the client's pong came back. That heartbeat is
+- BentoPick's 20s ping arrived and the client's pong came back. That heartbeat is
   what keeps an MV3 service worker alive.
 - Refused, all with the correct token: a `https://` page origin, an unpaired
   extension id. Refused with the paired origin: a wrong token.
@@ -89,7 +89,7 @@ setting its own `Origin`):
   WebSocket needs no host permissions.
 - `AllowSetForegroundWindow` plus `chrome.windows.update` raises the window.
   Clicking a tab tile switches to it. This was the riskiest guess in the design.
-- Favicons arrive and paint. `_favicon` needs no network access from DashPick.
+- Favicons arrive and paint. `_favicon` needs no network access from BentoPick.
 
 Input for those was posted, not typed. Covers everything except what the OS owns:
 real capture, and the OLE drag loop.
@@ -130,12 +130,12 @@ have never been run.
   a site cannot enumerate your tabs. Verified against a live listener with the
   correct token.
 - Capped past the gate: 4 MiB messages, 1 MiB frames, 8 connections, 2000 tabs.
-- A client can set what DashPick shows and receive focus commands. Nothing reaches
+- A client can set what BentoPick shows and receive focus commands. Nothing reaches
   `ShellExecuteW` from a tab's title or URL.
-- `dashpick.toml` is gitignored, so the token is not in the repo.
-- The token lives in `%LOCALAPPDATA%\dashpick\bridge-token`, not beside the exe.
+- `bentopick.toml` is gitignored, so the token is not in the repo.
+- The token lives in `%LOCALAPPDATA%\bentopick\bridge-token`, not beside the exe.
   A portable build can land in `Program Files`, where a file next to it is
-  readable by every account on the machine. Migrated out of `dashpick.toml` on
+  readable by every account on the machine. Migrated out of `bentopick.toml` on
   startup.
 
 Live concerns, none urgent:
@@ -165,7 +165,7 @@ Live concerns, none urgent:
 
 ## Outside the repo
 
-Folder renamed to `R:\dev\dashpick` on 2026-08-16. The extension was re-loaded
+Folder renamed to `R:\dev\bentopick` on 2026-08-16. The extension was re-loaded
 from the new path and the bridge reconnects; the old flick id is out of
 `browser.allow`.
 
@@ -174,15 +174,15 @@ tree:
 
 | | |
 |---|---|
-| `%LOCALAPPDATA%\Programs\dashpick\` | `dashpick.exe`, `dashpick.ico`, `dashpick.toml` |
-| `%APPDATA%\...\Start Menu\Programs\Startup\DashPick.lnk` | autostart, delete to reverse |
-| `%LOCALAPPDATA%\dashpick\` | `bridge-token`, `dashpick.log` — shared by every build |
+| `%LOCALAPPDATA%\Programs\bentopick\` | `bentopick.exe`, `bentopick.ico`, `bentopick.toml` |
+| `%APPDATA%\...\Start Menu\Programs\Startup\BentoPick.lnk` | autostart, delete to reverse |
+| `%LOCALAPPDATA%\bentopick\` | `bridge-token`, `bentopick.log` — shared by every build |
 
 Installing a new build is a copy of the exe. It does not touch the config
 already there, so pins survive. The config the panel reads is the one beside
 whichever exe is running: the installed one edits
-`%LOCALAPPDATA%\Programs\dashpick\dashpick.toml`, a `cargo run` edits
-`target\debug\dashpick.toml`. Two separate files, easy to confuse.
+`%LOCALAPPDATA%\Programs\bentopick\bentopick.toml`, a `cargo run` edits
+`target\debug\bentopick.toml`. Two separate files, easy to confuse.
 
 ## Next steps
 
@@ -231,7 +231,7 @@ documented.
   the section it started in.
 - A real tray icon. Currently a stock system icon. `rc.exe` is not on this
   machine either, so the exe has no icon of its own — only the Startup shortcut
-  points at `dashpick.ico`. Both wait on the same missing tool.
+  points at `bentopick.ico`. Both wait on the same missing tool.
 - Auto-start is **done**, as a Startup-folder shortcut — the reversible footprint
   item in `DESIGN.md`. Not yet a tray toggle; adding or removing it is manual.
 

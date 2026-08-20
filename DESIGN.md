@@ -1,4 +1,4 @@
-# DashPick — design decisions
+# BentoPick — design decisions
 
 A centered, hotkey-summoned grid of everything worth switching to on this PC:
 running windows, pinned apps, pinned Explorer folders, browser tabs, pinned
@@ -16,7 +16,7 @@ done August 2026; sources are linked inline.
   Win11-only is a deliberate choice — borderless screen capture does not exist
   on Win10, and the fallback path isn't worth carrying.
 - Rust `stable-x86_64-pc-windows-msvc` (1.89.0), toolchain on the Windows side.
-- Repo lives at `R:\dev\dashpick`. Develop from **PowerShell**, not WSL — the
+- Repo lives at `R:\dev\bentopick`. Develop from **PowerShell**, not WSL — the
   toolchain, the GUI process, and the packaging commands are all Windows-native.
 
 ---
@@ -92,7 +92,7 @@ is to switch away from the current window.
 
 ### One instance, and a second launch means "show me"
 
-Named mutex, `Local\dashpick_single_instance`, claimed before the hotkey or the
+Named mutex, `Local\bentopick_single_instance`, claimed before the hotkey or the
 tray icon (`instance.rs`). A second copy has nowhere to put itself: the hotkey is
 taken so it starts deaf, and its tray icon sits next to the first one.
 
@@ -186,7 +186,7 @@ token from `BCryptGenRandom` stands in the way, presented in the request path
 and compared without an early return.
 
 **Be honest about what the token is worth.** It lives in plaintext in
-`dashpick.toml`, so anything running as you can simply read it. It stops processes
+`bentopick.toml`, so anything running as you can simply read it. It stops processes
 running as a *different* user, and it stops blind attempts. It does not stop
 code running as you — but such code can already read the file, your browser
 profile, and everything else you own, so this socket is not its best target.
@@ -199,7 +199,7 @@ by default and binds `127.0.0.1` explicitly — never the unspecified address,
 which would put the tab list on every interface on the machine.
 
 Past the gate, the connection is still not trusted with much: a client can set
-what DashPick shows and receive focus commands, nothing else. There is no path
+what BentoPick shows and receive focus commands, nothing else. There is no path
 from a tab's title or URL to `ShellExecuteW`. Message size, frame size, live
 connections and tab count are all capped, because a client that passed the gate
 can still be buggy.
@@ -211,14 +211,14 @@ allowlist to leak.
 ### Raising the browser: hand the right over, do not guess the window
 
 Switching a tab needs nothing from Windows. Raising the window does, and the
-browser cannot do it unaided — the foreground right belongs to DashPick, because
-the hotkey made DashPick the last process to receive input.
+browser cannot do it unaided — the foreground right belongs to BentoPick, because
+the hotkey made BentoPick the last process to receive input.
 
-So DashPick calls `AllowSetForegroundWindow` for the processes that own browser
+So BentoPick calls `AllowSetForegroundWindow` for the processes that own browser
 windows, then asks the extension to do both halves. `chrome.windows.update`
 then succeeds.
 
-Rejected: DashPick raising the window itself. It has no way to map a browser's
+Rejected: BentoPick raising the window itself. It has no way to map a browser's
 internal `windowId` onto an HWND, and matching on title is a race — the title
 only becomes correct *after* the tab switch. The browser already knows the
 mapping. Give it the right and let it do the work.
@@ -267,9 +267,9 @@ guarantee:
    app needs no privileged operation. This is the strongest available guarantee
    and it is free.
 2. **Portable single exe.** Config next to the binary; caches in
-   `%LOCALAPPDATA%\dashpick`. No installer, no scattered state.
+   `%LOCALAPPDATA%\bentopick`. No installer, no scattered state.
 3. **Read-only toward everything else.** Never write to a browser profile or
-   another app's data. The only writes are DashPick's own config and cache.
+   another app's data. The only writes are BentoPick's own config and cache.
 4. **No `WH_KEYBOARD_LL`.** `RegisterHotKey` is process-scoped and released by
    the OS on exit, including on a crash.
 
@@ -348,7 +348,7 @@ Built as designed. Implementation notes:
 foreground window.
 
 `SetForegroundWindow` needs no `AttachThreadInput` trickery, as predicted above.
-The hotkey makes DashPick the last input recipient, and that right survives hiding
+The hotkey makes BentoPick the last input recipient, and that right survives hiding
 the panel. Minimized windows need `SW_RESTORE` first or they stay down.
 
 Taskbar pins, sections and the parsing-name model landed here too, ahead of the
@@ -374,7 +374,7 @@ Built it. Wrong. Two reasons:
 - First user could not find it. `F2` plus a tray item is not an entry point.
 - Every comparable surface rejects the mode. Taskbar, bookmarks bar, Quick
   Access, Dock: click acts, drag rearranges, right-click manages. Only touch home
-  screens have a mode, and for reasons DashPick does not share: no hover, no
+  screens have a mode, and for reasons BentoPick does not share: no hover, no
   right-click, coarse targets.
 
 The ambiguity is what `SM_CXDRAG` is for. 4px. The shell's own threshold, and
@@ -390,7 +390,7 @@ Settled model:
 | Pushpin | keep the panel open |
 
 **Pin what is in front of you.** The taskbar's best pin action is right-click the
-running app. The browser's is a star on the current page. DashPick already lists
+running app. The browser's is a star on the current page. BentoPick already lists
 every running window, so right-click a window tile gives "Pin this app": no
 picker, no typing. Same menu pins a tab as a bookmark once M4 lands.
 
@@ -406,7 +406,7 @@ Two constraints from the original design held:
 Implementation notes:
 
 - **A press is not yet a click.** `WM_LBUTTONDOWN` starts a press with capture;
-  release decides. Past the threshold: reorder, or nothing on a tile DashPick cannot
+  release decides. Past the threshold: reorder, or nothing on a tile BentoPick cannot
   rearrange. Under it: activate, if the release is still on the same tile.
 - **Layout gained bands.** One per rendered section, tiling the panel with no
   gaps, so a drop between two tiles still names a section. Insertion points are
@@ -415,7 +415,7 @@ Implementation notes:
   that section's `items`. Entries are moved, not rebuilt, so `{ title, target }`
   keeps its title. No separate layout store to fall out of sync.
 - **Taskbar order is an `order` list of pin names** on the section. Windows does
-  not expose its own (see below), so DashPick keeps one once the user states it.
+  not expose its own (see below), so BentoPick keeps one once the user states it.
 - **Unpinning is manual sections only.** A taskbar entry belongs to the taskbar.
   Safety rule 3.
 - **The pushpin is chrome, not content.** Does not scroll, so a long grid cannot
@@ -452,7 +452,7 @@ Two exceptions, both in `shell/icons.rs`:
 ## Sections
 
 Ordered list, each with a title and one or more sources (`taskbar`, `windows`,
-`manual`, `tabs`), configured in `dashpick.toml`. They stack under their own
+`manual`, `tabs`), configured in `bentopick.toml`. They stack under their own
 headers and share one column count so tiles line up. Empty sections do not
 render.
 
@@ -507,7 +507,7 @@ tiles shift as you open and close things. That defeats the fixed tile size.
 **Taskbar pins come from the `.lnk` folder, not the registry.**
 `%APPDATA%\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar`, one
 shortcut per pinned app. `ShellExecuteW` on a `.lnk` launches its target;
-`IShellItemImageFactory` on a `.lnk` returns its target's icon. DashPick never
+`IShellItemImageFactory` on a `.lnk` returns its target's icon. BentoPick never
 resolves the shortcut itself.
 
 Order is not recoverable. It lives in `HKCU\...\Explorer\Taskband\Favorites` as
@@ -583,7 +583,7 @@ Two mechanisms, both cheap because Windows already provides them:
   installed-app browser, Store apps included, and it returns a shell item whose
   parsing name is exactly what the target model stores. So "add an app" needs no
   bespoke UI. Folder and file pickers are the same dialog with different flags.
-- **Live reload.** A worker polls `dashpick.toml`'s mtime and posts to the panel.
+- **Live reload.** A worker polls `bentopick.toml`'s mtime and posts to the panel.
   Reload re-reads config, rebinds the hotkey if it changed, and rebuilds the
   sections. No restart, which makes hand-tuning the grid bearable.
 

@@ -34,7 +34,7 @@ const READ_TIMEOUT: Duration = Duration::from_millis(250);
 const PING_EVERY: Duration = Duration::from_secs(20);
 
 /// Live connections. One browser needs one; the cap is here so nothing local
-/// can spend dashpick's threads and per-connection buffers by dialling in a loop.
+/// can spend bentopick's threads and per-connection buffers by dialling in a loop.
 const MAX_CONNECTIONS: usize = 8;
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 
@@ -86,7 +86,7 @@ pub fn tabs() -> Vec<Owned> {
     out
 }
 
-/// Fire and forget. dashpick has already hidden by the time the switch lands.
+/// Fire and forget. bentopick has already hidden by the time the switch lands.
 pub fn focus(connection: u64, tab_id: i64, window_id: i64) -> bool {
     let Ok(state) = state().lock() else {
         return false;
@@ -210,7 +210,7 @@ fn serve(stream: TcpStream, loopback: bool, policy: &Policy, connection: u64, hw
                     if origin.starts_with("chrome-extension://")
                         || origin.starts_with("moz-extension://")
                     {
-                        log_info!("to pair it, add \"{origin}\" to browser.allow in dashpick.toml");
+                        log_info!("to pair it, add \"{origin}\" to browser.allow in bentopick.toml");
                     }
                 }
                 Some(reason) => log_warn!("browser connection refused: {}", reason.reason()),

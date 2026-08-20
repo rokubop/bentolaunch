@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "DashPick bridge",
+  "name": "BentoPick bridge",
   "version": "0.1.0",
-  "description": "Sends open tabs to DashPick, and switches to one when DashPick asks.",
+  "description": "Sends open tabs to BentoPick, and switches to one when BentoPick asks.",
   "permissions": ["tabs", "storage", "alarms", "favicon"],
   "background": {
     "service_worker": "worker.js"

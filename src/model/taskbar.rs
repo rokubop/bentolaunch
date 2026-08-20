@@ -2,7 +2,7 @@
 //!
 //! Windows keeps these as `.lnk` files in a fixed per-user folder. Reading that
 //! folder is enough: `ShellExecuteW` on a `.lnk` launches its target, and
-//! `IShellItemImageFactory` on a `.lnk` returns the target's icon, so dashpick
+//! `IShellItemImageFactory` on a `.lnk` returns the target's icon, so bentopick
 //! never has to resolve the shortcut itself. Read-only, per safety rule 3.
 //!
 //! What this does **not** recover is the taskbar's left-to-right order. That

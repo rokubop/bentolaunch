@@ -1,6 +1,6 @@
 //! The failure mode that feels like a broken PC: an invisible topmost window
 //! sitting over the desktop swallowing every click. This module makes that
-//! recoverable without the user knowing dashpick exists.
+//! recoverable without the user knowing bentopick exists.
 //!
 //! The escape hatch is `SetWindowLongPtrW(GWL_EXSTYLE, ... | WS_EX_TRANSPARENT)`.
 //! That writes the window struct directly and does **not** require the owning
@@ -68,7 +68,7 @@ pub fn neutralize(reason: &str) {
     if NEUTRALIZED.swap(true, Ordering::SeqCst) {
         return;
     }
-    log_error!("neutralizing dashpick window: {reason}");
+    log_error!("neutralizing bentopick window: {reason}");
 
     // SAFETY: hwnd came from CreateWindowExW and is only cleared on shutdown.
     // Both calls are safe on another thread's window; neither blocks on it.
@@ -95,7 +95,7 @@ pub fn install_panic_hook() {
 /// an atomic unless the panel is actually up.
 pub fn start_watchdog() {
     std::thread::Builder::new()
-        .name("dashpick-watchdog".into())
+        .name("bentopick-watchdog".into())
         .spawn(|| {
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(1000));

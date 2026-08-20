@@ -2,7 +2,7 @@
 //!
 //! `IFileOpenDialog` pointed at `shell:AppsFolder` is a real installed-app
 //! browser: everything on the Start menu, Store apps included. And it returns a
-//! shell item, whose parsing name is exactly the string dashpick's target model
+//! shell item, whose parsing name is exactly the string bentopick's target model
 //! already stores. So "pick an app" costs no bespoke UI, and Store apps come
 //! along for free.
 //!

@@ -1,4 +1,4 @@
-"""Rasterise dashpick.svg to a multi-size .ico. Stdlib only, no image libraries.
+"""Rasterise bentopick.svg to a multi-size .ico. Stdlib only, no image libraries.
 
     python assets/make-icon.py
 
@@ -131,7 +131,7 @@ for sz in SIZES:
     payload = png(sz, rgba) if sz == 256 else dib(sz, rgba)
     images.append((sz, payload))
     if sz == 256:
-        open("assets/dashpick-256.png", "wb").write(payload)
+        open("assets/bentopick-256.png", "wb").write(payload)
 
 out = bytearray(struct.pack("<HHH", 0, 1, len(images)))
 offset = 6 + 16 * len(images)
@@ -141,6 +141,6 @@ for sz, payload in images:
     blobs += payload
     offset += len(payload)
 
-open("assets/dashpick.ico", "wb").write(bytes(out + entries + blobs))
-print("ico:", os.path.getsize("assets/dashpick.ico"), "bytes,", len(images), "sizes")
-print("png:", os.path.getsize("assets/dashpick-256.png"), "bytes")
+open("assets/bentopick.ico", "wb").write(bytes(out + entries + blobs))
+print("ico:", os.path.getsize("assets/bentopick.ico"), "bytes,", len(images), "sizes")
+print("png:", os.path.getsize("assets/bentopick-256.png"), "bytes")

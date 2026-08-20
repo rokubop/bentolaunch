@@ -2,7 +2,7 @@
 //!
 //! A second copy has nowhere to put itself: the hotkey is already registered, so
 //! it starts deaf, and its tray icon sits next to the first one. Launching
-//! dashpick again is not a request for a second copy, it is a request to see the
+//! bentopick again is not a request for a second copy, it is a request to see the
 //! panel, so that is what the second copy hands over before exiting.
 
 use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE};
@@ -19,8 +19,8 @@ use crate::{log_info, log_warn};
 /// instance already knows how to show itself.
 pub const WM_SUMMON: u32 = WM_APP + 8;
 
-/// `Local\` scopes it to this session, so a second user gets their own dashpick.
-const MUTEX_NAME: windows::core::PCWSTR = w!("Local\\dashpick_single_instance");
+/// `Local\` scopes it to this session, so a second user gets their own bentopick.
+const MUTEX_NAME: windows::core::PCWSTR = w!("Local\\bentopick_single_instance");
 
 /// Held for the life of the process. Windows releases it on exit either way;
 /// the handle is closed here so a leak shows up as a compile error rather than

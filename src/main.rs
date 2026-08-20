@@ -1,4 +1,4 @@
-//! dashpick — a hotkey-summoned grid of everything worth switching to.
+//! bentopick — a hotkey-summoned grid of everything worth switching to.
 //!
 //! Milestone 1 is a **dry run**: it enumerates and renders the real system, but
 //! every activation is a no-op that logs what it would have done. See DESIGN.md.
@@ -43,7 +43,7 @@ fn main() {
     let sections = config.sections.clone();
     let bridge = config.browser.clone();
     log_info!(
-        "dashpick starting — dry_run={}, hotkey={}",
+        "bentopick starting — dry_run={}, hotkey={}",
         config.dry_run,
         config.hotkey
     );
@@ -76,7 +76,7 @@ fn main() {
     tray::remove(hwnd);
     panel.hide(false);
     drop(panel);
-    log_info!("dashpick exited cleanly");
+    log_info!("bentopick exited cleanly");
 }
 
 fn pump() {

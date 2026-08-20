@@ -1,4 +1,4 @@
-//! What dashpick knows about, and how it stays current.
+//! What bentopick knows about, and how it stays current.
 
 pub mod store;
 pub mod taskbar;
@@ -36,14 +36,14 @@ impl Handle {
 /// `.lnk`, `shell:AppsFolder\<AppUserModelID>` for a Store app, and a URI like
 /// `ms-settings:display` are all parsing names, and all of them both launch
 /// through `ShellExecuteW` and produce an icon through `IShellItemImageFactory`.
-/// One string covers every non-window thing dashpick can show.
+/// One string covers every non-window thing bentopick can show.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Target {
     /// Focus this window.
     Window(Handle),
     /// Hand this to the shell.
     Shell(String),
-    /// The one thing dashpick cannot reach itself. Goes back over the socket.
+    /// The one thing bentopick cannot reach itself. Goes back over the socket.
     Tab { connection: u64, tab_id: i64, window_id: i64 },
 }
 
@@ -104,7 +104,7 @@ pub struct Item {
 
 impl Item {
     /// The parsing name behind this tile. `None` for a live window, which is
-    /// the one thing dashpick shows that config cannot name.
+    /// the one thing bentopick shows that config cannot name.
     pub fn shell_target(&self) -> Option<&str> {
         match &self.target {
             Target::Shell(name) => Some(name),

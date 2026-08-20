@@ -1,4 +1,4 @@
-//! Tray icon. dashpick has no taskbar presence and no window of its own most of the
+//! Tray icon. bentopick has no taskbar presence and no window of its own most of the
 //! time, so this is the only affordance proving it is running — and the only way
 //! to quit it without the Task Manager.
 
@@ -66,7 +66,7 @@ pub fn install(hwnd: HWND) {
     data.uCallbackMessage = WM_TRAY;
     data.hIcon = app_icon();
 
-    let tip = "DashPick";
+    let tip = "BentoPick";
     for (slot, unit) in data.szTip.iter_mut().zip(tip.encode_utf16()) {
         *slot = unit;
     }
@@ -75,7 +75,7 @@ pub fn install(hwnd: HWND) {
     if unsafe { Shell_NotifyIconW(NIM_ADD, &data) }.as_bool() {
         log_info!("tray icon installed");
     } else {
-        log_warn!("could not install the tray icon; dashpick is running with no visible affordance");
+        log_warn!("could not install the tray icon; bentopick is running with no visible affordance");
     }
 }
 
@@ -96,7 +96,7 @@ pub fn show_menu(hwnd: HWND) -> Option<usize> {
         let _ = GetCursorPos(&mut point);
 
         let menu = CreatePopupMenu().ok()?;
-        let _ = AppendMenuW(menu, MF_STRING, CMD_TOGGLE, w!("Show dashpick"));
+        let _ = AppendMenuW(menu, MF_STRING, CMD_TOGGLE, w!("Show BentoPick"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
         let _ = AppendMenuW(menu, MF_STRING, CMD_ADD_APP, w!("Add app..."));
         let _ = AppendMenuW(menu, MF_STRING, CMD_ADD_FOLDER, w!("Add folder..."));

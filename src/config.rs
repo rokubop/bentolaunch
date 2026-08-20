@@ -39,7 +39,7 @@ pub struct Browser {
     /// `chrome-extension://<id>` origins allowed to connect. Empty rejects
     /// everything. Refused origins are logged, so pairing is copy from the log.
     pub allow: Vec<String>,
-    /// Legacy. The token now lives in `%LOCALAPPDATA%\dashpick\bridge-token`,
+    /// Legacy. The token now lives in `%LOCALAPPDATA%\bentopick\bridge-token`,
     /// which Windows restricts to this account. Anything left here is moved
     /// there on startup and this is blanked.
     pub token: String,
@@ -394,7 +394,7 @@ impl Default for Theme {
 impl Config {
     pub fn path() -> Option<PathBuf> {
         let exe = std::env::current_exe().ok()?;
-        Some(exe.parent()?.join("dashpick.toml"))
+        Some(exe.parent()?.join("bentopick.toml"))
     }
 
     /// Never fails: a broken or absent config falls back to defaults rather than

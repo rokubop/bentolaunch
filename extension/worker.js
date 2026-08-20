@@ -1,7 +1,7 @@
-// Dials dashpick, streams the tab list, switches tabs on request.
+// Dials bentopick, streams the tab list, switches tabs on request.
 //
 // Connects out rather than being connected to: an MV3 worker is killed when
-// idle, and socket traffic keeps it alive. dashpick's 20s ping is what holds it.
+// idle, and socket traffic keeps it alive. bentopick's 20s ping is what holds it.
 
 const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
@@ -36,7 +36,7 @@ async function connect() {
   socket = new WebSocket(`ws://127.0.0.1:${port}/${encodeURIComponent(token)}`);
   socket.onopen = () => {
     backoff = RECONNECT_MIN_MS;
-    // A new dashpick process knows none of them.
+    // A new bentopick process knows none of them.
     iconsSent = new Set();
     sendTabs();
   };
@@ -71,8 +71,8 @@ function originOf(url) {
   }
 }
 
-// Decoded here rather than in dashpick: a service worker already has an image
-// decoder, and shipping raw pixels keeps dashpick free of one.
+// Decoded here rather than in bentopick: a service worker already has an image
+// decoder, and shipping raw pixels keeps bentopick free of one.
 async function decodeIcon(pageUrl) {
   const url = new URL(chrome.runtime.getURL("/_favicon/"));
   url.searchParams.set("pageUrl", pageUrl);
@@ -112,7 +112,7 @@ async function sendTabs() {
   const tabs = await chrome.tabs.query({});
   const keys = await Promise.all(tabs.map((tab) => iconFor(tab.url || "")));
 
-  // Only what dashpick has not been sent on this connection. It keeps them.
+  // Only what bentopick has not been sent on this connection. It keeps them.
   const icons = {};
   keys.forEach((key) => {
     if (key && !iconsSent.has(key)) {
@@ -159,7 +159,7 @@ function receive(data) {
 
   if (message.type === "focus") {
     // The switch needs no foreground rights. Raising the window does, and
-    // dashpick grants them with AllowSetForegroundWindow before asking.
+    // bentopick grants them with AllowSetForegroundWindow before asking.
     chrome.tabs.update(message.tabId, { active: true });
     chrome.windows.update(message.windowId, { focused: true });
   }
@@ -178,7 +178,7 @@ for (const event of [
 }
 
 // The worker still gets killed eventually. The alarm wakes it back up.
-chrome.alarms.create("dashpick-reconnect", { periodInMinutes: 1 });
+chrome.alarms.create("bentopick-reconnect", { periodInMinutes: 1 });
 chrome.alarms.onAlarm.addListener(connect);
 chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);

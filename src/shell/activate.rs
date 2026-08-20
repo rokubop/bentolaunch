@@ -35,7 +35,7 @@ pub fn activate(item: &Item) {
 
 /// Hand the foreground right over and let the browser raise itself.
 ///
-/// dashpick cannot map a browser `windowId` onto an HWND. The browser can.
+/// bentopick cannot map a browser `windowId` onto an HWND. The browser can.
 fn switch_to_tab(connection: u64, tab_id: i64, window_id: i64, title: &str) {
     // Named browser pids, not ASFW_ANY: that would let anything steal
     // foreground for the same window.
@@ -58,7 +58,7 @@ fn switch_to_tab(connection: u64, tab_id: i64, window_id: i64, title: &str) {
 ///
 /// `SetForegroundWindow` is normally restricted, but the process that received
 /// the last input event is allowed to call it — and `RegisterHotKey` delivers
-/// `WM_HOTKEY` as exactly that. So summoning dashpick by its hotkey grants the
+/// `WM_HOTKEY` as exactly that. So summoning bentopick by its hotkey grants the
 /// right that activation needs. See DESIGN.md "Focus model".
 fn focus(hwnd: HWND, title: &str) {
     // SAFETY: the window may have closed between enumeration and this click, in
