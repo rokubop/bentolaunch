@@ -61,10 +61,14 @@ struct Key {
 }
 
 struct Cache {
-    /// `None` means "asked, and there is no icon" — cached so a failing path is
-    /// not retried on every show.
+    /// `None` means "asked enough times, there is no icon" - cached so a
+    /// genuinely iconless path is not retried on every show.
     entries: HashMap<Key, Option<Arc<IconPixels>>>,
     in_flight: HashSet<Key>,
+    /// Misses so far, for keys that have not given up yet. The shell fails
+    /// transiently on a binary it has never been asked about, which a freshly
+    /// downloaded exe always is, so one miss must not be permanent.
+    misses: HashMap<Key, u8>,
 }
 
 static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
@@ -76,6 +80,7 @@ fn cache() -> &'static Mutex<Cache> {
         Mutex::new(Cache {
             entries: HashMap::new(),
             in_flight: HashSet::new(),
+            misses: HashMap::new(),
         })
     })
 }
@@ -186,6 +191,10 @@ fn worker(rx: Arc<Mutex<Receiver<Key>>>) {
 
         let started = Instant::now();
         let pixels = fetch(&key).map(Arc::new);
+        if pixels.is_none() {
+            // Silent before, which is why a blank tile was undiagnosable.
+            log_warn!("no icon for {} at {}px", key.name, key.size);
+        }
         let elapsed = started.elapsed().as_millis();
         if elapsed > SLOW_REQUEST_MS {
             log_warn!(
@@ -196,7 +205,20 @@ fn worker(rx: Arc<Mutex<Receiver<Key>>>) {
 
         if let Ok(mut c) = cache().lock() {
             c.in_flight.remove(&key);
-            c.entries.insert(key, pixels);
+            match pixels {
+                Some(pixels) => {
+                    c.misses.remove(&key);
+                    c.entries.insert(key, Some(pixels));
+                }
+                None => {
+                    let seen = c.misses.entry(key.clone()).or_insert(0);
+                    *seen += 1;
+                    if *seen >= MISS_RETRIES {
+                        c.misses.remove(&key);
+                        c.entries.insert(key, None);
+                    }
+                }
+            }
         }
 
         notify();
@@ -227,7 +249,10 @@ const E_PENDING: windows::core::HRESULT = windows::core::HRESULT(0x8000_000Au32 
 
 /// How many times to ask the shell again after `E_PENDING`, and the first wait
 /// between tries. Doubles each time: 40ms, 80ms, 160ms, 320ms.
-const PENDING_RETRIES: u32 = 4;
+const PENDING_RETRIES: u32 = 6;
+/// How many separate requests a key gets before its blank is taken as final.
+/// Each one is a fresh summon, so this is patience across shows, not a spin.
+const MISS_RETRIES: u8 = 3;
 const PENDING_BACKOFF_MS: u64 = 40;
 
 fn fetch(key: &Key) -> Option<IconPixels> {
