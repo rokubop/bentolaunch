@@ -12,7 +12,7 @@ use windows::UI::Color;
 use windows::UI::Composition::Desktop::DesktopWindowTarget;
 use windows::UI::Composition::{
     CompositionColorBrush, CompositionDrawingSurface, CompositionSpriteShape, Compositor,
-    ContainerVisual, ShapeVisual, SpriteVisual,
+    ContainerVisual, ShapeVisual, SpriteVisual, VisualCollection,
 };
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
@@ -111,6 +111,9 @@ pub struct Panel {
     tiles: Vec<Tile>,
     /// Header visuals, in the same order as `layout.headers()`.
     headers: Vec<SpriteVisual>,
+    /// The name, riding the first header's row. `None` when there is no row to
+    /// put it on.
+    wordmark: Option<SpriteVisual>,
     visible: bool,
     /// Whether a `TrackMouseEvent` request is outstanding. Without one,
     /// WM_MOUSELEAVE never arrives and hover sticks on the last tile.
@@ -225,6 +228,7 @@ impl Panel {
             selected: None,
             tiles: Vec::new(),
             headers: Vec::new(),
+            wordmark: None,
             visible: false,
             tracking_mouse: false,
             caller: HWND(std::ptr::null_mut()),
@@ -294,7 +298,7 @@ impl Panel {
             fixed_cols: self.frozen_cols,
             header_h: g.header_height * scale,
             section_gap: g.section_gap * scale,
-            search_h: if self.query.is_empty() { WORDMARK_H * scale } else { g.search_height * scale },
+            search_h: if self.query.is_empty() { 0.0 } else { g.search_height * scale },
         }
     }
 
@@ -448,6 +452,7 @@ impl Panel {
         }
         self.tiles.clear();
         self.headers.clear();
+        self.wordmark = None;
         self.items.clear();
         self.sections.clear();
     }
@@ -457,6 +462,7 @@ impl Panel {
         children.RemoveAll()?;
         self.tiles.clear();
         self.headers.clear();
+        self.wordmark = None;
 
         let p = self.layout.panel;
         let scale = self.scale();
@@ -492,6 +498,7 @@ impl Panel {
                 built.push(sprite);
             }
             self.headers = built;
+            self.build_wordmark(&children);
         }
 
         let icon_size = self.icon_size();
@@ -556,29 +563,24 @@ impl Panel {
         Ok(())
     }
 
-    /// The filter strip, or the wordmark standing in for it before the first
-    /// keystroke.
+    /// Nothing to build without a query, which is most of the time.
     fn build_search(&mut self) {
         let Some(renderer) = &self.renderer else { return };
         let rect = self.layout.search_rect();
-        if rect.w < 32.0 || rect.h < 10.0 {
+        if self.query.is_empty() || rect.w < 32.0 || rect.h < 10.0 {
             return;
         }
 
         let built = (|| -> Result<()> {
             let surface = renderer.create_surface(rect.w, rect.h)?;
-            if self.query.is_empty() {
-                renderer.draw_wordmark(&surface, rect.w, rect.h, self.text_colors())?;
-            } else {
-                renderer.draw_search(
-                    &surface,
-                    rect.w,
-                    rect.h,
-                    &self.query,
-                    &self.match_count(),
-                    self.text_colors(),
-                )?;
-            }
+            renderer.draw_search(
+                &surface,
+                rect.w,
+                rect.h,
+                &self.query,
+                &self.match_count(),
+                self.text_colors(),
+            )?;
             let sprite = self.compositor.CreateSpriteVisual()?;
             sprite.SetSize(Vector2 { X: rect.w, Y: rect.h })?;
             sprite.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 })?;
@@ -589,6 +591,32 @@ impl Panel {
 
         if let Err(e) = built {
             log_warn!("could not draw the filter strip: {e}");
+        }
+    }
+
+    /// Right-aligned on the first header's row, which is empty over there. Costs
+    /// the panel no height of its own, and scrolls away with the row it rides.
+    fn build_wordmark(&mut self, children: &VisualCollection) {
+        let Some(renderer) = &self.renderer else { return };
+        let Some((_, rect)) = self.layout.headers(self.scroll).next() else { return };
+        if rect.w < 48.0 || rect.h < 10.0 {
+            return;
+        }
+
+        let built = (|| -> Result<SpriteVisual> {
+            let surface = renderer.create_surface(rect.w, rect.h)?;
+            renderer.draw_wordmark(&surface, rect.w, rect.h, self.text_colors())?;
+            let sprite = self.compositor.CreateSpriteVisual()?;
+            sprite.SetSize(Vector2 { X: rect.w, Y: rect.h })?;
+            sprite.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 })?;
+            sprite.SetBrush(&self.compositor.CreateSurfaceBrushWithSurface(&surface)?)?;
+            children.InsertAtTop(&sprite)?;
+            Ok(sprite)
+        })();
+
+        match built {
+            Err(e) => log_warn!("could not draw the wordmark: {e}"),
+            Ok(sprite) => self.wordmark = Some(sprite),
         }
     }
 
@@ -646,6 +674,11 @@ impl Panel {
             let _ = tile.root.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 });
         }
         for (visual, (_, rect)) in self.headers.iter().zip(self.layout.headers(self.scroll)) {
+            let _ = visual.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 });
+        }
+        if let (Some(visual), Some((_, rect))) =
+            (&self.wordmark, self.layout.headers(self.scroll).next())
+        {
             let _ = visual.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 });
         }
     }
@@ -1597,10 +1630,6 @@ fn point_of(lparam: LPARAM) -> (f32, f32) {
 }
 
 /// The detail line sits under the title; same hue, less presence.
-/// The strip the panel keeps for the wordmark when no query is live. Enough to
-/// read the name, not enough to be a header.
-const WORDMARK_H: f32 = 20.0;
-
 fn dim(mut c: D2D1_COLOR_F) -> D2D1_COLOR_F {
     c.a *= 0.6;
     c

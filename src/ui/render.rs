@@ -365,9 +365,8 @@ impl Renderer {
         result
     }
 
-    /// The name, on the strip the panel keeps for it while no query is live.
-    /// Detail colour and small: this is a click-first panel, and the wordmark is
-    /// not something to aim at.
+    /// The name, right-aligned on a header's row. Detail colour and header-sized:
+    /// this is a click-first panel, and the wordmark is not something to aim at.
     pub fn draw_wordmark(
         &self,
         surface: &CompositionDrawingSurface,
@@ -378,8 +377,8 @@ impl Renderer {
         let name_format = text_format(
             &self.dwrite,
             DWRITE_FONT_WEIGHT_SEMI_BOLD,
-            (height * 0.62).clamp(9.0, 22.0),
-            DWRITE_TEXT_ALIGNMENT_LEADING,
+            (height * 0.55).clamp(9.0, 20.0),
+            DWRITE_TEXT_ALIGNMENT_TRAILING,
         )?;
 
         let interop: ICompositionDrawingSurfaceInterop = surface.cast()?;
