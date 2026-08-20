@@ -8,37 +8,22 @@ Example:
 1) Press `` Alt+` `` to immediately show BentoPick - See running apps, taskbar pins, and browser tabs in a grid of tiles.
 2) Click what you want to switch to, or type to filter the grid
 
-## Setup
+## Install
 
-Windows 11 and [Rust](https://rustup.rs). Build from **PowerShell, not WSL** -
-the toolchain, the window and the packaging are all Windows-native.
+Windows 11. No installer, no admin.
 
-```powershell
-git clone https://github.com/rokubop/bentopick
-cd bentopick
-cargo build --release
-target\release\bentopick.exe
-```
+1. Download **[bentopick.exe](https://github.com/rokubop/bentopick/releases/latest/download/bentopick.exe)**
+   from the [latest release](https://github.com/rokubop/bentopick/releases/latest).
+2. Put it somewhere it can stay. It writes its settings file next to itself, so
+   `%LOCALAPPDATA%\Programs\bentopick\` beats your Downloads folder.
+3. Run it. Windows will say it does not recognise the app: **More info** ->
+   **Run anyway**. It is unsigned, a code signing certificate is on the list.
+4. Press `` Alt+` ``.
 
-That is enough to try it: press `` Alt+` `` and the panel comes up. Debug builds
-(`cargo build`) keep a console window so the log is visible; release builds are
-silent, which is what you want once it autostarts.
+Tray icon only, no window until you summon it. Updating is copying a newer exe
+over the old one, your pins are in the `.toml` beside it and survive.
 
-First run writes `bentopick.toml` **next to the exe**. That is deliberate -
-config travels with the binary, so a copied exe brings its pins with it.
-
-### Keep it
-
-The exe is portable, so installing it is a copy. Somewhere stable, because the
-config lives beside it:
-
-```powershell
-$dir = "$env:LOCALAPPDATA\Programs\bentopick"
-mkdir $dir -Force
-copy target\release\bentopick.exe $dir
-```
-
-Start it at login by dropping a shortcut in the Startup folder:
+### Start it at login
 
 ```powershell
 $s = (New-Object -ComObject WScript.Shell).CreateShortcut(
@@ -47,16 +32,33 @@ $s.TargetPath = "$env:LOCALAPPDATA\Programs\bentopick\bentopick.exe"
 $s.Save()
 ```
 
-Delete that shortcut to undo it. Installing a newer build is another copy over
-the top; your pins survive, since they are in the `.toml` beside it.
-
-Watch which copy you are running - the panel reads the config next to whichever
-exe started, so an installed copy and `target\release\` have separate settings.
+Delete that shortcut to undo it.
 
 ### Tabs from your browser
 
-Optional, off by default, and a separate step: load `extension/`, then pair it
-from the tray icon. [Browser tabs](#browser-tabs) below has the whole story.
+Optional and off by default. Grab `bentopick-extension.zip` from the same
+release, load it at `chrome://extensions` with Developer mode on, then pair it
+from the tray: **Browser > Pair a browser...**. Six digits, no config editing.
+[Browser tabs](#browser-tabs) below has the details and what it can see.
+
+Take both halves from the same release. Mismatched versions will say so.
+
+## Build it yourself
+
+Needs [Rust](https://rustup.rs). From **PowerShell, not WSL**, the toolchain and
+the window are Windows-native.
+
+```powershell
+git clone https://github.com/rokubop/bentopick
+cd bentopick
+cargo build --release
+target\release\bentopick.exe
+```
+
+`cargo build` without `--release` keeps a console window so the log is visible.
+
+Careful which copy you are running. The panel reads the config next to whichever
+exe started, so an installed copy and `target\release\` have separate settings.
 
 ## Running
 
