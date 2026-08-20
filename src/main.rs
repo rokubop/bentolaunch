@@ -67,6 +67,8 @@ fn main() {
     watch::start(hwnd);
     tray::install(hwnd);
     browser::server::start(hwnd, &bridge);
+    // After the bridge, so the tooltip can say what happened to it.
+    tray::refresh(hwnd);
 
     log_info!("ready — press the hotkey to summon, or use the tray icon");
     pump();

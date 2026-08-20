@@ -27,21 +27,25 @@ pub struct Config {
 
 /// Loopback WebSocket the extension dials into.
 ///
-/// Off by default and until paired: `enabled` alone is not enough. A socket
-/// that hands out your open tabs is not something to switch on by accident.
-/// The two gates are in `browser::gate`.
+/// Off by default, and switching it on grants nothing on its own: a caller
+/// still has to arrive from a paired origin and prove it knows that peer's
+/// token. A socket that hands out your open tabs is not something to switch on
+/// by accident. The gates are in `browser::gate`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Browser {
     pub enabled: bool,
     /// Loopback only. Never bound on any other interface.
     pub port: u16,
-    /// `chrome-extension://<id>` origins allowed to connect. Empty rejects
-    /// everything. Refused origins are logged, so pairing is copy from the log.
+    /// Legacy. Paired browsers now live in `%LOCALAPPDATA%\bentopick\peers.json`,
+    /// one token each, added by "Pair a browser..." in the tray. Origins left
+    /// here are carried over on startup and this is blanked.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub allow: Vec<String>,
-    /// Legacy. The token now lives in `%LOCALAPPDATA%\bentopick\bridge-token`,
-    /// which Windows restricts to this account. Anything left here is moved
-    /// there on startup and this is blanked.
+    /// Legacy, and never repopulated: a token in a file beside the exe is
+    /// readable by every account on the machine. Anything left here is carried
+    /// into the peer store on startup and this is blanked.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub token: String,
 }
 

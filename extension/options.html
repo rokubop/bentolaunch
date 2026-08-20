@@ -10,41 +10,53 @@
         max-width: 40rem;
       }
       h1 { font-size: 1.2rem; margin: 0 0 1rem; }
-      label { display: block; margin: 1rem 0 0.25rem; font-weight: 600; }
-      input { width: 100%; padding: 0.4rem; font-family: ui-monospace, monospace; }
-      code {
-        display: block;
-        padding: 0.5rem;
-        margin-top: 0.25rem;
-        background: #f2f2f4;
-        word-break: break-all;
-        user-select: all;
-      }
-      button { margin-top: 1rem; padding: 0.4rem 1rem; }
-      #saved { margin-left: 0.75rem; color: #0a7; }
+      p { margin: 0.5rem 0; }
       ol { padding-left: 1.2rem; }
+      label { display: block; margin: 1rem 0 0.25rem; font-weight: 600; }
+      input { padding: 0.4rem; font-family: ui-monospace, monospace; }
+      #code { width: 8rem; font-size: 1.4rem; letter-spacing: 0.15em; text-align: center; }
+      #port { width: 8rem; }
+      button { margin-top: 1rem; padding: 0.4rem 1rem; }
+      #status { padding: 0.6rem 0.8rem; border-radius: 4px; background: #f2f2f4; }
+      #status.paired { background: #e6f6ee; }
+      #status.problem { background: #fdecec; }
+      #message { margin-left: 0.75rem; }
+      #message.bad { color: #c22; }
+      #message.good { color: #0a7; }
+      details { margin-top: 1.5rem; color: #555; }
+      summary { cursor: pointer; }
     </style>
   </head>
   <body>
     <h1>BentoPick bridge</h1>
 
-    <ol>
-      <li>Set <code>enabled = true</code> under <code>[browser]</code> in bentopick.toml, and restart BentoPick.</li>
-      <li>Copy the token BentoPick generated there into the field below.</li>
-      <li>Add the origin below to <code>browser.allow</code> in bentopick.toml, and restart BentoPick.</li>
-    </ol>
+    <p id="status">Checking…</p>
 
-    <label>This extension's origin</label>
-    <code id="origin"></code>
+    <section id="pairing">
+      <ol>
+        <li>Right-click the BentoPick tray icon and choose <b>Browser &rsaquo; Pair a browser…</b></li>
+        <li>Type the six digits it shows here.</li>
+      </ol>
 
-    <label for="port">Port</label>
-    <input id="port" type="number" min="1" max="65535" />
+      <label for="code">Pairing code</label>
+      <input id="code" type="text" inputmode="numeric" maxlength="7" spellcheck="false" autocomplete="off" />
 
-    <label for="token">Token</label>
-    <input id="token" type="text" spellcheck="false" autocomplete="off" />
+      <button id="pair">Pair with BentoPick</button><span id="message"></span>
+    </section>
 
-    <button id="save">Save</button><span id="saved"></span>
+    <section id="unpair" hidden>
+      <p>To unpair, use <b>Browser &rsaquo; Forget</b> in the BentoPick tray menu - that removes
+      the token at both ends. <button id="forget">Forget it here only</button></p>
+    </section>
 
+    <details>
+      <summary>Advanced</summary>
+      <label for="port">Port</label>
+      <input id="port" type="number" min="1" max="65535" />
+      <p>Only change this if BentoPick's <code>browser.port</code> was changed too.</p>
+    </details>
+
+    <script src="bridge.js"></script>
     <script src="options.js"></script>
   </body>
 </html>

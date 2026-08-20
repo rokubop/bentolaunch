@@ -33,9 +33,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_RIGHT, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
-use windows::core::{Interface, PCWSTR, Result, w};
+use windows::core::{HSTRING, Interface, PCWSTR, Result, w};
 use windows_numerics::{Vector2, Vector3};
 
+use crate::browser::{gate, server};
 use crate::config::{self, Config, Source};
 use crate::instance;
 use crate::model::store;
@@ -1431,6 +1432,101 @@ impl Panel {
         }
     }
 
+    /// Pairing, start to finish. A modal is the whole mechanism, not just the
+    /// message: the pairing window is open for exactly as long as this box is
+    /// on screen, which is a rule the user can see instead of a countdown they
+    /// have to beat. `MessageBoxW` runs its own message loop, so the panel and
+    /// the socket threads keep going underneath it.
+    fn pair_browser(&mut self) {
+        if !matches!(server::status().0, server::Status::Listening) {
+            // Pairing needs a socket, and asking the user to hand-edit the
+            // config to reach the pairing flow is how the old one went wrong.
+            if !self.config.browser.enabled {
+                log_info!("turning the browser bridge on to pair");
+                pins::set_browser_enabled(true);
+                self.config.browser.enabled = true;
+            }
+            let bridge = self.config.browser.clone();
+            server::start(self.hwnd, &bridge);
+        }
+
+        let (status, port) = server::status();
+        if status != server::Status::Listening {
+            // Refusing to pair here is the point. Something else on the port
+            // is the one situation where the extension could be talking to
+            // something that is not bentopick, and handing out a code in that
+            // state would be handing it to whatever answered.
+            self.say(
+                "Cannot pair right now",
+                &format!(
+                    "Another process is using port {port}, so BentoPick's browser \
+                     bridge is not listening.\n\n\
+                     Close whatever is using it, or set a different browser.port in \
+                     bentopick.toml, then try again."
+                ),
+            );
+            return;
+        }
+
+        let Some(code) = gate::open_pairing() else {
+            self.say("Cannot pair right now", "Could not generate a pairing code.");
+            return;
+        };
+
+        self.say(
+            "Pair a browser",
+            &format!(
+                "Pairing code:  {}  {}\n\n\
+                 Open the BentoPick extension's options page, choose \"Pair with \
+                 BentoPick\", and type this code.\n\n\
+                 Pairing stays open until you close this window.",
+                &code[..3],
+                &code[3..]
+            ),
+        );
+
+        gate::close_pairing();
+        tray::refresh(self.hwnd);
+    }
+
+    /// Index into the same list the tray menu was built from. A peer forgotten
+    /// between the menu opening and the click just is not there any more.
+    fn forget_browser(&mut self, index: usize) {
+        let Some(peer) = crate::browser::peers::all().into_iter().nth(index) else {
+            return;
+        };
+        if crate::browser::peers::forget(&peer.origin) {
+            // Its tabs are still on screen until it notices; the next refusal
+            // closes the connection and takes them with it.
+            self.say(
+                "Browser forgotten",
+                &format!(
+                    "{} is no longer paired. Its tabs disappear as soon as it \
+                     reconnects and is turned away.",
+                    peer.name
+                ),
+            );
+            tray::refresh(self.hwnd);
+        }
+    }
+
+    /// The only dialog bentopick has. Everything else it draws itself, but a
+    /// pairing code has to be readable while the user is typing into another
+    /// window, and a stock modal is exactly that.
+    fn say(&self, caption: &str, text: &str) {
+        let (text, caption) = (HSTRING::from(text), HSTRING::from(caption));
+        // SAFETY: both strings outlive the call, and MessageBoxW pumps its own
+        // message loop so nothing on this thread is starved while it is up.
+        unsafe {
+            MessageBoxW(
+                Some(self.hwnd),
+                PCWSTR(text.as_ptr()),
+                PCWSTR(caption.as_ptr()),
+                MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND,
+            );
+        }
+    }
+
     /// Re-read the config and apply it live. Only the hotkey needs unbinding;
     /// everything else is read fresh on the next show.
     fn reload_config(&mut self) {
@@ -1495,6 +1591,10 @@ impl Panel {
                             self.pin(picked);
                         }
                         Some(tray::CMD_EDIT_CONFIG) => open_config(),
+                        Some(tray::CMD_PAIR_BROWSER) => self.pair_browser(),
+                        Some(chosen) if chosen >= tray::CMD_FORGET_BASE => {
+                            self.forget_browser(chosen - tray::CMD_FORGET_BASE)
+                        }
                         Some(tray::CMD_EXIT) => {
                             log_info!("exit requested from the tray menu");
                             self.hide(false);
@@ -1511,6 +1611,10 @@ impl Panel {
             }
             store::WM_MODEL_CHANGED | crate::browser::server::WM_TABS_CHANGED => {
                 self.on_model_changed();
+                Some(LRESULT(0))
+            }
+            crate::browser::server::WM_PAIRED => {
+                tray::refresh(self.hwnd);
                 Some(LRESULT(0))
             }
             icons::WM_ICON_READY => {

@@ -2,6 +2,12 @@
 //
 // Connects out rather than being connected to: an MV3 worker is killed when
 // idle, and socket traffic keeps it alive. bentopick's 20s ping is what holds it.
+//
+// Whatever answers 127.0.0.1 is not automatically bentopick. So nothing is sent
+// until the far end has proved it holds this browser's token: the tab list goes
+// out after the handshake in `proveTheServer`, never before.
+
+importScripts("bridge.js");
 
 const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
@@ -12,6 +18,9 @@ const ICON_PX = 32;
 let socket = null;
 let backoff = RECONNECT_MIN_MS;
 let debounce = null;
+// Set once the far end has proved itself. Nothing is sent while it is false.
+let proven = false;
+let nonceClient = null;
 // Decoded favicons by origin, and which of them this connection has sent.
 const iconCache = new Map();
 let iconsSent = new Set();
@@ -30,19 +39,23 @@ async function connect() {
     return;
   }
   const { port, token } = await settings();
-  // Unpaired. Stay quiet rather than hammer a socket that will refuse us.
+  // Not paired yet. Stay quiet rather than hammer a socket that will refuse us.
   if (!token) return;
 
-  socket = new WebSocket(`ws://127.0.0.1:${port}/${encodeURIComponent(token)}`);
+  proven = false;
+  nonceClient = randomHex(16);
+  socket = new WebSocket(`ws://127.0.0.1:${port}/`);
   socket.onopen = () => {
     backoff = RECONNECT_MIN_MS;
     // A new bentopick process knows none of them.
     iconsSent = new Set();
-    sendTabs();
+    // Opens the exchange and says nothing else. The token stays here.
+    raw({ type: "hello", v: BRIDGE_PROTOCOL, mode: "resume", nonce: nonceClient });
   };
   socket.onmessage = (event) => receive(event.data);
   socket.onclose = () => {
     socket = null;
+    proven = false;
     retry();
   };
   socket.onerror = () => {};
@@ -53,13 +66,20 @@ function retry() {
   backoff = Math.min(backoff * 2, RECONNECT_MAX_MS);
 }
 
-function send(message) {
+// Before the far end has proved itself, `raw` is the only way to write to the
+// socket, and the only thing it carries is this browser's half of the proof.
+function raw(message) {
   if (!live()) return;
   try {
     socket.send(JSON.stringify(message));
   } catch (e) {
     // onclose reconnects.
   }
+}
+
+function send(message) {
+  if (!proven) return;
+  raw(message);
 }
 
 // Favicons are per-site, so one bitmap serves every tab on the same origin.
@@ -108,7 +128,7 @@ async function iconFor(pageUrl) {
 }
 
 async function sendTabs() {
-  if (!live()) return;
+  if (!proven || !live()) return;
   const tabs = await chrome.tabs.query({});
   const keys = await Promise.all(tabs.map((tab) => iconFor(tab.url || "")));
 
@@ -144,6 +164,28 @@ function scheduleTabs() {
   }, TAB_DEBOUNCE_MS);
 }
 
+// bentopick proves itself first, so a wrong answer here costs nothing: the
+// socket closes with not one tab title having crossed it.
+//
+// The token is not cleared on a failure. Something else holding the port would
+// otherwise be able to unpair this browser just by answering badly.
+async function proveTheServer(message) {
+  const { token } = await settings();
+  const expected = await bridgeProof("resume-server", token, nonceClient, message.nonce);
+  if (message.proof !== expected) {
+    console.warn("bentopick: whatever answered the port could not prove itself; not sending tabs");
+    if (socket) socket.close();
+    return;
+  }
+
+  raw({
+    type: "prove",
+    proof: await bridgeProof("resume-client", token, nonceClient, message.nonce),
+  });
+  proven = true;
+  sendTabs();
+}
+
 function receive(data) {
   let message;
   try {
@@ -151,6 +193,26 @@ function receive(data) {
   } catch (e) {
     return;
   }
+
+  if (message.type === "outdated") {
+    // Not a pairing problem, and it must not look like one. The reconnect
+    // backoff still applies, so this settles into one line every 30 seconds
+    // rather than a stream.
+    console.warn(
+      `bentopick: BentoPick speaks bridge protocol ${message.protocol}, this extension speaks ` +
+        `${BRIDGE_PROTOCOL}. Update ${outdatedSide(message.protocol)}.`,
+    );
+    return;
+  }
+
+  if (message.type === "challenge") {
+    proveTheServer(message);
+    return;
+  }
+
+  // Everything below acts on this browser, so none of it runs for a caller
+  // that has not proved itself.
+  if (!proven) return;
 
   if (message.type === "ping") {
     send({ type: "pong" });
@@ -182,6 +244,7 @@ chrome.alarms.create("bentopick-reconnect", { periodInMinutes: 1 });
 chrome.alarms.onAlarm.addListener(connect);
 chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);
+// Pairing writes the token from the options page; this is what picks it up.
 chrome.storage.onChanged.addListener(() => {
   if (socket) socket.close();
   connect();

@@ -65,10 +65,38 @@ impl IconData {
     }
 }
 
+/// What this build of the bridge speaks. Bumped when a frame changes shape or
+/// an exchange changes meaning.
+///
+/// It exists because the exe and the extension are downloaded separately: they
+/// used to be one checkout that changed together, and now they drift. Without
+/// this, an extension one version behind fails as "not paired", which sends the
+/// user looking for a pairing problem they do not have.
+pub const PROTOCOL: u32 = 1;
+
 /// Extension to bentopick.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Inbound {
+    /// Always the first frame. Nothing else is read until the exchange it
+    /// opens has finished.
+    Hello {
+        /// Absent from any build that predates versioning, which is exactly the
+        /// case this needs to name, so it defaults rather than failing.
+        #[serde(default)]
+        v: u32,
+        /// A string, not an enum: an unknown mode from a newer extension has to
+        /// survive parsing far enough for the version check to explain itself.
+        mode: String,
+        nonce: String,
+        /// Pairing only: the client goes first there.
+        #[serde(default)]
+        proof: String,
+    },
+    /// Resuming: the client's half, after it has checked the server's.
+    Prove {
+        proof: String,
+    },
     Tabs {
         tabs: Vec<Tab>,
         /// Only the ones bentopick has not been sent yet on this connection.
@@ -82,6 +110,26 @@ pub enum Inbound {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Outbound {
+    /// The one thing said to a caller that has proved nothing, and the only
+    /// refusal that is ever explained: a version gap is the user's to fix, and
+    /// it gives away nothing an attacker could not read in the repo.
+    Outdated {
+        protocol: u32,
+    },
+    /// Resuming: the server's half, sent before the client has proved
+    /// anything, so a client talking to an impostor can hang up before it
+    /// sends a single tab title.
+    Challenge {
+        nonce: String,
+        proof: String,
+    },
+    /// Pairing succeeded. The token is this peer's alone, and this is the only
+    /// time it travels; `proof` is what tells the extension the token came
+    /// from the app that showed the code.
+    Paired {
+        token: String,
+        proof: String,
+    },
     Focus {
         #[serde(rename = "tabId")]
         tab_id: i64,
@@ -106,6 +154,36 @@ mod tests {
             active: false,
             icon: None,
         }
+    }
+
+    #[test]
+    fn a_hello_from_a_build_that_predates_versioning_still_parses() {
+        // The whole point of the version field: this has to get far enough to
+        // be told it is out of date, not fail as unreadable.
+        let json = r#"{"type":"hello","mode":"resume","nonce":"aa"}"#;
+        let Inbound::Hello { v, mode, proof, .. } = serde_json::from_str(json).unwrap() else {
+            panic!("expected a hello");
+        };
+        assert_eq!(v, 0);
+        assert_eq!(mode, "resume");
+        assert!(proof.is_empty());
+    }
+
+    #[test]
+    fn a_hello_naming_a_mode_this_build_has_never_heard_of_still_parses() {
+        let json = r#"{"type":"hello","v":9,"mode":"something-newer","nonce":"aa"}"#;
+        let Inbound::Hello { v, mode, .. } = serde_json::from_str(json).unwrap() else {
+            panic!("expected a hello");
+        };
+        assert_eq!(v, 9);
+        assert_eq!(mode, "something-newer");
+    }
+
+    #[test]
+    fn outdated_names_the_version_this_build_speaks() {
+        let json = serde_json::to_string(&Outbound::Outdated { protocol: PROTOCOL }).unwrap();
+        assert!(json.contains(r#""type":"outdated""#), "{json}");
+        assert!(json.contains(&format!(r#""protocol":{PROTOCOL}"#)), "{json}");
     }
 
     #[test]

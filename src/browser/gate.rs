@@ -1,14 +1,23 @@
-//! Who is allowed on bentopick's socket. Two callers, two gates.
+//! Who is allowed on bentopick's socket, and how each side proves it.
 //!
 //! Web page: can script a WebSocket to localhost, so without a check any site
 //! could enumerate your tabs. The browser stamps `Origin` on the handshake and
-//! page JS cannot forge it, so an allowlist closes it.
+//! page JS cannot forge it, so a paired-peers list closes it.
 //!
 //! Local program: not a browser, so `Origin` is whatever it types. Only the
-//! token stops it.
+//! per-peer token stops it, and the token never travels - both sides prove they
+//! know it against fresh nonces.
 //!
-//! Neither stops code already running as you. That code has better targets.
+//! That proof runs in both directions, which is the part that is not about
+//! bentopick's safety at all. Whoever holds the port is what the extension
+//! believes bentopick to be; a server that cannot prove itself gets no tabs.
+//!
+//! Neither gate stops code already running as you. That code has better targets.
 
+use std::sync::{Mutex, OnceLock};
+
+use crate::browser::crypto;
+use crate::browser::peers::{self, Peer};
 use crate::{log_info, log_warn};
 
 /// Logged, never sent back. A refused caller learns only that it failed.
@@ -17,7 +26,6 @@ pub enum Refusal {
     NotLoopback,
     MissingOrigin,
     UnknownOrigin(String),
-    BadToken,
 }
 
 impl Refusal {
@@ -25,121 +33,148 @@ impl Refusal {
         match self {
             Refusal::NotLoopback => "not a loopback address".into(),
             Refusal::MissingOrigin => "no Origin header".into(),
-            Refusal::UnknownOrigin(origin) => {
-                format!("origin {origin} is not in browser.allow")
-            }
-            Refusal::BadToken => "wrong token".into(),
+            Refusal::UnknownOrigin(origin) => format!("origin {origin} is not paired"),
         }
     }
 }
 
-/// What the gate checks against. Built once from config.
-#[derive(Clone)]
-pub struct Policy {
-    allow: Vec<String>,
-    token: String,
+/// What a handshake earned. Neither one is trusted yet - both still have to
+/// prove themselves over the socket before anything is registered.
+pub enum Admission {
+    /// A browser bentopick has paired with before.
+    Known(Box<Peer>),
+    /// Unknown, but a pairing window is open, so it gets to try the code.
+    Pairing,
 }
 
-impl Policy {
-    /// `None` refuses to listen. Both halves required: no token lets any local
-    /// process in, no allowlist lets in any page that learns the token.
-    pub fn new(allow: &[String], token: &str) -> Option<Policy> {
-        if token.len() < MIN_TOKEN_LEN || allow.is_empty() {
-            return None;
-        }
-        Some(Policy {
-            allow: allow.iter().map(|o| o.trim().to_ascii_lowercase()).collect(),
-            token: token.to_owned(),
-        })
+/// The handshake gate. Deliberately cheap: it can only check what a header
+/// carries, because the tungstenite callback has no round trip available.
+pub fn admit(loopback: bool, origin: Option<&str>) -> Result<Admission, Refusal> {
+    if !loopback {
+        return Err(Refusal::NotLoopback);
     }
+    let origin = origin.map(str::trim).filter(|o| !o.is_empty()).ok_or(Refusal::MissingOrigin)?;
 
-    pub fn admit(&self, loopback: bool, origin: Option<&str>, path: &str) -> Result<(), Refusal> {
-        if !loopback {
-            return Err(Refusal::NotLoopback);
-        }
-        let origin = origin.ok_or(Refusal::MissingOrigin)?;
-        let normalized = origin.trim().to_ascii_lowercase();
-        if !self.allow.contains(&normalized) {
-            return Err(Refusal::UnknownOrigin(origin.to_owned()));
-        }
-        if !token_matches(&self.token, path.strip_prefix('/').unwrap_or(path)) {
-            return Err(Refusal::BadToken);
-        }
-        Ok(())
+    if let Some(peer) = peers::find(origin) {
+        return Ok(Admission::Known(Box::new(peer)));
     }
+    if pairing_open() {
+        return Ok(Admission::Pairing);
+    }
+    Err(Refusal::UnknownOrigin(origin.to_owned()))
 }
 
-const MIN_TOKEN_LEN: usize = 24;
+// --- Proofs -----------------------------------------------------------------
+//
+// Two exchanges, and which side proves first differs between them because the
+// secrets differ.
+//
+// Resuming, the secret is a 192-bit token, so the server proves first: the
+// extension can then hang up before sending a single tab title to something
+// that turned out not to be bentopick. Proving first costs nothing when the
+// secret is too large to guess from the proof.
+//
+// Pairing, the secret is six digits a human retyped, which *is* guessable from
+// a proof. So the client proves first and one wrong answer closes the window -
+// a guess is worth one in a million, and there is no oracle to grind against.
+//
+// The reason that ordering is safe: pairing is only offered while bentopick
+// itself holds the port. Something squatting the port means bentopick never
+// bound, which means the tray refuses to open a pairing window at all, so
+// there is no window in which a fake server can be handed a code proof.
 
-/// No early return. A secret comparison that leaks its progress stops being
-/// harmless as soon as something else changes.
-fn token_matches(expected: &str, given: &str) -> bool {
-    let (expected, given) = (expected.as_bytes(), given.as_bytes());
-    if expected.len() != given.len() {
-        return false;
-    }
-    let mut differences = 0u8;
-    for (a, b) in expected.iter().zip(given) {
-        differences |= a ^ b;
-    }
-    differences == 0
+pub fn server_resume_proof(token: &str, nonce_c: &str, nonce_s: &str) -> Option<String> {
+    crypto::proof("resume-server", token, nonce_c, nonce_s)
 }
 
-/// Where the token lives: bentopick's own directory under `%LOCALAPPDATA%`, which
-/// Windows already restricts to this account.
+pub fn client_resume_proof(token: &str, nonce_c: &str, nonce_s: &str) -> Option<String> {
+    crypto::proof("resume-client", token, nonce_c, nonce_s)
+}
+
+pub fn client_pair_proof(code: &str, nonce_c: &str) -> Option<String> {
+    crypto::proof("pair-client", code, nonce_c, "")
+}
+
+pub fn server_pair_proof(code: &str, nonce_c: &str) -> Option<String> {
+    crypto::proof("pair-server", code, nonce_c, "")
+}
+
+// --- The pairing window -----------------------------------------------------
+
+struct Pairing {
+    code: String,
+}
+
+fn pairing() -> &'static Mutex<Option<Pairing>> {
+    static PAIRING: OnceLock<Mutex<Option<Pairing>>> = OnceLock::new();
+    PAIRING.get_or_init(|| Mutex::new(None))
+}
+
+/// Six digits, generated from the OS RNG rather than trimmed from a hash, so
+/// every code is equally likely.
 ///
-/// Not beside the exe. A portable build can be dropped in `Program Files`,
-/// where a file next to it is readable by every account on the machine, and
-/// other accounts are the one case the token is actually meant to stop.
-fn token_path() -> Option<std::path::PathBuf> {
-    crate::log::cache_dir().map(|dir| dir.join("bridge-token"))
-}
+/// Single use and single attempt: `close_pairing` runs on the first wrong
+/// answer as well as on success, so this is never a target worth grinding.
+pub fn open_pairing() -> Option<String> {
+    let hex = crypto::random_hex(4)?;
+    let value = u32::from_str_radix(&hex, 16).ok()?;
+    let code = format!("{:06}", value % 1_000_000);
 
-/// The token to admit against, generating one on first use.
-///
-/// `legacy` is the `browser.token` an older build wrote into `bentopick.toml`. It
-/// is migrated out and the caller clears it from the config.
-pub fn resolve_token(legacy: &str) -> Option<String> {
-    let path = token_path()?;
-
-    if let Ok(stored) = std::fs::read_to_string(&path) {
-        let stored = stored.trim().to_owned();
-        if stored.len() >= MIN_TOKEN_LEN {
-            return Some(stored);
-        }
-    }
-
-    let token = if legacy.len() >= MIN_TOKEN_LEN {
-        log_info!("moving the bridge token out of bentopick.toml into {}", path.display());
-        legacy.to_owned()
-    } else {
-        generate_token()?
-    };
-
-    match std::fs::write(&path, &token) {
-        Ok(()) => Some(token),
-        Err(e) => {
-            log_warn!("could not write {} ({e}); the bridge stays off", path.display());
-            None
-        }
-    }
-}
-
-/// OS CSPRNG, hex encoded. Not the clock or a pid: this is the only thing
-/// between a local process and the tab list.
-pub fn generate_token() -> Option<String> {
-    use windows::Win32::Security::Cryptography::{
-        BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom,
-    };
-
-    let mut bytes = [0u8; 24];
-    // SAFETY: the buffer is a live stack local sized by the slice itself, and
-    // the system-preferred RNG needs no algorithm handle.
-    let status = unsafe { BCryptGenRandom(None, &mut bytes, BCRYPT_USE_SYSTEM_PREFERRED_RNG) };
-    if status.is_err() {
+    let Ok(mut slot) = pairing().lock() else {
+        log_warn!("pairing state is poisoned; not opening a window");
         return None;
+    };
+    *slot = Some(Pairing { code: code.clone() });
+    log_info!("pairing window open");
+    Some(code)
+}
+
+pub fn close_pairing() {
+    if let Ok(mut slot) = pairing().lock()
+        && slot.take().is_some()
+    {
+        log_info!("pairing window closed");
     }
-    Some(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+pub fn pairing_open() -> bool {
+    pairing().lock().is_ok_and(|slot| slot.is_some())
+}
+
+/// The code, if a window is open. Taking it does not close the window; the
+/// caller decides, because success and failure both end it but for different
+/// reasons worth logging separately.
+pub fn pairing_code() -> Option<String> {
+    pairing().lock().ok()?.as_ref().map(|p| p.code.clone())
+}
+
+/// A token for one peer. Not the clock or a pid: this is the only thing between
+/// a local process and the tab list.
+pub fn generate_token() -> Option<String> {
+    crypto::random_hex(24)
+}
+
+/// The pairing window, the peer store and the tab state are one per process,
+/// exactly as they are in the app. Tests that drive them take turns rather
+/// than pretending otherwise.
+#[cfg(test)]
+pub fn test_turn() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let guard = LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    peers::use_a_scratch_store();
+    close_pairing();
+    guard
+}
+
+/// The single shared token an older build kept in `%LOCALAPPDATA%`, if it is
+/// still there. Only used to carry an existing pairing forward.
+pub fn legacy_token() -> Option<String> {
+    let path = crate::log::cache_dir()?.join("bridge-token");
+    let stored = std::fs::read_to_string(path).ok()?.trim().to_owned();
+    (!stored.is_empty()).then_some(stored)
 }
 
 #[cfg(test)]
@@ -147,80 +182,64 @@ mod tests {
     use super::*;
 
     const ORIGIN: &str = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
-    const TOKEN: &str = "0123456789abcdef0123456789abcdef";
-
-    fn policy() -> Policy {
-        Policy::new(&[ORIGIN.to_string()], TOKEN).expect("fixture must be admissible")
-    }
-
-    #[test]
-    fn a_paired_extension_gets_in() {
-        assert_eq!(policy().admit(true, Some(ORIGIN), &format!("/{TOKEN}")), Ok(()));
-    }
-
-    #[test]
-    fn a_web_page_is_refused_however_right_its_token_is() {
-        let path = format!("/{TOKEN}");
-        for origin in ["https://evil.example", "http://localhost:3000", "null"] {
-            assert_eq!(
-                policy().admit(true, Some(origin), &path),
-                Err(Refusal::UnknownOrigin(origin.into()))
-            );
-        }
-    }
-
-    #[test]
-    fn a_local_program_is_refused_however_right_its_origin_is() {
-        assert_eq!(
-            policy().admit(true, Some(ORIGIN), "/not-the-token"),
-            Err(Refusal::BadToken)
-        );
-        assert_eq!(policy().admit(true, Some(ORIGIN), "/"), Err(Refusal::BadToken));
-    }
-
-    #[test]
-    fn a_handshake_with_no_origin_at_all_is_refused() {
-        assert_eq!(
-            policy().admit(true, None, &format!("/{TOKEN}")),
-            Err(Refusal::MissingOrigin)
-        );
-    }
 
     #[test]
     fn nothing_off_the_loopback_is_even_considered() {
-        assert_eq!(
-            policy().admit(false, Some(ORIGIN), &format!("/{TOKEN}")),
+        assert!(matches!(
+            admit(false, Some(ORIGIN)),
             Err(Refusal::NotLoopback)
-        );
+        ));
     }
 
     #[test]
-    fn half_a_configuration_refuses_to_listen() {
-        assert!(Policy::new(&[], TOKEN).is_none(), "no allowlist must not listen");
-        assert!(Policy::new(&[ORIGIN.into()], "").is_none(), "no token must not listen");
-        assert!(Policy::new(&[ORIGIN.into()], "short").is_none(), "weak token must not listen");
+    fn a_handshake_with_no_usable_origin_is_refused() {
+        assert!(matches!(admit(true, None), Err(Refusal::MissingOrigin)));
+        assert!(matches!(admit(true, Some("   ")), Err(Refusal::MissingOrigin)));
     }
 
     #[test]
-    fn origins_match_regardless_of_case_or_stray_space() {
-        let policy = Policy::new(&[format!("  {} ", ORIGIN.to_uppercase())], TOKEN).unwrap();
-        assert_eq!(policy.admit(true, Some(ORIGIN), &format!("/{TOKEN}")), Ok(()));
+    fn a_pairing_window_admits_an_unknown_origin_and_closing_it_stops_that() {
+        let _turn = test_turn();
+        let code = open_pairing().expect("the OS RNG must work");
+        assert_eq!(code.len(), 6);
+        assert!(code.chars().all(|c| c.is_ascii_digit()), "{code}");
+        assert!(matches!(
+            admit(true, Some("chrome-extension://unpaired-for-this-test")),
+            Ok(Admission::Pairing)
+        ));
+
+        close_pairing();
+        assert!(!pairing_open());
+        assert!(matches!(
+            admit(true, Some("chrome-extension://unpaired-for-this-test")),
+            Err(Refusal::UnknownOrigin(_))
+        ));
     }
 
     #[test]
-    fn the_token_comparison_does_not_take_a_prefix() {
-        assert!(token_matches(TOKEN, TOKEN));
-        assert!(!token_matches(TOKEN, &TOKEN[..8]));
-        assert!(!token_matches(TOKEN, &format!("{TOKEN}extra")));
-        assert!(!token_matches(TOKEN, ""));
+    fn a_proof_needs_the_secret_the_nonces_and_the_direction() {
+        let (token, nc, ns) = ("0123456789abcdef", "aa", "bb");
+        let server = server_resume_proof(token, nc, ns).unwrap();
+
+        assert!(crypto::equal(&server, &server_resume_proof(token, nc, ns).unwrap()));
+        assert!(!crypto::equal(&server, &client_resume_proof(token, nc, ns).unwrap()));
+        assert!(!crypto::equal(&server, &server_resume_proof("wrong", nc, ns).unwrap()));
+        assert!(!crypto::equal(&server, &server_resume_proof(token, "zz", ns).unwrap()));
+        assert!(!crypto::equal(&server, &server_resume_proof(token, nc, "zz").unwrap()));
+    }
+
+    #[test]
+    fn a_pairing_proof_is_not_a_resume_proof() {
+        let client = client_pair_proof("123456", "aa").unwrap();
+        assert!(!crypto::equal(&client, &server_pair_proof("123456", "aa").unwrap()));
+        assert!(!crypto::equal(&client, &client_pair_proof("654321", "aa").unwrap()));
     }
 
     #[test]
     fn generated_tokens_are_long_and_not_repeated() {
         let a = generate_token().expect("the OS RNG must work");
         let b = generate_token().expect("the OS RNG must work");
-        assert!(a.len() >= MIN_TOKEN_LEN);
+        assert_eq!(a.len(), 48);
         assert_ne!(a, b);
-        assert!(Policy::new(&["x".into()], &a).is_some());
     }
 }

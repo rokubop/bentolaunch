@@ -1,34 +1,64 @@
 <img src="assets/bentopick-256.png" width="88" alt="">
 
-# BentoPick
+# BentoPick (WIP)
 
-A hotkey-summoned grid of everything worth switching to: running windows,
-browser tabs, taskbar pins, folders, apps, settings pages, links.
+A hotkey-triggered overlay in the center of your screen for all your running apps and browser tabs represented as big icons that are easily clickable. Type filtering also supported.
 
-Press `` Alt+` ``. Type to narrow. Enter takes the top match, or click a tile.
-Esc closes and puts you back where you were.
+Example:
+1) Press `` Alt+` `` to immediately show BentoPick - See running apps, taskbar pins, and browser tabs in a grid of tiles.
+2) Click what you want to switch to, or type to filter the grid
 
-Windows 11 only. Never asks for admin, and writes nothing outside its own
-config and `%LOCALAPPDATA%\bentopick`.
+## Setup
 
-### What it leaves on your machine
-
-| Item | Reversal |
-|---|---|
-| Autostart shortcut (optional) | Delete it from the Startup folder |
-| Browser extension, per profile | Uninstall it in the browser |
-
-Nothing else changes. No installer, no registry keys, no elevation, ever.
-
-Early days. It does what this README says, but it has only ever run on one
-machine, and most of it has never been verified anywhere else.
-
-## Running
+Windows 11 and [Rust](https://rustup.rs). Build from **PowerShell, not WSL** —
+the toolchain, the window and the packaging are all Windows-native.
 
 ```powershell
-cargo build
-target\debug\bentopick.exe
+git clone https://github.com/rokubop/bentopick
+cd bentopick
+cargo build --release
+target\release\bentopick.exe
 ```
+
+That is enough to try it: press `` Alt+` `` and the panel comes up. Debug builds
+(`cargo build`) keep a console window so the log is visible; release builds are
+silent, which is what you want once it autostarts.
+
+First run writes `bentopick.toml` **next to the exe**. That is deliberate —
+config travels with the binary, so a copied exe brings its pins with it.
+
+### Keep it
+
+The exe is portable, so installing it is a copy. Somewhere stable, because the
+config lives beside it:
+
+```powershell
+$dir = "$env:LOCALAPPDATA\Programs\bentopick"
+mkdir $dir -Force
+copy target\release\bentopick.exe $dir
+```
+
+Start it at login by dropping a shortcut in the Startup folder:
+
+```powershell
+$s = (New-Object -ComObject WScript.Shell).CreateShortcut(
+    "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\BentoPick.lnk")
+$s.TargetPath = "$env:LOCALAPPDATA\Programs\bentopick\bentopick.exe"
+$s.Save()
+```
+
+Delete that shortcut to undo it. Installing a newer build is another copy over
+the top; your pins survive, since they are in the `.toml` beside it.
+
+Watch which copy you are running — the panel reads the config next to whichever
+exe started, so an installed copy and `target\release\` have separate settings.
+
+### Tabs from your browser
+
+Optional, off by default, and a separate step: load `extension/`, then pair it
+from the tray icon. [Browser tabs](#browser-tabs) below has the whole story.
+
+## Running
 
 Starts silent, tray icon only. Only one runs at a time: launch it again, from a
 taskbar pin or anywhere else, and the panel comes up instead of a second copy.
@@ -41,6 +71,7 @@ Right-click the tray icon:
 | Add app… | Browse installed apps, Store apps included, and pin one |
 | Add folder… | Pin a folder |
 | Add file or shortcut… | Pin a file or `.lnk` |
+| Browser ▸ | Pair a browser for tabs, or forget one |
 | Edit settings… | Open `bentopick.toml` in your editor |
 | Exit | Quit |
 
@@ -181,11 +212,16 @@ source = [
 [browser]
 enabled = true
 port    = 8777
-allow   = ["chrome-extension://<id from the options page>"]
 ```
 
-`extension/README.md` has the pairing steps. Tabs sit under the same header as
-your browser windows, right behind them, since both answer the same question.
+Pairing is not a config edit. Load the extension, then right-click the tray
+icon: **Browser > Pair a browser...**. BentoPick shows six digits, you type them
+into the extension's options page, and that is the whole setup — it switches the
+bridge on for you if it was off. **Browser > Forget** undoes it.
+`extension/README.md` has the details.
+
+Tabs sit under the same header as your browser windows, right behind them,
+since both answer the same question.
 
 **Read this before turning it on.** It opens a port on your machine that only
 your own computer can reach, and it installs an extension that can read the
@@ -194,15 +230,24 @@ intended, and both are your call.
 
 What guards that port:
 
-- It only opens if you set `enabled = true` *and* list an extension in `allow`.
+- Nothing is admitted that you have not paired, and pairing takes a code shown
+  by the app itself. Turning the bridge on grants nothing on its own.
 - Websites cannot get in. Any page can try to open a connection to your own
   machine, but browsers stamp every connection with who is making it and pages
-  cannot fake that stamp. Only the extension you listed is let through.
-- A secret token, generated on first run, kept in
-  `%LOCALAPPDATA%\bentopick\bridge-token`, which Windows restricts to your account.
+  cannot fake that stamp. Only a paired extension is let through.
+- A separate secret per browser, from the OS random generator, kept in
+  `%LOCALAPPDATA%\bentopick\peers.json`, which Windows restricts to your
+  account. It never travels over the socket; each side proves it knows it.
+
+And the guard that points the other way: **BentoPick proves itself to the
+extension too**, before the extension sends a single tab title. Otherwise
+anything that grabbed port 8777 first would be handed your open tabs by an
+extension with no way to tell the difference. For the same reason, pairing is
+refused outright when something else holds the port, and the tray says so
+instead of failing quietly.
 
 What it does not guard against: software already running under your own account.
-That software can read the token, but it can also read your browser profile
+That software can read the tokens, but it can also read your browser profile
 directly, so this is not the interesting way in. `src/browser/gate.rs` has the
 full reasoning at the top of the file.
 
@@ -271,7 +316,16 @@ Tabs arrive over a loopback WebSocket rather than native messaging, the
 documented transport. MV3 service workers die after ~30s idle, and there are
 [reports of them dying anyway](https://github.com/GoogleChrome/developer.chrome.com/issues/2688)
 at 5-6 minutes with `connectNative()`. Chrome 116+ keeps the worker alive as
-long as messages flow.
+long as messages flow. Native messaging would also have the browser spawn the
+host, and BentoPick is a long-running GUI that would end up with a second copy
+of itself — plus a registry key and a host manifest, which is footprint this app
+does not want.
+
+What a fixed port costs is that something else can take it, and an extension
+cannot read a file to find out where BentoPick went. So the answer is not a
+fallback port but a handshake: both ends prove they know the token, BentoPick
+going first, and a bind failure is reported in the tray rather than retried
+around.
 
 ## Known gaps
 

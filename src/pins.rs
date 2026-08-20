@@ -246,11 +246,25 @@ fn stack(items: &mut Array) {
 }
 
 /// Through `toml_edit` like every other write, so comments survive.
-pub fn set_browser_token(token: &str) -> Option<String> {
-    let path = Config::path()?;
-    let mut doc = read(&path)?;
-    doc["browser"]["token"] = value(token);
-    write(&path, &doc).then(|| token.to_owned())
+/// Turn the bridge on from the tray. Pairing needs a listening socket, so the
+/// user should not have to hand-edit the config to reach the pairing flow.
+pub fn set_browser_enabled(enabled: bool) -> bool {
+    let Some(path) = Config::path() else { return false };
+    let Some(mut doc) = read(&path) else { return false };
+    doc["browser"]["enabled"] = value(enabled);
+    write(&path, &doc)
+}
+
+/// Empty out the pre-pairing keys once their contents have been carried into
+/// the peer store. `allow` was the pairing list and `token` was a secret in a
+/// world-readable file; neither should linger in the config saying something
+/// that is no longer true.
+pub fn clear_browser_legacy() -> bool {
+    let Some(path) = Config::path() else { return false };
+    let Some(mut doc) = read(&path) else { return false };
+    doc["browser"]["allow"] = value(Array::new());
+    doc["browser"]["token"] = value("");
+    write(&path, &doc)
 }
 
 fn write(path: &Path, doc: &DocumentMut) -> bool {

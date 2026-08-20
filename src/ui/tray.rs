@@ -4,15 +4,18 @@
 
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
 use windows::Win32::UI::Shell::{
-    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
+    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
+    Shell_NotifyIconW,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, HICON, IDI_APPLICATION, LoadIconW,
-    MF_SEPARATOR, MF_STRING, SetForegroundWindow, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
-    WM_APP, WM_LBUTTONUP, WM_RBUTTONUP,
+    MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, SetForegroundWindow, TPM_RETURNCMD,
+    TPM_RIGHTBUTTON, TrackPopupMenu, WM_APP, WM_LBUTTONUP, WM_RBUTTONUP,
 };
-use windows::core::{PCWSTR, w};
+use windows::core::{HSTRING, PCWSTR, w};
+
+use crate::browser::{peers, server};
 
 use crate::{log_info, log_warn};
 
@@ -25,6 +28,11 @@ pub const CMD_ADD_APP: usize = 102;
 pub const CMD_ADD_FOLDER: usize = 103;
 pub const CMD_ADD_FILE: usize = 104;
 pub const CMD_EDIT_CONFIG: usize = 105;
+pub const CMD_PAIR_BROWSER: usize = 106;
+
+/// One command per paired browser, in the order `peers::all` returns them.
+/// Well clear of the fixed commands so adding one never collides.
+pub const CMD_FORGET_BASE: usize = 200;
 
 const ICON_ID: u32 = 1;
 
@@ -79,6 +87,35 @@ pub fn install(hwnd: HWND) {
     }
 }
 
+/// The tooltip carries the bridge's state, because the state that matters most
+/// is the one with nothing to show for it: a port something else is holding
+/// looks exactly like a bridge nobody has paired.
+pub fn refresh(hwnd: HWND) {
+    let mut data = icon_data(hwnd);
+    data.uFlags = NIF_TIP;
+    for (slot, unit) in data.szTip.iter_mut().zip(tooltip().encode_utf16()) {
+        *slot = unit;
+    }
+    // SAFETY: data is fully initialized and lives across the call.
+    unsafe {
+        let _ = Shell_NotifyIconW(NIM_MODIFY, &data);
+    }
+}
+
+fn tooltip() -> String {
+    match server::status() {
+        (server::Status::Off, _) => "BentoPick".into(),
+        (server::Status::PortTaken, port) => {
+            format!("BentoPick - port {port} is taken, browser bridge off")
+        }
+        (server::Status::Listening, _) => match peers::count() {
+            0 => "BentoPick - no browser paired".into(),
+            1 => "BentoPick - 1 browser paired".into(),
+            n => format!("BentoPick - {n} browsers paired"),
+        },
+    }
+}
+
 pub fn remove(hwnd: HWND) {
     let data = icon_data(hwnd);
     // SAFETY: removing an icon that was never added fails harmlessly.
@@ -102,6 +139,10 @@ pub fn show_menu(hwnd: HWND) -> Option<usize> {
         let _ = AppendMenuW(menu, MF_STRING, CMD_ADD_FOLDER, w!("Add folder..."));
         let _ = AppendMenuW(menu, MF_STRING, CMD_ADD_FILE, w!("Add file or shortcut..."));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+        let browser = browser_menu();
+        if let Some(submenu) = browser {
+            let _ = AppendMenuW(menu, MF_POPUP, submenu.0 as usize, w!("Browser"));
+        }
         let _ = AppendMenuW(menu, MF_STRING, CMD_EDIT_CONFIG, w!("Edit settings..."));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
         let _ = AppendMenuW(menu, MF_STRING, CMD_EXIT, w!("Exit"));
@@ -118,9 +159,46 @@ pub fn show_menu(hwnd: HWND) -> Option<usize> {
             hwnd,
             None,
         );
+        // Destroying the parent destroys the submenu with it.
         let _ = DestroyMenu(menu);
 
         (chosen.0 != 0).then_some(chosen.0 as usize)
+    }
+}
+
+/// The browser submenu: what the bridge is doing, how to pair, and how to
+/// undo a pairing. Unpairing had no affordance at all before this.
+///
+/// SAFETY: the returned menu is owned by the caller's menu once appended with
+/// `MF_POPUP`, so it is destroyed along with it and never separately.
+unsafe fn browser_menu() -> Option<windows::Win32::UI::WindowsAndMessaging::HMENU> {
+    unsafe {
+        let menu = CreatePopupMenu().ok()?;
+
+        let (status, port) = server::status();
+        let line = match status {
+            server::Status::Off => "Bridge is off".to_string(),
+            server::Status::PortTaken => format!("Port {port} is in use - bridge is off"),
+            server::Status::Listening => format!("Listening on {port}"),
+        };
+        let _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, &HSTRING::from(line));
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+        let _ = AppendMenuW(menu, MF_STRING, CMD_PAIR_BROWSER, w!("Pair a browser..."));
+
+        let paired = peers::all();
+        if !paired.is_empty() {
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+        }
+        for (index, peer) in paired.iter().enumerate() {
+            let label = format!("Forget {} (paired {})", peer.name, peer.added);
+            let _ = AppendMenuW(
+                menu,
+                MF_STRING,
+                CMD_FORGET_BASE + index,
+                &HSTRING::from(label),
+            );
+        }
+        Some(menu)
     }
 }
 

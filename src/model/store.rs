@@ -287,11 +287,15 @@ fn tab_items() -> Vec<Item> {
             kind: Kind::Tab,
             // Filtering searches this line, so a generic title is still
             // findable by host.
-            detail: owned.tab.host().to_string(),
+            //
+            // Truncated like a window title, and for a stronger reason: this
+            // one arrives over a socket, and laying out a megabyte of text
+            // would happen on the UI thread.
+            detail: truncate(owned.tab.host(), 48),
             title: if owned.tab.title.is_empty() {
-                owned.tab.host().to_string()
+                truncate(owned.tab.host(), 48)
             } else {
-                owned.tab.title.clone()
+                truncate(&owned.tab.title, 48)
             },
             target: Target::Tab {
                 connection: owned.connection,
