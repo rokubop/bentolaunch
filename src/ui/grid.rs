@@ -249,17 +249,6 @@ impl Layout {
     /// top of a long grid. It sits on the first header's row, where headers
     /// leave the right-hand end empty, and falls back to the top padding strip
     /// when headers are turned off.
-    pub fn chrome(&self) -> Rect {
-        let m = self.metrics;
-        let h = m.header_h.max(16.0).min(self.panel.h);
-        let top = m.search_h;
-        let y = if m.header_h >= 16.0 { top + m.padding } else { (top + m.padding - h).max(top) };
-        // A panel barely taller than one tile still has to keep it inside.
-        let y = y.min((self.panel.h - h).max(0.0));
-        let w = (h * 2.8).min(self.panel.w - 2.0 * m.padding).max(0.0);
-        Rect { x: self.panel.w - m.padding - w, y, w, h }
-    }
-
     /// Panel-local, fixed to the panel rather than the content. Empty when
     /// `search_h` is 0.
     pub fn search_rect(&self) -> Rect {
@@ -270,19 +259,6 @@ impl Layout {
             w: (self.panel.w - 2.0 * m.padding).max(0.0),
             h: m.search_h.min(self.panel.h),
         }
-    }
-
-    /// Which band a panel-local point falls in. Unlike `hit_test`, gaps and
-    /// padding still belong to a section: a drop between two tiles is a drop
-    /// into that section, not a miss.
-    pub fn band_at(&self, x: f32, y: f32, scroll: f32) -> Option<usize> {
-        if x < 0.0 || y < 0.0 || x >= self.panel.w || y >= self.panel.h {
-            return None;
-        }
-        let content_y = y + scroll;
-        self.bands
-            .iter()
-            .position(|band| band.rect.contains(x, content_y))
     }
 
     /// Which band owns a flat tile index.
@@ -374,6 +350,15 @@ mod tests {
             section_gap: 14.0,
             search_h: 0.0,
         }
+    }
+
+    /// Which band a panel-local point falls in. The panel itself no longer asks,
+    /// but the bands still have to cover it with nothing in between.
+    fn band_at(l: &Layout, x: f32, y: f32) -> Option<usize> {
+        if x < 0.0 || y < 0.0 || x >= l.panel.w || y >= l.panel.h {
+            return None;
+        }
+        l.bands().iter().position(|band| band.rect.contains(x, y))
     }
 
     fn shape(title: &str, count: usize) -> SectionShape {
@@ -571,40 +556,6 @@ mod tests {
         assert!(l.tile_rect(2, 0.0).y > l.tile_rect(0, 0.0).y);
     }
 
-    // --- chrome ---
-
-    #[test]
-    fn the_keep_open_button_sits_in_the_first_header_row() {
-        let l = Layout::compute(&[shape("Pinned", 4)], metrics(), WORK);
-        let button = l.chrome();
-        let header = l.headers(0.0).next().unwrap().1;
-
-        assert_eq!(button.y, header.y);
-        assert_eq!(button.h, header.h);
-        // Right-aligned inside the padding, and clear of the first tile.
-        assert!((button.x + button.w - (l.panel.w - metrics().padding)).abs() < 0.01);
-        assert!(button.y + button.h <= l.tile_rect(0, 0.0).y);
-    }
-
-    #[test]
-    fn the_keep_open_button_survives_headers_being_turned_off() {
-        let m = Metrics { header_h: 0.0, ..metrics() };
-        let l = Layout::compute(&[shape("", 4)], m, WORK);
-        let button = l.chrome();
-
-        assert!(button.w > 0.0 && button.h > 0.0, "the button must always exist");
-        assert!(button.x >= 0.0 && button.x + button.w <= l.panel.w);
-        assert!(button.y + button.h <= l.tile_rect(0, 0.0).y, "must not cover a tile");
-    }
-
-    #[test]
-    fn an_empty_grid_still_places_the_button_inside_the_panel() {
-        let l = Layout::compute(&[], metrics(), WORK);
-        let button = l.chrome();
-        assert!(button.x >= 0.0 && button.x + button.w <= l.panel.w + 0.01);
-        assert!(button.y + button.h <= l.panel.h + 0.01);
-    }
-
     // --- filtering ---
 
     #[test]
@@ -661,11 +612,11 @@ mod tests {
         let m = Metrics { search_h: 30.0, ..metrics() };
         let l = Layout::compute(&[shape("Pinned", 4)], m, WORK);
 
-        assert_eq!(l.band_at(5.0, 5.0, 0.0), None, "a drop on the strip belongs to nobody");
+        assert_eq!(band_at(&l, 5.0, 5.0), None, "a drop on the strip belongs to nobody");
         assert_eq!(l.hit_test(5.0, 5.0, 0.0), None);
         // Everything below it is still covered.
         for y in 30..l.panel.h as i32 {
-            assert!(l.band_at(5.0, y as f32, 0.0).is_some(), "no band at y={y}");
+            assert!(band_at(&l, 5.0, y as f32).is_some(), "no band at y={y}");
         }
     }
 
@@ -697,7 +648,7 @@ mod tests {
 
         // Every row of pixels down the panel belongs to some band.
         for y in 0..l.panel.h as i32 {
-            assert!(l.band_at(5.0, y as f32, 0.0).is_some(), "no band at y={y}");
+            assert!(band_at(&l, 5.0, y as f32).is_some(), "no band at y={y}");
         }
     }
 
@@ -720,7 +671,7 @@ mod tests {
 
         // And a point inside a tile agrees with the tile's own band.
         let r = l.tile_rect(4, 0.0);
-        assert_eq!(l.band_at(r.x + 1.0, r.y + 1.0, 0.0), l.band_of(4));
+        assert_eq!(band_at(&l, r.x + 1.0, r.y + 1.0), l.band_of(4));
     }
 
     #[test]

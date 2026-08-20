@@ -20,7 +20,6 @@ pub const CMD_OPEN_LOCATION: usize = 202;
 pub const CMD_ADD_APP: usize = 203;
 pub const CMD_ADD_FOLDER: usize = 204;
 pub const CMD_ADD_FILE: usize = 205;
-pub const CMD_KEEP_OPEN: usize = 206;
 pub const CMD_SETTINGS: usize = 207;
 
 pub struct Entry {
@@ -32,10 +31,6 @@ pub struct Entry {
 impl Entry {
     pub fn new(id: usize, label: impl Into<String>) -> Entry {
         Entry { id, label: label.into(), checked: false }
-    }
-
-    pub fn checkable(id: usize, label: impl Into<String>, checked: bool) -> Entry {
-        Entry { id, label: label.into(), checked }
     }
 }
 

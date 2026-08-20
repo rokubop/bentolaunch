@@ -71,8 +71,7 @@ There is no edit mode. Same as the taskbar or the bookmarks bar:
 | Drag a pinned tile | Reorder it inside its section |
 | Right-click a running window | **Pin this app** |
 | Right-click a pin | **Unpin**, **Open file location** |
-| Right-click anywhere | Add app/folder/file, keep open, settings |
-| Drag a file or folder in from Explorer | Pin it where you dropped it |
+| Right-click anywhere | Add app/folder/file, settings |
 
 Click and drag never get confused: under the system's drag threshold is a click,
 past it is a drag.
@@ -80,17 +79,10 @@ past it is a drag.
 Only pinned tiles move. Running windows stay in most-recent order.
 
 Every change goes straight into `bentopick.toml`. Nothing is remembered anywhere
-else, and all of it can be undone by hand. Drops land in the section you dropped
-on, or the first manual one. Taskbar order is saved as an `order` list, since
-Windows does not expose its own.
+else, and all of it can be undone by hand. Taskbar order is saved as an `order`
+list, since Windows does not expose its own.
 
-### Keeping the panel open
-
-Pushpin, top right. Also in the right-click menu.
-
-The panel normally closes the moment it loses focus. A drag from Explorer takes
-focus before there is anything to drop, so pin it open first, then go get the
-file. Resets when the panel closes.
+The panel closes the moment it loses focus.
 
 ## Config
 
@@ -237,7 +229,7 @@ tile = "#FF2A2A32"
 tile_hover = "#FF3C3C48"
 text = "#FFE8E8EC"
 header = "#FF9A9AA8"
-tile_drag = "#FF4A4460"    # a tile being dragged, and the pushpin when it is on
+tile_drag = "#FF4A4460"    # a tile being dragged
 tile_selected = "#FF4C5A78"  # the tile Enter would take
 ```
 

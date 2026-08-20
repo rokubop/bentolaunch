@@ -1,4 +1,3 @@
-pub mod dropzone;
 pub mod filter;
 pub mod grid;
 pub mod menu;

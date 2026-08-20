@@ -352,7 +352,6 @@ pub fn sections() -> Vec<Section> {
         if !items.is_empty() {
             out.push(Section {
                 title: group.title.clone(),
-                sources: group.sources.clone(),
                 items,
             });
         }

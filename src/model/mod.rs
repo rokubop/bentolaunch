@@ -136,9 +136,5 @@ impl Item {
 #[derive(Debug, Clone)]
 pub struct Section {
     pub title: String,
-    /// Carried through from config. Which tiles may be rearranged is decided
-    /// per item now — see `Item::origin` — but a drop from Explorer still needs
-    /// to find a section that takes pins at all.
-    pub sources: crate::config::Sources,
     pub items: Vec<Item>,
 }

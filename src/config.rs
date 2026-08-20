@@ -127,6 +127,8 @@ impl Sources {
         self.0.iter()
     }
 
+    /// Only the pin-writing tests ask; the panel decides per item.
+    #[cfg(test)]
     pub fn contains(&self, source: Source) -> bool {
         self.0.iter().any(|spec| spec.source() == source)
     }

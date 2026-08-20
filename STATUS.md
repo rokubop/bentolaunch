@@ -27,15 +27,15 @@ forward.
 | Config | Live reload on save, tray pickers write pins via `toml_edit` |
 | Tray | Show, add app/folder/file, edit settings, exit |
 | Filtering | Type to narrow. 72px strip shows the query and "3 of 47", its text sized from its own height. Width frozen for the query's duration |
+| Wordmark | The name sits in a 20px strip above the grid whenever no query is live. The strip grows into the filter strip as soon as you type |
 | Keyboard | Arrows move a selection, Enter takes it, Home/End jump. Esc clears the query, then hides |
 | Tabs | Loopback WebSocket, MV3 extension. Favicons deduped by origin. Own group in `Browsing`, right behind the browser windows. Off until enabled and paired |
 | Banding | Alternate groups take `theme.tile_alt`. The only cue left once a group lost its header; a rule or a spacer would break the uniform grid |
-| Arranging | No mode. Drag past the shell's threshold to reorder, right-click to pin/unpin, drop from Explorer. Off while filtering |
-| Keep open | Pushpin button, or the right-click menu. Off by default, resets on hide. **Slated for removal, see below** |
+| Arranging | No mode. Drag past the shell's threshold to reorder, right-click to pin/unpin. Off while filtering |
 | One instance | Named mutex. A second launch summons the running panel and exits, so a taskbar pin acts like the hotkey |
 | Safety | `asInvoker`, panic hook, watchdog, no `WH_KEYBOARD_LL` |
 
-97 tests: layout, bands, chrome placement, drop slots, reorder arithmetic,
+113 tests: layout, bands, reorder arithmetic,
 hotkey and colour parsing, section claiming, every config-writing path, match
 ranking, the frozen-width and search-strip geometry, and the socket gate both
 as a unit and against a real listener.
@@ -92,7 +92,7 @@ setting its own `Origin`):
 - Favicons arrive and paint. `_favicon` needs no network access from BentoPick.
 
 Input for those was posted, not typed. Covers everything except what the OS owns:
-real capture, and the OLE drag loop.
+real capture.
 
 **Those runs predate the removal of edit mode.** The write paths underneath are
 unchanged. The click-versus-drag handling and the right-click menu on top of them
@@ -101,16 +101,12 @@ have never been run.
 ## Not verified
 
 - **Everything since edit mode came out**: drag threshold, right-click menu,
-  "Pin this app", pushpin. Compiles, passes tests, never run.
+  "Pin this app". Compiles, passes tests, never run.
 - Two browsers connected at once. One connection is all that has ever run.
 - **What the filter strip looks like.** Its geometry is verified from the logged
   panel size and its draw call reports no error, but the pixels have never been
   seen — `WS_EX_NOREDIRECTIONBITMAP` means nothing can read them back off a
   screen DC. Same constraint as every other visual in the app.
-- **Dropping from Explorer.** Needs a real cross-process mouse drag; cannot be
-  posted. Everything under it is tested: the drop target answers, the
-  section-under-cursor rule, the same `add` path the pickers use. Pin the panel
-  open first, then drag a folder onto it.
 - Past ~60 tiles, and scrolling with many sections.
 - Real hotkey presses, as opposed to a posted `WM_HOTKEY`. Posting shows the
   panel but grants no foreground rights, so it sometimes self-dismisses within a
@@ -188,22 +184,7 @@ whichever exe is running: the installed one edits
 
 Session two's order, minus type-to-filter, which was step 2 and is now done.
 
-**1. Drop the pushpin and drop-to-pin**
-
-Roku's call: the keep-open pin is not worth it. It exists only to serve Explorer
-drops, so both go together. Adding stays covered by right-click "Pin this app",
-the tray pickers, and hand-editing.
-
-Removes: `dropzone.rs`, the pushpin, `grid::chrome` and its 3 tests,
-`OleInitialize` back to `CoInitializeEx`. ~200 lines.
-
-**Test one thing first.** Does `WM_HOTKEY` fire while another process owns a drag
-loop? If it does, the flow is: drag a file, press the hotkey, panel appears
-without stealing focus (`SWP_NOACTIVATE`), drop. That is better than keep-open
-ever was and would save the drop target. ~10 minutes to answer. If it does not
-fire, delete both.
-
-**2. Finish Milestone 4**
+**1. Finish Milestone 4**
 
 Tabs work end to end in Chrome. What is left:
 
@@ -211,7 +192,7 @@ Tabs work end to end in Chrome. What is left:
   tray entry over the existing pin-writing path.
 - **"Bookmark this tab"** in the right-click menu, over the same path.
 
-**3. Live previews** (Milestone 3)
+**2. Live previews** (Milestone 3)
 
 Window tiles become live captures. Needs a sparse package for
 `graphicsCaptureWithoutBorder`, one-time borderless consent, a session cap of
@@ -237,8 +218,8 @@ documented.
 
 ## Open questions
 
-- Does `WM_HOTKEY` fire during another process's drag loop? Decides whether
-  drop-to-pin survives. See step 1 above.
+- Does `WM_HOTKEY` fire during another process's drag loop? The only route by
+  which drop-to-pin comes back. See DESIGN.md.
 - **Resolved:** tabs keep their own section, placed directly after `Browsing`.
   Roku's call, one group for browser things. Merging them into one section is
   still open, and would need a section to take more than one `source`.

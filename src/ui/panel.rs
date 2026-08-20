@@ -19,8 +19,8 @@ use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, HBRUSH, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint,
 };
+use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Ole::{IDropTarget, OleInitialize};
 use windows::Win32::System::WinRT::Composition::ICompositorDesktopInterop;
 use windows::Win32::System::WinRT::{
     CreateDispatcherQueueController, DQTAT_COM_NONE, DQTYPE_THREAD_CURRENT, DispatcherQueueOptions,
@@ -42,11 +42,10 @@ use crate::model::store;
 use crate::model::{Item, Section, Target};
 use crate::safety;
 use crate::shell::{activate, icons, picker};
-use crate::ui::dropzone;
 use crate::ui::filter;
 use crate::ui::grid::{Layout, Metrics, Rect as GridRect, SectionShape, origin_run, reordered};
 use crate::ui::menu;
-use crate::ui::render::{PIN_GLYPH, Renderer, TextColors, TilePaint, d2d_color};
+use crate::ui::render::{Renderer, TextColors, TilePaint, d2d_color};
 use crate::ui::tray;
 use crate::{pins, watch};
 use crate::{log_dry, log_error, log_info, log_warn};
@@ -112,11 +111,6 @@ pub struct Panel {
     tiles: Vec<Tile>,
     /// Header visuals, in the same order as `layout.headers()`.
     headers: Vec<SpriteVisual>,
-    /// The keep-open button: its pill's brush, and its glyph. `None` if the
-    /// renderer is missing.
-    chrome: Option<(CompositionColorBrush, SpriteVisual)>,
-    /// Cursor is on the keep-open button.
-    chrome_hot: bool,
     visible: bool,
     /// Whether a `TrackMouseEvent` request is outstanding. Without one,
     /// WM_MOUSELEAVE never arrives and hover sticks on the last tile.
@@ -129,21 +123,12 @@ pub struct Panel {
     /// Held for the query's duration, from the unfiltered grid. 0 when idle.
     frozen_cols: usize,
 
-    /// Keep the panel up when it loses focus. Off by default — the panel's whole
-    /// job is to get out of the way — but a drag that starts in Explorer takes
-    /// focus away before there is any drag to react to, so dropping onto bentopick
-    /// needs the panel pinned open first.
-    keep_open: bool,
     /// A context menu is up. It does not deactivate us, but a stray dismissal
     /// while a menu is open would be baffling, so it is treated the same.
     menu_open: bool,
     /// A button is down on a tile. It becomes a drag past the slop threshold and
     /// an activation if it never gets there.
     press: Option<Press>,
-    /// Section highlighted for a drop that is still in flight.
-    drop_band: Option<usize>,
-    /// Held for the window's lifetime; dropping it would unregister the target.
-    _drop_target: Option<IDropTarget>,
 }
 
 /// A pressed tile, which may still turn out to be either a click or a drag.
@@ -167,11 +152,9 @@ struct Press {
 impl Panel {
     pub fn create(config: Config) -> Result<Box<Panel>> {
         // SAFETY: apartment-threaded init for a UI thread, which is what the
-        // composition stack needs before the dispatcher queue exists. The OLE
-        // form rather than `CoInitializeEx` because `RegisterDragDrop` below
-        // needs the drag-and-drop half initialized too.
+        // composition stack needs before the dispatcher queue exists.
         unsafe {
-            OleInitialize(None)?;
+            CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
         }
 
         let hwnd = unsafe { create_window()? };
@@ -242,19 +225,14 @@ impl Panel {
             selected: None,
             tiles: Vec::new(),
             headers: Vec::new(),
-            chrome: None,
-            chrome_hot: false,
             visible: false,
             tracking_mouse: false,
             caller: HWND(std::ptr::null_mut()),
             hotkey_bound: false,
             query: String::new(),
             frozen_cols: 0,
-            keep_open: false,
             menu_open: false,
             press: None,
-            drop_band: None,
-            _drop_target: dropzone::register(hwnd),
         });
 
         // Hand the window a back-pointer so the wndproc can find us. Messages
@@ -316,7 +294,7 @@ impl Panel {
             fixed_cols: self.frozen_cols,
             header_h: g.header_height * scale,
             section_gap: g.section_gap * scale,
-            search_h: if self.query.is_empty() { 0.0 } else { g.search_height * scale },
+            search_h: if self.query.is_empty() { WORDMARK_H * scale } else { g.search_height * scale },
         }
     }
 
@@ -443,12 +421,7 @@ impl Panel {
         }
         self.visible = false;
         self.tracking_mouse = false;
-        // Keep-open lasts as long as the panel is on screen. A pin that outlives
-        // the thing it pinned would leave the next summon behaving oddly with no
-        // memory of why.
-        self.keep_open = false;
         self.press = None;
-        self.drop_band = None;
         self.query.clear();
         self.frozen_cols = 0;
         self.selected = None;
@@ -475,8 +448,6 @@ impl Panel {
         }
         self.tiles.clear();
         self.headers.clear();
-        self.chrome = None;
-        self.chrome_hot = false;
         self.items.clear();
         self.sections.clear();
     }
@@ -486,9 +457,6 @@ impl Panel {
         children.RemoveAll()?;
         self.tiles.clear();
         self.headers.clear();
-        // `chrome_hot` deliberately survives: a rebuild under a resting cursor
-        // should not make the button forget it is being pointed at.
-        self.chrome = None;
 
         let p = self.layout.panel;
         let scale = self.scale();
@@ -585,7 +553,6 @@ impl Panel {
         self.tiles = built;
         // After the tiles, so the grid scrolls underneath them.
         self.build_search();
-        self.build_chrome(radius);
         Ok(())
     }
 
@@ -632,79 +599,10 @@ impl Panel {
         }
     }
 
-    /// The keep-open pushpin, built last so it sits above the tiles: the grid
-    /// scrolls under it rather than carrying it off the top.
-    fn build_chrome(&mut self, radius: f32) {
-        let Some(renderer) = &self.renderer else { return };
-        let rect = self.layout.chrome();
-        if rect.w < 16.0 || rect.h < 12.0 {
-            return;
-        }
-
-        let hot = self.chrome_hot;
-        let built = (|| -> Result<(CompositionColorBrush, SpriteVisual)> {
-            let children = self.content.Children()?;
-            let (pill, brush) = self.rounded_rect(
-                Vector2 { X: rect.w, Y: rect.h },
-                (rect.h / 2.0).min(radius * 2.0),
-                self.chrome_color(hot),
-            )?;
-            pill.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 })?;
-            children.InsertAtTop(&pill)?;
-
-            let surface = renderer.create_surface(rect.w, rect.h)?;
-            renderer.draw_glyph(
-                &surface,
-                rect.w,
-                rect.h,
-                PIN_GLYPH,
-                d2d_color(&self.config.theme.text),
-            )?;
-            let sprite = self.compositor.CreateSpriteVisual()?;
-            sprite.SetSize(Vector2 { X: rect.w, Y: rect.h })?;
-            sprite.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 })?;
-            sprite.SetBrush(&self.compositor.CreateSurfaceBrushWithSurface(&surface)?)?;
-            children.InsertAtTop(&sprite)?;
-            Ok((brush, sprite))
-        })();
-
-        match built {
-            // A missing button is not worth refusing to show the panel over:
-            // the right-click menu carries the same toggle.
-            Err(e) => log_warn!("could not draw the keep-open button: {e}"),
-            Ok(chrome) => self.chrome = Some(chrome),
-        }
-    }
-
-    fn chrome_color(&self, hot: bool) -> Color {
-        let theme = &self.config.theme;
-        color_of(if hot {
-            &theme.tile_hover
-        } else if self.keep_open {
-            &theme.tile_drag
-        } else {
-            &theme.tile
-        })
-    }
-
-    fn chrome_hit(&self, x: f32, y: f32) -> bool {
-        self.chrome.is_some() && self.layout.chrome().contains(x, y)
-    }
-
     /// The strip swallows clicks. Dismissing on a click there would read as a
     /// bug. Whole row, not just the drawn text.
     fn search_hit(&self, y: f32) -> bool {
         !self.query.is_empty() && y >= 0.0 && y < self.layout.search_rect().h
-    }
-
-    fn set_chrome_hot(&mut self, hot: bool) {
-        if self.chrome_hot == hot {
-            return;
-        }
-        self.chrome_hot = hot;
-        if let Some((brush, _)) = &self.chrome {
-            let _ = brush.SetColor(self.chrome_color(hot));
-        }
     }
 
     fn text_colors(&self) -> TextColors {
@@ -1348,7 +1246,6 @@ impl Panel {
                 let picked = picker::pick_file(self.hwnd);
                 self.pin(picked);
             }
-            Some(menu::CMD_KEEP_OPEN) => self.set_keep_open(!self.keep_open),
             Some(menu::CMD_SETTINGS) => open_config(),
             _ => {}
         }
@@ -1394,12 +1291,6 @@ impl Panel {
         entries.push(Some(menu::Entry::new(
             menu::CMD_ADD_FILE,
             "Add file or shortcut...",
-        )));
-        entries.push(None);
-        entries.push(Some(menu::Entry::checkable(
-            menu::CMD_KEEP_OPEN,
-            "Keep panel open",
-            self.keep_open,
         )));
         entries.push(Some(menu::Entry::new(menu::CMD_SETTINGS, "Settings...")));
         entries
@@ -1462,82 +1353,6 @@ impl Panel {
         if launched.0 as isize <= 32 {
             log_warn!("could not show {source} in Explorer");
         }
-    }
-
-    fn set_keep_open(&mut self, on: bool) {
-        if self.keep_open == on {
-            return;
-        }
-        self.keep_open = on;
-        log_info!("keep panel open: {on}");
-        if let Some((brush, _)) = &self.chrome {
-            let _ = brush.SetColor(self.chrome_color(self.chrome_hot));
-        }
-    }
-
-    // --- drops from Explorer ---
-
-    /// Which section a drop at this point would land in: the one under the
-    /// cursor when it takes pins, otherwise the first section that does.
-    fn drop_target(&self, lparam: LPARAM) -> Option<usize> {
-        if !self.visible {
-            return None;
-        }
-        let (x, y) = point_of(lparam);
-        let under = self
-            .layout
-            .band_at(x, y, self.scroll)
-            .filter(|band| {
-                self.section_in_band(*band).is_some_and(|s| s.sources.contains(Source::Manual))
-            });
-        under.or_else(|| {
-            (0..self.layout.bands().len()).find(|band| {
-                self.section_in_band(*band).is_some_and(|s| s.sources.contains(Source::Manual))
-            })
-        })
-    }
-
-    /// Tint a whole section to show where a drop would go. There is no cursor to
-    /// follow here — the drag belongs to Explorer — so the target has to be
-    /// visible in the panel itself.
-    fn set_drop_band(&mut self, band: Option<usize>) {
-        if self.drop_band == band {
-            return;
-        }
-        let hot = color_of(&self.config.theme.tile_hover);
-        // Clearing restores each tile's own fill, not one flat colour: a merged
-        // section is banded and would come back out of a drop unbanded.
-        for (slot, want) in [(self.drop_band, None), (band, Some(hot))] {
-            let Some(band) = slot.and_then(|index| self.layout.bands().get(index)).cloned() else {
-                continue;
-            };
-            for index in band.first..band.first + band.count {
-                if let Some(tile) = self.tiles.get(index) {
-                    let _ = tile.brush.SetColor(want.unwrap_or_else(|| self.tile_color(index)));
-                }
-            }
-        }
-        self.drop_band = band;
-    }
-
-    fn on_drop(&mut self, paths: &[String], lparam: LPARAM) -> bool {
-        let Some(band) = self.drop_target(lparam) else {
-            return false;
-        };
-        self.set_drop_band(None);
-        let title = self.section_in_band(band).map(|s| s.title.clone());
-
-        let mut pinned = 0;
-        for path in paths {
-            if pins::add_into(title.as_deref(), path).is_some() {
-                pinned += 1;
-            }
-        }
-        log_info!("dropped {pinned} of {} item(s)", paths.len());
-        if pinned > 0 {
-            self.reload_config();
-        }
-        pinned > 0
     }
 
     /// Re-read the config and apply it live. Only the hotkey needs unbinding;
@@ -1637,27 +1452,18 @@ impl Panel {
                     return Some(LRESULT(0));
                 }
                 self.track_mouse_leave();
-                let (x, y) = point_of(lparam);
-                let on_chrome = self.chrome_hit(x, y);
-                self.set_chrome_hot(on_chrome);
-                let index = if on_chrome { None } else { self.cursor_index(lparam) };
-                self.set_hover(index);
+                self.set_hover(self.cursor_index(lparam));
                 Some(LRESULT(0))
             }
             WM_MOUSELEAVE => {
                 self.tracking_mouse = false;
                 self.set_hover(None);
-                self.set_chrome_hot(false);
                 Some(LRESULT(0))
             }
             // A press is not yet a click. Which one it becomes is decided on
             // release, by whether the cursor travelled far enough to be a drag.
             WM_LBUTTONDOWN => {
                 let (x, y) = point_of(lparam);
-                if self.chrome_hit(x, y) {
-                    // The button answers on release, like any button.
-                    return Some(LRESULT(0));
-                }
                 if let Some(index) = self.layout.hit_test(x, y, self.scroll) {
                     self.begin_press(index, x, y);
                 }
@@ -1682,11 +1488,7 @@ impl Panel {
                     }
                     return Some(LRESULT(0));
                 }
-                let (x, y) = point_of(lparam);
-                if self.chrome_hit(x, y) {
-                    self.set_keep_open(!self.keep_open);
-                    return Some(LRESULT(0));
-                }
+                let (_, y) = point_of(lparam);
                 if self.search_hit(y) {
                     return Some(LRESULT(0));
                 }
@@ -1708,22 +1510,6 @@ impl Panel {
                 }
                 Some(LRESULT(0))
             }
-            dropzone::WM_DRAG_OVER => {
-                let band = self.drop_target(lparam);
-                self.set_drop_band(band);
-                Some(LRESULT(band.is_some() as isize))
-            }
-            dropzone::WM_DRAG_LEAVE => {
-                self.set_drop_band(None);
-                Some(LRESULT(0))
-            }
-            dropzone::WM_DRAG_DROP => {
-                // SAFETY: the sender blocks in `SendMessageW` on this thread for
-                // the whole call, so the Vec it points at is alive and unaliased.
-                let paths = unsafe { &*(wparam.0 as *const Vec<String>) };
-                let taken = self.on_drop(paths, lparam);
-                Some(LRESULT(taken as isize))
-            }
             WM_MOUSEWHEEL => {
                 let delta = ((wparam.0 >> 16) & 0xFFFF) as i16 as f32;
                 self.scroll_by(delta);
@@ -1737,11 +1523,8 @@ impl Panel {
                 Some(LRESULT(0))
             }
             // Clicking away, or anything else stealing focus, dismisses — unless
-            // the panel is pinned open, or a menu of ours is up.
-            WM_ACTIVATE
-                if (wparam.0 & 0xFFFF) as u32 == WA_INACTIVE
-                    && !self.keep_open
-                    && !self.menu_open =>
+            // a menu of ours is up.
+            WM_ACTIVATE if (wparam.0 & 0xFFFF) as u32 == WA_INACTIVE && !self.menu_open =>
             {
                 self.hide(false);
                 Some(LRESULT(0))
@@ -1757,7 +1540,6 @@ impl Panel {
 
 impl Drop for Panel {
     fn drop(&mut self) {
-        dropzone::revoke(self.hwnd);
         if self.hotkey_bound {
             // SAFETY: matches the successful RegisterHotKey in bind_hotkey.
             unsafe {
@@ -1815,6 +1597,10 @@ fn point_of(lparam: LPARAM) -> (f32, f32) {
 }
 
 /// The detail line sits under the title; same hue, less presence.
+/// The strip the panel keeps for the wordmark when no query is live. Enough to
+/// read the name, not enough to be a header.
+const WORDMARK_H: f32 = 20.0;
+
 fn dim(mut c: D2D1_COLOR_F) -> D2D1_COLOR_F {
     c.a *= 0.6;
     c

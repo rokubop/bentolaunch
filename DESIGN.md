@@ -252,8 +252,8 @@ correct data over a channel already required for tabs.
 
 ### Pinned apps / folders
 
-Drag-and-drop via an `IDropTarget` COM server (`#[implement]` in the `windows`
-crate). Resolve `.lnk` via `IShellLink`. Icons via `IShellItemImageFactory`.
+Right-click "Pin this app", the tray pickers, or hand-editing the config. Resolve
+`.lnk` via `IShellLink`. Icons via `IShellItemImageFactory`.
 
 ---
 
@@ -362,7 +362,31 @@ with session caps and frame caching.
 would have flooded the grid without it.
 
 **Milestone 5 — rearranging and drag-and-drop pinning. Done**, ahead of 3 and 4.
-`IDropTarget`, drag to reorder, unpinning, layout persistence.
+Drag to reorder, unpinning, layout persistence. The `IDropTarget` half came out
+again; see below.
+
+### Drop-to-pin and the pushpin: built, then removed
+
+Dropping a file from Explorer onto the panel needs the panel to survive losing
+focus, because the drag *starts* in Explorer: the panel is gone before there is
+a drag to react to. "Suspend dismissal while a drag is in flight" is too late.
+So keep-open became its own pushpin toggle, top right, chrome rather than
+content so a long grid could not carry it off the top.
+
+Built both. Removed both. The pin existed only to serve drops, and drops were
+never the way pins actually got added — right-click "Pin this app", the tray
+pickers, and hand-editing carry that, and always did. A permanent button on
+every summon, for a mode nobody turned on, in a panel whose whole job is to get
+out of the way.
+
+Out with them: `dropzone.rs`, `grid::chrome`, `Section::sources`, and
+`OleInitialize`, which reverted to `CoInitializeEx` once `RegisterDragDrop` no
+longer needed the drag-and-drop apartment.
+
+Still open: does `WM_HOTKEY` fire during another process's drag loop? If it
+does, drag a file, press the hotkey, panel appears without stealing focus
+(`SWP_NOACTIVATE`), drop. That would be better than keep-open ever was, and is
+the only route by which drop-to-pin comes back.
 
 ### Edit mode: built, then removed
 
@@ -398,11 +422,6 @@ Two constraints from the original design held:
 
 - Reorder is for taskbar and manual sections only. Window tiles are MRU ordered
   by the foreground hook; a saved order would fight it on every focus change.
-- Dropping from Explorer needs the panel to survive losing focus. That is a
-  keep-open concern, not an edit one, so it is its own pushpin toggle. The drag
-  *starts* in Explorer, so "suspend dismissal while a drag is in flight" is too
-  late: the panel is gone before the drag exists.
-
 Implementation notes:
 
 - **A press is not yet a click.** `WM_LBUTTONDOWN` starts a press with capture;
@@ -418,14 +437,6 @@ Implementation notes:
   not expose its own (see below), so BentoPick keeps one once the user states it.
 - **Unpinning is manual sections only.** A taskbar entry belongs to the taskbar.
   Safety rule 3.
-- **The pushpin is chrome, not content.** Does not scroll, so a long grid cannot
-  carry it off the top. Glyph from Segoe MDL2, the shell's own icon font.
-- **The drop target holds no state.** Each OLE call becomes a synchronous
-  `SendMessageW` to the panel, so the panel stays the only thing touching its own
-  fields. The reply is the drop effect, and it keeps the path list alive across
-  the call for free.
-- `OleInitialize` replaced `CoInitializeEx`. Same apartment, plus the
-  drag-and-drop half `RegisterDragDrop` needs.
 
 ---
 

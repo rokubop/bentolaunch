@@ -23,13 +23,6 @@ pub fn add(target: &str) -> Option<String> {
     add_to(&Config::path()?, None, target)
 }
 
-/// Append a target to a named manual section, falling back to the first one when
-/// that section is gone or is not manual. This is where a drop lands: on the
-/// section the cursor was over.
-pub fn add_into(section: Option<&str>, target: &str) -> Option<String> {
-    add_to(&Config::path()?, section, target)
-}
-
 /// Drop one entry from a manual section. Returns whether the file changed.
 pub fn remove(section: &str, target: &str) -> bool {
     Config::path().is_some_and(|path| remove_from(&path, section, target))
