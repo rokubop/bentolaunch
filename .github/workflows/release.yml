@@ -76,25 +76,19 @@ jobs:
         run: |
           # A literal here-string: no expansion, so the backticks below stay
           # markdown instead of becoming PowerShell escapes.
+          # Short on purpose. The README is the install guide, and notes
+          # that repeat it drift from it.
           $notes = @'
-          Portable single exe. No installer, no admin, and nothing written
-          outside its own folder and `%LOCALAPPDATA%\bentopick`.
+          Windows 11. Portable single exe, no installer, no admin.
 
-          1. Download `bentopick.exe` and put it somewhere it can stay - its
-             settings file is written next to it.
-          2. Run it. Tray icon only; press Alt+backtick to summon the panel.
-          3. Windows will warn about an unrecognised app, because this build is
-             not code-signed yet.
+          Download `bentopick.exe`, put it somewhere permanent, run it, press
+          Alt+backtick. Windows will warn about an unrecognised app until this
+          is code-signed.
 
-          Browser tabs are optional and off by default. To turn them on, unzip
-          `bentopick-extension.zip`, load it at `chrome://extensions` with
-          Developer mode on, then pair it from the tray: **Browser > Pair a
-          browser...**.
+          Browser tabs are optional: `bentopick-extension.zip` is here too. Use
+          both halves from the same release.
 
-          Both halves come from this one release. An extension and an exe from
-          different releases will say so rather than failing quietly.
-
-          README.md has the setup and the security notes.
+          [Install steps](https://github.com/rokubop/bentopick#install)
           '@
 
           # A dispatch run is a rehearsal of the packaging, not a release, so
