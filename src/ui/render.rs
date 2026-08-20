@@ -28,7 +28,8 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER,
     DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TRIMMING,
     DWRITE_TRIMMING_GRANULARITY_CHARACTER,
-    DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
+    DWRITE_TEXT_METRICS, DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory,
+    IDWriteTextFormat,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
@@ -106,7 +107,7 @@ impl Renderer {
             text_format(&dwrite, DWRITE_FONT_WEIGHT_NORMAL, 11.0, DWRITE_TEXT_ALIGNMENT_CENTER)?;
         // Headers read as labels, so they sit left-aligned against the padding.
         let header_format =
-            text_format(&dwrite, DWRITE_FONT_WEIGHT_SEMI_BOLD, 12.0, DWRITE_TEXT_ALIGNMENT_LEADING)?;
+            text_format(&dwrite, DWRITE_FONT_WEIGHT_SEMI_BOLD, 14.0, DWRITE_TEXT_ALIGNMENT_LEADING)?;
         Ok(Renderer {
             graphics,
             title_format,
@@ -365,21 +366,56 @@ impl Renderer {
         result
     }
 
-    /// The name, right-aligned on a header's row. Detail colour and header-sized:
-    /// this is a click-first panel, and the wordmark is not something to aim at.
+    /// Logo then name, as a block against the right edge. Detail colour and
+    /// header-sized: this is a click-first panel, and the wordmark is not
+    /// something to aim at.
+    ///
+    /// `icon` is the app's own, `None` until the shell worker delivers it.
     pub fn draw_wordmark(
         &self,
         surface: &CompositionDrawingSurface,
         width: f32,
         height: f32,
         colors: TextColors,
+        icon: Option<&IconPixels>,
     ) -> Result<()> {
         let name_format = text_format(
             &self.dwrite,
             DWRITE_FONT_WEIGHT_SEMI_BOLD,
-            (height * 0.55).clamp(9.0, 20.0),
-            DWRITE_TEXT_ALIGNMENT_TRAILING,
+            (height * 0.74).clamp(9.0, 24.0),
+            DWRITE_TEXT_ALIGNMENT_LEADING,
         )?;
+
+        // Measured, because the logo has to sit against the name's left edge and
+        // the pair has to end at the panel's padding.
+        let utf16: Vec<u16> = WORDMARK.encode_utf16().collect();
+        let (text_w, ink_top, ink_bottom) = {
+            // SAFETY: the layout borrows nothing past this block.
+            let layout = unsafe {
+                self.dwrite.CreateTextLayout(&utf16, &name_format, width, height)?
+            };
+            let mut metrics = DWRITE_TEXT_METRICS::default();
+            // SAFETY: the layout is live and metrics is ours.
+            let overhang = unsafe {
+                layout.GetMetrics(&mut metrics)?;
+                layout.GetOverhangMetrics()?
+            };
+            // Where the letters actually are, not where their line box is.
+            let top = -overhang.top;
+            let bottom = height + overhang.bottom;
+            (metrics.width, top, bottom)
+        };
+
+        // The logo is measured against the letters, not the row. Sized off the
+        // row it overhangs the word top and bottom, and a full-bleed square
+        // reads as floating rather than set beside it.
+        let ink_h = ink_bottom - ink_top;
+        let side = if icon.is_some() { (ink_h * 1.45).min(height).min(width) } else { 0.0 };
+        let gap = if icon.is_some() { ink_h * 0.34 } else { 0.0 };
+
+        // A pixel of slack: every format here ellipsizes, and a rect measured to
+        // the glyph loses its last character to rounding.
+        let text_left = (width - text_w - 2.0).max(side + gap);
 
         let interop: ICompositionDrawingSurfaceInterop = surface.cast()?;
 
@@ -395,11 +431,31 @@ impl Renderer {
         let result = unsafe {
             context.SetTransform(&Matrix3x2::translation(offset.x as f32, offset.y as f32));
             context.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
+            if let Some(icon) = icon
+                && let Ok(bitmap) = create_bitmap(&context, icon)
+            {
+                let left = (text_left - gap - side).max(0.0);
+                let top = ((ink_top + ink_bottom - side) / 2.0)
+                    .clamp(0.0, (height - side).max(0.0));
+                context.DrawBitmap(
+                    &bitmap,
+                    Some(&D2D_RECT_F {
+                        left,
+                        top,
+                        right: left + side,
+                        bottom: top + side,
+                    }),
+                    1.0,
+                    D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
+                    None,
+                    None,
+                );
+            }
             self.draw_text(
                 &context,
                 WORDMARK,
                 &name_format,
-                D2D_RECT_F { left: 0.0, top: 0.0, right: width, bottom: height },
+                D2D_RECT_F { left: text_left, top: 0.0, right: width, bottom: height },
                 colors.detail,
             )
         };
@@ -464,13 +520,17 @@ unsafe fn create_bitmap(context: &ID2D1DeviceContext, icon: &IconPixels) -> Resu
     }
 }
 
+/// Windows 11's own UI face. DirectWrite falls back to Segoe UI on a machine
+/// that somehow lacks it.
+const UI_FONT: windows::core::PCWSTR = w!("Segoe UI Variable Text");
+
 fn text_format(
     dwrite: &IDWriteFactory,
     weight: windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT,
     size: f32,
     alignment: DWRITE_TEXT_ALIGNMENT,
 ) -> Result<IDWriteTextFormat> {
-    font_format(dwrite, w!("Segoe UI"), weight, size, alignment)
+    font_format(dwrite, UI_FONT, weight, size, alignment)
 }
 
 fn font_format(

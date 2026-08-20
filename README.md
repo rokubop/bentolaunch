@@ -220,6 +220,7 @@ max_columns = 9          # hard column cap; 0 means whatever fits
 label_height = 24.0
 show_detail = false      # true: second line with process name or path
 header_height = 22.0     # 0 hides section headers
+header_gap    = 6.0      # between a section title and its first row
 section_gap = 10.0
 corner_radius = 8.0
 

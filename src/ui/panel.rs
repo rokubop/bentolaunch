@@ -111,9 +111,9 @@ pub struct Panel {
     tiles: Vec<Tile>,
     /// Header visuals, in the same order as `layout.headers()`.
     headers: Vec<SpriteVisual>,
-    /// The name, riding the first header's row. `None` when there is no row to
-    /// put it on.
-    wordmark: Option<SpriteVisual>,
+    /// The name and logo, riding the first header's row. `None` when there is no
+    /// row to put it on.
+    wordmark: Option<Wordmark>,
     visible: bool,
     /// Whether a `TrackMouseEvent` request is outstanding. Without one,
     /// WM_MOUSELEAVE never arrives and hover sticks on the last tile.
@@ -132,6 +132,14 @@ pub struct Panel {
     /// A button is down on a tile. It becomes a drag past the slop threshold and
     /// an activation if it never gets there.
     press: Option<Press>,
+}
+
+/// The panel's own name and icon, drawn once per build.
+struct Wordmark {
+    visual: SpriteVisual,
+    surface: CompositionDrawingSurface,
+    /// The app's own icon has not arrived from the shell worker yet.
+    awaiting_icon: bool,
 }
 
 /// A pressed tile, which may still turn out to be either a click or a drag.
@@ -204,6 +212,7 @@ impl Panel {
             fixed_cols: 0,
             header_h: 0.0,
             section_gap: 0.0,
+            header_gap: 0.0,
             search_h: 0.0,
         };
 
@@ -297,6 +306,7 @@ impl Panel {
             max_cols: g.max_columns,
             fixed_cols: self.frozen_cols,
             header_h: g.header_height * scale,
+            header_gap: g.header_gap * scale,
             section_gap: g.section_gap * scale,
             search_h: if self.query.is_empty() { 0.0 } else { g.search_height * scale },
         }
@@ -603,20 +613,27 @@ impl Panel {
             return;
         }
 
-        let built = (|| -> Result<SpriteVisual> {
+        let icon = app_icon(rect.h);
+        let built = (|| -> Result<Wordmark> {
             let surface = renderer.create_surface(rect.w, rect.h)?;
-            renderer.draw_wordmark(&surface, rect.w, rect.h, self.text_colors())?;
-            let sprite = self.compositor.CreateSpriteVisual()?;
-            sprite.SetSize(Vector2 { X: rect.w, Y: rect.h })?;
-            sprite.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 })?;
-            sprite.SetBrush(&self.compositor.CreateSurfaceBrushWithSurface(&surface)?)?;
-            children.InsertAtTop(&sprite)?;
-            Ok(sprite)
+            renderer.draw_wordmark(
+                &surface,
+                rect.w,
+                rect.h,
+                self.text_colors(),
+                icon.as_deref(),
+            )?;
+            let visual = self.compositor.CreateSpriteVisual()?;
+            visual.SetSize(Vector2 { X: rect.w, Y: rect.h })?;
+            visual.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 })?;
+            visual.SetBrush(&self.compositor.CreateSurfaceBrushWithSurface(&surface)?)?;
+            children.InsertAtTop(&visual)?;
+            Ok(Wordmark { visual, surface, awaiting_icon: icon.is_none() })
         })();
 
         match built {
             Err(e) => log_warn!("could not draw the wordmark: {e}"),
-            Ok(sprite) => self.wordmark = Some(sprite),
+            Ok(wordmark) => self.wordmark = Some(wordmark),
         }
     }
 
@@ -676,10 +693,10 @@ impl Panel {
         for (visual, (_, rect)) in self.headers.iter().zip(self.layout.headers(self.scroll)) {
             let _ = visual.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 });
         }
-        if let (Some(visual), Some((_, rect))) =
+        if let (Some(wordmark), Some((_, rect))) =
             (&self.wordmark, self.layout.headers(self.scroll).next())
         {
-            let _ = visual.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 });
+            let _ = wordmark.visual.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 });
         }
     }
 
@@ -832,6 +849,32 @@ impl Panel {
         }
         if filled > 0 {
             log_info!("{filled} icon(s) painted");
+        }
+        self.fill_wordmark_icon();
+    }
+
+    /// The app's own icon comes down the same worker queue as every tile's, so
+    /// the first summon usually draws the name alone.
+    fn fill_wordmark_icon(&mut self) {
+        let Some(renderer) = &self.renderer else { return };
+        let Some(wordmark) = &self.wordmark else { return };
+        if !wordmark.awaiting_icon {
+            return;
+        }
+        let Some((_, rect)) = self.layout.headers(self.scroll).next() else { return };
+        let Some(icon) = app_icon(rect.h) else { return };
+
+        let drawn = renderer.draw_wordmark(
+            &wordmark.surface,
+            rect.w,
+            rect.h,
+            self.text_colors(),
+            Some(&icon),
+        );
+        if drawn.is_ok()
+            && let Some(wordmark) = &mut self.wordmark
+        {
+            wordmark.awaiting_icon = false;
         }
     }
 
@@ -1580,6 +1623,13 @@ impl Drop for Panel {
             }
         }
     }
+}
+
+/// The app's own icon, off the same cache the tiles use. Our exe is a shell item
+/// like any other, so this needs no separate resource-loading path.
+fn app_icon(row_h: f32) -> Option<std::sync::Arc<icons::IconPixels>> {
+    let exe = std::env::current_exe().ok()?;
+    icons::request(exe.to_str()?, (row_h * 2.0).max(16.0) as u32)
 }
 
 /// Open `bentopick.toml` in whatever the user edits TOML with. Falls back to

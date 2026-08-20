@@ -258,6 +258,8 @@ pub struct Grid {
     pub show_detail: bool,
     /// Height of a section header.
     pub header_height: f32,
+    /// Breathing room between a section title and its first row of tiles.
+    pub header_gap: f32,
     /// Extra space above each section after the first.
     pub section_gap: f32,
     pub corner_radius: f32,
@@ -371,6 +373,7 @@ impl Default for Grid {
             label_height: 24.0,
             show_detail: false,
             header_height: 22.0,
+            header_gap: 6.0,
             section_gap: 10.0,
             corner_radius: 8.0,
             search_height: 72.0,
@@ -468,6 +471,9 @@ impl Config {
         }
         if !(0.0..=200.0).contains(&g.label_height) {
             g.label_height = d.label_height;
+        }
+        if !(0.0..=200.0).contains(&g.header_gap) {
+            g.header_gap = d.header_gap;
         }
         if !(0.0..=200.0).contains(&g.header_height) {
             g.header_height = d.header_height;

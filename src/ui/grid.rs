@@ -45,6 +45,9 @@ pub struct Metrics {
     /// panel cannot change width per keystroke. Still bounded by the screen.
     pub fixed_cols: usize,
     pub header_h: f32,
+    /// Between a header and the row under it. Folded into the header band, so a
+    /// section with no title does not pay for it.
+    pub header_gap: f32,
     pub section_gap: f32,
     /// Filter strip above the grid, 0 when not filtering. Does not scroll: it
     /// is what explains why most of the grid is missing.
@@ -144,7 +147,7 @@ impl Layout {
                         h: m.header_h,
                     },
                 });
-                y += m.header_h;
+                y += m.header_h + m.header_gap;
             }
 
             let rows = section.count.div_ceil(cols);
@@ -347,6 +350,7 @@ mod tests {
             max_cols: 0,
             fixed_cols: 0,
             header_h: 28.0,
+            header_gap: 0.0,
             section_gap: 14.0,
             search_h: 0.0,
         }
@@ -525,6 +529,19 @@ mod tests {
         assert!(headers[0].1.y < l.tile_rect(0, 0.0).y);
         assert!(headers[1].1.y > l.tile_rect(1, 0.0).y);
         assert!(headers[1].1.y < l.tile_rect(2, 0.0).y);
+    }
+
+    #[test]
+    fn a_title_costs_its_header_plus_the_gap_under_it() {
+        let m = Metrics { header_gap: 6.0, ..metrics() };
+        let titled = Layout::compute(&[shape("Pinned", 4)], m, WORK);
+        let bare = Layout::compute(&[shape("", 4)], m, WORK);
+
+        // The gap is the header's, not the tiles': an untitled section pays for
+        // neither.
+        assert_eq!(titled.content_h, bare.content_h + m.header_h + m.header_gap);
+        let header = titled.headers(0.0).next().unwrap().1;
+        assert_eq!(titled.tile_rect(0, 0.0).y, header.y + m.header_h + m.header_gap);
     }
 
     #[test]
