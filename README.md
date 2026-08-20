@@ -39,14 +39,10 @@ Tabs appear in the grid straight away. To unpair: **Browser > Forget**.
 
 ### Start it at login
 
-```powershell
-$s = (New-Object -ComObject WScript.Shell).CreateShortcut(
-    "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\BentoPick.lnk")
-$s.TargetPath = "$env:LOCALAPPDATA\Programs\bentopick\bentopick.exe"
-$s.Save()
-```
+Press Win+R, type `shell:startup`, Enter. Put a shortcut to `bentopick.exe` in
+the folder that opens.
 
-Delete that shortcut to undo it.
+Delete the shortcut to undo it.
 
 ## Build from source
 
