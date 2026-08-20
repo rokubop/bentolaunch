@@ -240,6 +240,10 @@ fn accept_loop(listener: TcpListener, hwnd: isize) {
 
 /// Returns whether this connection ever became a real one, which is what
 /// decides if there is any state to tear down.
+///
+/// The large `Err` clippy objects to is tungstenite's `ErrorResponse`, which is
+/// the callback signature `accept_hdr_with_config` requires. Not ours to shrink.
+#[allow(clippy::result_large_err)]
 fn serve(stream: TcpStream, loopback: bool, connection: u64, hwnd: isize) -> bool {
     if stream.set_read_timeout(Some(READ_TIMEOUT)).is_err() {
         log_warn!("browser connection {connection}: could not set a read timeout");

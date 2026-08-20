@@ -76,7 +76,7 @@ pub fn pins() -> Vec<Item> {
         .filter_map(|path| item_for(&path))
         .collect();
 
-    items.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+    items.sort_by_key(|item| item.title.to_lowercase());
     log_info!("taskbar pins: {}", items.len());
     items
 }
