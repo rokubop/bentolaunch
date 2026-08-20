@@ -1,0 +1,113 @@
+# Tag a version, get a downloadable exe and a zipped extension.
+#
+#     git tag v0.3.0 && git push origin v0.3.0
+#
+# Release assets are only publicly downloadable from a public repository. On a
+# private repo this still runs, but the download needs a signed-in user with
+# access, which defeats the point.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  # Handy for rehearsing the packaging without minting a tag. Produces a draft.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The same gates as CI. A tag must never ship something that would have
+      # failed a pull request.
+      - name: Build
+        run: cargo build --release
+        env:
+          RUSTFLAGS: -D warnings
+
+      - name: Test
+        run: cargo test --all-targets
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      # The version in the tag and the version in Cargo.toml have to be the
+      # same thing, or the download and the About box disagree forever.
+      - name: Tag matches Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart("v")
+          $crate = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ($tag -ne $crate) {
+            Write-Error "tag $tag does not match Cargo.toml version $crate"
+            exit 1
+          }
+
+      # Signing slot. Unsigned, the download gets a SmartScreen warning on
+      # every machine that has not seen it before - for an app asking to be
+      # trusted with your open windows, that is the wrong first impression.
+      # Fill this in with a certificate in secrets and signtool; leaving it
+      # empty is a deliberate, visible gap rather than an oversight.
+      #
+      # - name: Sign
+      #   run: signtool sign /fd SHA256 /tr http://timestamp.acs.microsoft.com ...
+
+      # Both halves ship from one tag. An extension and an exe from different
+      # releases is exactly what the protocol version exists to catch.
+      - name: Package the extension
+        shell: pwsh
+        run: Compress-Archive -Path extension\* -DestinationPath bentopick-extension.zip
+
+      - name: Publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A literal here-string: no expansion, so the backticks below stay
+          # markdown instead of becoming PowerShell escapes.
+          $notes = @'
+          Portable single exe. No installer, no admin, and nothing written
+          outside its own folder and `%LOCALAPPDATA%\bentopick`.
+
+          1. Download `bentopick.exe` and put it somewhere it can stay - its
+             settings file is written next to it.
+          2. Run it. Tray icon only; press Alt+backtick to summon the panel.
+          3. Windows will warn about an unrecognised app, because this build is
+             not code-signed yet.
+
+          Browser tabs are optional and off by default. To turn them on, unzip
+          `bentopick-extension.zip`, load it at `chrome://extensions` with
+          Developer mode on, then pair it from the tray: **Browser > Pair a
+          browser...**.
+
+          Both halves come from this one release. An extension and an exe from
+          different releases will say so rather than failing quietly.
+
+          README.md has the setup and the security notes.
+          '@
+
+          # A dispatch run is a rehearsal of the packaging, not a release, so
+          # it lands as a draft under its own name.
+          $tagged = "${{ github.ref_type }}" -eq "tag"
+          $tag = if ($tagged) { "${{ github.ref_name }}" } else { "draft-$(git rev-parse --short HEAD)" }
+
+          $arguments = @(
+            "release", "create", $tag,
+            "target\release\bentopick.exe",
+            "bentopick-extension.zip",
+            "--title", $tag,
+            "--notes", $notes
+          )
+          if (-not $tagged) { $arguments += "--draft" }
+          gh @arguments

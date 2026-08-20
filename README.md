@@ -10,7 +10,7 @@ Example:
 
 ## Setup
 
-Windows 11 and [Rust](https://rustup.rs). Build from **PowerShell, not WSL** —
+Windows 11 and [Rust](https://rustup.rs). Build from **PowerShell, not WSL** -
 the toolchain, the window and the packaging are all Windows-native.
 
 ```powershell
@@ -24,7 +24,7 @@ That is enough to try it: press `` Alt+` `` and the panel comes up. Debug builds
 (`cargo build`) keep a console window so the log is visible; release builds are
 silent, which is what you want once it autostarts.
 
-First run writes `bentopick.toml` **next to the exe**. That is deliberate —
+First run writes `bentopick.toml` **next to the exe**. That is deliberate -
 config travels with the binary, so a copied exe brings its pins with it.
 
 ### Keep it
@@ -50,7 +50,7 @@ $s.Save()
 Delete that shortcut to undo it. Installing a newer build is another copy over
 the top; your pins survive, since they are in the `.toml` beside it.
 
-Watch which copy you are running — the panel reads the config next to whichever
+Watch which copy you are running - the panel reads the config next to whichever
 exe started, so an installed copy and `target\release\` have separate settings.
 
 ### Tabs from your browser
@@ -216,7 +216,7 @@ port    = 8777
 
 Pairing is not a config edit. Load the extension, then right-click the tray
 icon: **Browser > Pair a browser...**. BentoPick shows six digits, you type them
-into the extension's options page, and that is the whole setup — it switches the
+into the extension's options page, and that is the whole setup - it switches the
 bridge on for you if it was off. **Browser > Forget** undoes it.
 `extension/README.md` has the details.
 
@@ -318,7 +318,7 @@ documented transport. MV3 service workers die after ~30s idle, and there are
 at 5-6 minutes with `connectNative()`. Chrome 116+ keeps the worker alive as
 long as messages flow. Native messaging would also have the browser spawn the
 host, and BentoPick is a long-running GUI that would end up with a second copy
-of itself — plus a registry key and a host manifest, which is footprint this app
+of itself - plus a registry key and a host manifest, which is footprint this app
 does not want.
 
 What a fixed port costs is that something else can take it, and an extension

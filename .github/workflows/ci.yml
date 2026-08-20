@@ -1,0 +1,69 @@
+# What CI can actually prove here is narrow, and worth saying out loud: it
+# compiles the app and runs the logic that has no window in it. Nothing about
+# the hotkey, the tray, the panel, pairing-by-hand or anything drawn is covered
+# - see STATUS.md. A green run is not evidence the app works.
+#
+# Windows-only by necessity: every dependency is a Win32 API.
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # A build warning in this repo is a build error. It is a single-maintainer
+  # project, so a warning nobody is paged about is a warning nobody fixes.
+  RUSTFLAGS: -D warnings
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The runner image ships a current stable toolchain, so there is nothing
+      # to install. Pin one here if a specific version ever matters.
+      - name: Toolchain
+        run: |
+          rustc --version
+          cargo --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release
+
+      # The socket tests bind real loopback ports (port 0, so no collisions)
+      # and write a peer store into the temp directory. Both are fine on a
+      # throwaway runner; neither touches a real install.
+      - name: Test
+        run: cargo test --all-targets
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      # The only automated check the extension gets. Node is preinstalled.
+      - name: Extension syntax
+        shell: pwsh
+        run: |
+          Get-ChildItem extension\*.js | ForEach-Object {
+            node --check $_.FullName
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
+
+      # The hash in crypto.rs and the one in bridge.js have to agree or nothing
+      # ever pairs, and the same is true of the protocol version. Neither pair
+      # can be checked by either language's tests, so check them here.
+      - name: Extension and app agree on the bridge
+        shell: pwsh
+        run: |
+          $rust = (Select-String -Path src\browser\protocol.rs -Pattern 'pub const PROTOCOL: u32 = (\d+)').Matches[0].Groups[1].Value
+          $js = (Select-String -Path extension\bridge.js -Pattern 'const BRIDGE_PROTOCOL = (\d+)').Matches[0].Groups[1].Value
+          Write-Host "app speaks $rust, extension speaks $js"
+          if ($rust -ne $js) {
+            Write-Error "protocol version mismatch: protocol.rs says $rust, bridge.js says $js"
+            exit 1
+          }
