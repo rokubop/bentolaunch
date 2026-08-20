@@ -10,18 +10,32 @@ Example:
 
 ## Install
 
-Windows 11. No installer, no admin.
+Windows 11 only.
 
-1. Download **[bentopick.exe](https://github.com/rokubop/bentopick/releases/latest/download/bentopick.exe)**
-   from the [latest release](https://github.com/rokubop/bentopick/releases/latest).
-2. Put it somewhere it can stay. It writes its settings file next to itself, so
-   `%LOCALAPPDATA%\Programs\bentopick\` beats your Downloads folder.
-3. Run it. Windows will say it does not recognise the app: **More info** ->
-   **Run anyway**. It is unsigned, a code signing certificate is on the list.
+### 1. The app
+
+1. Download [bentopick.exe](https://github.com/rokubop/bentopick/releases/latest/download/bentopick.exe).
+2. Move it to `%LOCALAPPDATA%\Programs\bentopick\`.
+3. Run it. Windows warns about an unrecognised app: **More info** -> **Run anyway**.
 4. Press `` Alt+` ``.
 
-Tray icon only, no window until you summon it. Updating is copying a newer exe
-over the old one, your pins are in the `.toml` beside it and survive.
+Tray icon only, no window until you summon it. To update, copy a newer exe over
+the old one.
+
+### 2. Browser tabs (optional)
+
+Only if you want tabs in the grid. Chromium browsers for now.
+
+1. Download `bentopick-extension.zip` from the
+   [same release](https://github.com/rokubop/bentopick/releases/latest) and unzip it.
+2. Go to `chrome://extensions`, turn on Developer mode, click **Load unpacked**,
+   pick the unzipped folder.
+3. Right-click the BentoPick tray icon: **Browser > Pair a browser...**. It
+   shows six digits.
+4. Open the extension's options page, type the digits, click **Pair with
+   BentoPick**.
+
+Tabs appear in the grid straight away. To unpair: **Browser > Forget**.
 
 ### Start it at login
 
@@ -33,15 +47,6 @@ $s.Save()
 ```
 
 Delete that shortcut to undo it.
-
-### Tabs from your browser
-
-Optional and off by default. Grab `bentopick-extension.zip` from the same
-release, load it at `chrome://extensions` with Developer mode on, then pair it
-from the tray: **Browser > Pair a browser...**. Six digits, no config editing.
-[Browser tabs](#browser-tabs) below has the details and what it can see.
-
-Take both halves from the same release. Mismatched versions will say so.
 
 ## Build it yourself
 
