@@ -34,11 +34,11 @@ Only if you want tabs in the grid. Chromium browsers for now.
 1. Download `bentopick-extension.zip` from the
    [same release](https://github.com/rokubop/bentopick/releases/latest) and unzip it.
 2. Go to `chrome://extensions`, turn on Developer mode, click **Load unpacked**,
-   pick the unzipped folder.
+   pick the unzipped folder. It appears as **BentoPick bridge**.
 3. Right-click the BentoPick tray icon: **Browser > Pair a browser...**. It
    shows six digits.
-4. Open the extension's options page, type the digits, click **Pair with
-   BentoPick**.
+4. On the BentoPick bridge card click **Details > Extension options**, type the
+   digits, click **Pair with BentoPick**.
 
 Tabs appear in the grid straight away. To unpair: **Browser > Forget**.
 

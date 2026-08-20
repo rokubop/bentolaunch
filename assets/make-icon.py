@@ -133,6 +133,14 @@ for sz in SIZES:
     if sz == 256:
         open("assets/bentopick-256.png", "wb").write(payload)
 
+# Chrome wants loose PNGs. Same shapes from the same script, so the extension
+# icon cannot drift from the app's.
+os.makedirs("extension/icons", exist_ok=True)
+for sz in (16, 32, 48, 128):
+    mode = "tiny" if sz <= 20 else ("plain" if sz < 48 else "full")
+    open(f"extension/icons/{sz}.png", "wb").write(png(sz, render(sz, mode)))
+print("extension icons: 16, 32, 48, 128")
+
 out = bytearray(struct.pack("<HHH", 0, 1, len(images)))
 offset = 6 + 16 * len(images)
 entries, blobs = bytearray(), bytearray()
