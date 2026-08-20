@@ -50,8 +50,7 @@ Delete that shortcut to undo it.
 
 ## Build from source
 
-Not a next step. Installing is done. This is only if you would rather build the
-exe yourself than download it.
+If instead of downloading the exe you want to build it yourself.
 
 Needs [Rust](https://rustup.rs). From **PowerShell, not WSL**, the toolchain and
 the window are Windows-native.
