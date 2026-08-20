@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{HWND, MAX_PATH, SIZE};
 use windows::Win32::Graphics::Gdi::{
@@ -222,6 +222,14 @@ fn notify() {
     }
 }
 
+/// `E_PENDING`, which this version of the `windows` crate does not re-export.
+const E_PENDING: windows::core::HRESULT = windows::core::HRESULT(0x8000_000Au32 as i32);
+
+/// How many times to ask the shell again after `E_PENDING`, and the first wait
+/// between tries. Doubles each time: 40ms, 80ms, 160ms, 320ms.
+const PENDING_RETRIES: u32 = 4;
+const PENDING_BACKOFF_MS: u64 = 40;
+
 fn fetch(key: &Key) -> Option<IconPixels> {
     // SAFETY: every COM object is scoped to this call, and the HBITMAP is
     // deleted on both the success and failure paths below.
@@ -237,9 +245,29 @@ fn fetch(key: &Key) -> Option<IconPixels> {
         };
 
         let size = SIZE { cx: key.size as i32, cy: key.size as i32 };
-        let bitmap = factory
-            .GetImage(size, SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK)
-            .ok()?;
+        // `E_PENDING` means the shell has to extract the icon before it can
+        // hand one over: anything not already in its icon cache, which includes
+        // every freshly built or freshly installed binary. It wants to be asked
+        // again. This is a worker thread, so waiting here costs the UI nothing.
+        let mut bitmap = Err(windows::core::Error::from(E_PENDING));
+        for attempt in 0..PENDING_RETRIES {
+            bitmap = factory.GetImage(size, SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK);
+            match &bitmap {
+                Err(e) if e.code() == E_PENDING => {
+                    std::thread::sleep(Duration::from_millis(PENDING_BACKOFF_MS << attempt));
+                }
+                _ => break,
+            }
+        }
+        let bitmap = match bitmap {
+            Ok(bitmap) => bitmap,
+            Err(e) => {
+                if e.code() == E_PENDING {
+                    log_warn!("the shell never finished extracting an icon for {}", key.name);
+                }
+                return None;
+            }
+        };
 
         let pixels = read_bitmap(bitmap);
         let _ = DeleteObject(bitmap.into());
