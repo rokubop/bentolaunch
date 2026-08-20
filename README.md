@@ -14,8 +14,10 @@ Windows 11 only.
 
 ### 1. The app
 
-1. Download [bentopick.exe](https://github.com/rokubop/bentopick/releases/latest/download/bentopick.exe).
-2. Move it to `%LOCALAPPDATA%\Programs\bentopick\`.
+1. Download [bentopick.exe](https://github.com/rokubop/bentopick/releases/latest/download/bentopick.exe),
+   or pick it off the [latest release](https://github.com/rokubop/bentopick/releases/latest).
+2. Make a folder to keep it in and move it there. Anywhere permanent works,
+   `%LOCALAPPDATA%\Programs\bentopick` is the usual spot.
 3. Run it. Windows warns about an unrecognised app: **More info** -> **Run anyway**.
 4. Press `` Alt+` ``.
 
