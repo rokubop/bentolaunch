@@ -16,10 +16,13 @@ Windows 11 only.
 
 1. Download [bentopick.exe](https://github.com/rokubop/bentopick/releases/latest/download/bentopick.exe),
    or pick it off the [latest release](https://github.com/rokubop/bentopick/releases/latest).
-2. Make a folder to keep it in and move it there. Anywhere permanent works,
-   `%LOCALAPPDATA%\Programs\bentopick` is the usual spot.
+2. Paste `%LOCALAPPDATA%\Programs` into the Explorer address bar, make a
+   `bentopick` folder there, and move the exe into it.
 3. Run it. Windows warns about an unrecognised app: **More info** -> **Run anyway**.
 4. Press `` Alt+` ``.
+
+Not `Program Files`. BentoPick writes its settings next to the exe, and that
+folder needs admin to write to. Anywhere permanent that you own is fine.
 
 Tray icon only, no window until you summon it. To update, copy a newer exe over
 the old one.
