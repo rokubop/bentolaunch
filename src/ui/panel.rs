@@ -12,7 +12,7 @@ use windows::UI::Color;
 use windows::UI::Composition::Desktop::DesktopWindowTarget;
 use windows::UI::Composition::{
     CompositionColorBrush, CompositionDrawingSurface, CompositionSpriteShape, Compositor,
-    ContainerVisual, ShapeVisual, SpriteVisual, VisualCollection,
+    ContainerVisual, ShapeVisual, SpriteVisual,
 };
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
@@ -121,7 +121,6 @@ pub struct Panel {
     headers: Vec<SpriteVisual>,
     /// The name and logo, riding the first header's row. `None` when there is no
     /// row to put it on.
-    wordmark: Option<Wordmark>,
     visible: bool,
     /// Whether a `TrackMouseEvent` request is outstanding. Without one,
     /// WM_MOUSELEAVE never arrives and hover sticks on the last tile.
@@ -200,7 +199,7 @@ pub struct Panel {
     home: Option<(GridRect, CompositionColorBrush)>,
     hover_home: bool,
     /// The button's surface, kept so the logo can be painted into it when the
-    /// shell worker delivers it. Same story as the wordmark's.
+    /// shell worker delivers it.
     home_surface: Option<CompositionDrawingSurface>,
     home_awaiting_icon: bool,
     /// The big menu that button opens. Not a mode: it is closed by picking
@@ -215,14 +214,6 @@ pub struct Panel {
     settings_open: bool,
     settings_items: Vec<(Setting, GridRect, CompositionColorBrush)>,
     hover_setting: Option<usize>,
-}
-
-/// The panel's own name and icon, drawn once per build.
-struct Wordmark {
-    visual: SpriteVisual,
-    surface: CompositionDrawingSurface,
-    /// The app's own icon has not arrived from the shell worker yet.
-    awaiting_icon: bool,
 }
 
 /// A pressed tile, which may still turn out to be either a click or a drag.
@@ -321,7 +312,6 @@ impl Panel {
             selected: None,
             tiles: Vec::new(),
             headers: Vec::new(),
-            wordmark: None,
             home_surface: None,
             home_awaiting_icon: false,
             visible: false,
@@ -624,7 +614,6 @@ impl Panel {
         }
         self.tiles.clear();
         self.headers.clear();
-        self.wordmark = None;
         self.items.clear();
         self.sections.clear();
     }
@@ -634,7 +623,6 @@ impl Panel {
         children.RemoveAll()?;
         self.tiles.clear();
         self.headers.clear();
-        self.wordmark = None;
 
         let p = self.layout.panel;
         let scale = self.scale();
@@ -699,7 +687,6 @@ impl Panel {
                 built.push(sprite);
             }
             self.headers = built;
-            self.build_wordmark(&children);
         }
 
         let icon_size = self.icon_size();
@@ -1368,40 +1355,7 @@ impl Panel {
         }
     }
 
-    /// Right-aligned on the first header's row, which is empty over there. Costs
-    /// the panel no height of its own, and scrolls away with the row it rides.
-    fn build_wordmark(&mut self, children: &VisualCollection) {
-        let Some(renderer) = &self.renderer else { return };
-        let Some((_, rect, _)) = self.layout.headers(self.scroll).next() else { return };
-        if rect.w < 48.0 || rect.h < 10.0 {
-            return;
-        }
-
-        // Double the row: the logo is drawn taller than the row it rides.
-        let icon = app_icon((rect.h * 2.0) as u32);
-        let built = (|| -> Result<Wordmark> {
-            let surface = renderer.create_surface(rect.w, rect.h)?;
-            renderer.draw_wordmark(
-                &surface,
-                rect.w,
-                rect.h,
-                self.text_colors(),
-                icon.as_deref(),
-            )?;
-            let visual = self.compositor.CreateSpriteVisual()?;
-            visual.SetSize(Vector2 { X: rect.w, Y: rect.h })?;
-            visual.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 })?;
-            visual.SetBrush(&self.compositor.CreateSurfaceBrushWithSurface(&surface)?)?;
-            children.InsertAtTop(&visual)?;
-            Ok(Wordmark { visual, surface, awaiting_icon: icon.is_none() })
-        })();
-
-        match built {
-            Err(e) => log_warn!("could not draw the wordmark: {e}"),
-            Ok(wordmark) => self.wordmark = Some(wordmark),
-        }
-    }
-
+    /// How much of the grid survived the query, for the filter strip.
     fn match_count(&self) -> String {
         match self.items.len() {
             0 => "no matches".into(),
@@ -1480,11 +1434,6 @@ impl Panel {
         }
         for (visual, (_, rect, _)) in self.headers.iter().zip(self.layout.headers(self.scroll)) {
             let _ = visual.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 });
-        }
-        if let (Some(wordmark), Some((_, rect, _))) =
-            (&self.wordmark, self.layout.headers(self.scroll).next())
-        {
-            let _ = wordmark.visual.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 });
         }
     }
 
@@ -1837,36 +1786,11 @@ impl Panel {
         if filled > 0 {
             log_info!("{filled} icon(s) painted");
         }
-        self.fill_wordmark_icon();
         self.fill_home_icon();
     }
 
-    /// The app's own icon comes down the same worker queue as every tile's, so
-    /// the first summon usually draws the name alone.
-    fn fill_wordmark_icon(&mut self) {
-        let Some(renderer) = &self.renderer else { return };
-        let Some(wordmark) = &self.wordmark else { return };
-        if !wordmark.awaiting_icon {
-            return;
-        }
-        let Some((_, rect, _)) = self.layout.headers(self.scroll).next() else { return };
-        let Some(icon) = app_icon((rect.h * 2.0) as u32) else { return };
 
-        let drawn = renderer.draw_wordmark(
-            &wordmark.surface,
-            rect.w,
-            rect.h,
-            self.text_colors(),
-            Some(&icon),
-        );
-        if drawn.is_ok()
-            && let Some(wordmark) = &mut self.wordmark
-        {
-            wordmark.awaiting_icon = false;
-        }
-    }
-
-    /// The corner button, same story as the wordmark: built before the shell
+    /// The corner button: built before the shell
     /// worker has our own icon, repainted over the glyph when it lands.
     fn fill_home_icon(&mut self) {
         if !self.home_awaiting_icon {

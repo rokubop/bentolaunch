@@ -29,7 +29,7 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER,
     DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TRIMMING,
     DWRITE_TRIMMING_GRANULARITY_CHARACTER,
-    DWRITE_TEXT_METRICS, DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory,
+    DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory,
     IDWriteTextFormat,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -115,10 +115,6 @@ const PAIR_GAP: f32 = 0.2;
 
 /// Reads as a search box without needing a border or a caret.
 const SEARCH_GLYPH: &str = "\u{E721}";
-
-/// Stands in for the query until the first keystroke, so a summoned panel
-/// says what it is.
-const WORDMARK: &str = "BentoPick";
 
 pub struct Renderer {
     graphics: CompositionGraphicsDevice,
@@ -511,106 +507,6 @@ impl Renderer {
         result
     }
 
-    /// Logo then name, as a block against the right edge. Detail colour and
-    /// header-sized: this is a click-first panel, and the wordmark is not
-    /// something to aim at.
-    ///
-    /// `icon` is the app's own, `None` until the shell worker delivers it.
-    pub fn draw_wordmark(
-        &self,
-        surface: &CompositionDrawingSurface,
-        width: f32,
-        height: f32,
-        colors: TextColors,
-        icon: Option<&IconPixels>,
-    ) -> Result<()> {
-        let name_format = text_format(
-            &self.dwrite,
-            DWRITE_FONT_WEIGHT_SEMI_BOLD,
-            (height * 0.74).clamp(9.0, 24.0),
-            DWRITE_TEXT_ALIGNMENT_LEADING,
-        )?;
-
-        // Measured, because the logo has to sit against the name's left edge and
-        // the pair has to end at the panel's padding.
-        let utf16: Vec<u16> = WORDMARK.encode_utf16().collect();
-        let (text_w, ink_top, ink_bottom) = {
-            // SAFETY: the layout borrows nothing past this block.
-            let layout = unsafe {
-                self.dwrite.CreateTextLayout(&utf16, &name_format, width, height)?
-            };
-            let mut metrics = DWRITE_TEXT_METRICS::default();
-            // SAFETY: the layout is live and metrics is ours.
-            let overhang = unsafe {
-                layout.GetMetrics(&mut metrics)?;
-                layout.GetOverhangMetrics()?
-            };
-            // Where the letters actually are, not where their line box is.
-            let top = -overhang.top;
-            let bottom = height + overhang.bottom;
-            (metrics.width, top, bottom)
-        };
-
-        // The logo is measured against the letters, not the row. Sized off the
-        // row it overhangs the word top and bottom, and a full-bleed square
-        // reads as floating rather than set beside it.
-        let ink_h = ink_bottom - ink_top;
-        let side = if icon.is_some() { (ink_h * 1.45).min(height).min(width) } else { 0.0 };
-        let gap = if icon.is_some() { ink_h * 0.34 } else { 0.0 };
-
-        // A pixel of slack: every format here ellipsizes, and a rect measured to
-        // the glyph loses its last character to rounding.
-        let text_left = (width - text_w - 2.0).max(side + gap);
-
-        let interop: ICompositionDrawingSurfaceInterop = surface.cast()?;
-
-        // SAFETY: BeginDraw hands back a context valid until EndDraw, which the
-        // matching call below always runs.
-        let (context, offset): (ID2D1DeviceContext, POINT) = unsafe {
-            let mut offset = POINT::default();
-            let context = interop.BeginDraw(None, &mut offset)?;
-            (context, offset)
-        };
-
-        // SAFETY: the context is live until EndDraw.
-        let result = unsafe {
-            context.SetTransform(&Matrix3x2::translation(offset.x as f32, offset.y as f32));
-            context.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
-            if let Some(icon) = icon
-                && let Ok(bitmap) = create_bitmap(&context, icon)
-            {
-                let left = (text_left - gap - side).max(0.0);
-                let top = ((ink_top + ink_bottom - side) / 2.0)
-                    .clamp(0.0, (height - side).max(0.0));
-                context.DrawBitmap(
-                    &bitmap,
-                    Some(&D2D_RECT_F {
-                        left,
-                        top,
-                        right: left + side,
-                        bottom: top + side,
-                    }),
-                    1.0,
-                    D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
-                    None,
-                    None,
-                );
-            }
-            self.draw_text(
-                &context,
-                WORDMARK,
-                &name_format,
-                D2D_RECT_F { left: text_left, top: 0.0, right: width, bottom: height },
-                colors.detail,
-            )
-        };
-
-        // SAFETY: pairs with BeginDraw; must run even on failure.
-        unsafe {
-            interop.EndDraw()?;
-        }
-        result
-    }
 
     /// Sized off the same numbers the icon block uses, so a bar of these lines
     /// up with a row of app tiles.
@@ -625,9 +521,11 @@ impl Renderer {
         let side = (icon_area_h * 0.6).min(width * 0.5).max(8.0);
         let (w, h) = match mark {
             Mark::Screen { .. } => (side * PAIR_WIDTH, side * PAIR_HEIGHT),
-            // Not a screen, so not a screen's shape.
-            Mark::Plus | Mark::Latch { .. } => (side, side),
-            Mark::Half { .. } => (side, side * SCREEN_ASPECT),
+            // A plus has no long axis, so it gets a square to sit in. The latch
+            // keeps the screen box every other mark uses: sized off its own
+            // shape it came out bigger than the marks it sits beside.
+            Mark::Plus => (side, side),
+            Mark::Half { .. } | Mark::Latch { .. } => (side, side * SCREEN_ASPECT),
         };
         let left = (width - w) / 2.0;
         let top = (icon_area_h - h) / 2.0;

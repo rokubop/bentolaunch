@@ -317,7 +317,8 @@ pub struct Theme {
     pub text: String,
     pub header: String,
     /// Fill for a tile being dragged, and for the keep-open button while it is
-    /// holding the panel open.
+    /// holding the panel open. The warmest of the three states: it is the one
+    /// that means something is switched on.
     pub tile_drag: String,
     /// The tile Enter would take. Distinct from `tile_hover`: cursor and
     /// keyboard can point at different tiles.
@@ -325,6 +326,9 @@ pub struct Theme {
     /// Ring around the window the move bar acts on. An outline rather than a
     /// fill: it has to survive hover and selection colouring the same tile,
     /// and it is a different question from either of them.
+    ///
+    /// The logo's own warm colour. Selection, drag and this are one family told
+    /// apart by weight, so nothing on the panel is accented in a second hue.
     pub tile_target: String,
 }
 
@@ -432,9 +436,9 @@ impl Default for Theme {
             tile_hover: "#FF3C3C48".into(),
             text: "#FFE8E8EC".into(),
             header: "#FF9A9AA8".into(),
-            tile_drag: "#FF4A4460".into(),
-            tile_selected: "#FF4C5A78".into(),
-            tile_target: "#FFCE9B4A".into(),
+            tile_drag: "#FF7A5326".into(),
+            tile_selected: "#FF4E4230".into(),
+            tile_target: "#FFFFC24B".into(),
         }
     }
 }

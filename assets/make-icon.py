@@ -43,12 +43,12 @@ def render(size, mode):
     px = bytearray(size * size * 4)
 
     if mode == "tiny":
-        tiles = [(40, 40), (40, 140), (140, 140)]
-        picked = (140, 40, 76, 76, 20)
+        tiles = [(40, 40), (140, 40), (40, 140)]
+        picked = (140, 140, 76, 76, 20)
         radius = 20
     else:
-        tiles = [(44, 44), (44, 136), (136, 136)]
-        picked = (150, 26, 88, 88, 21)
+        tiles = [(44, 44), (136, 44), (44, 136)]
+        picked = (150, 154, 88, 88, 21)
         radius = 18
     with_gap = mode == "full"
     step = 1.0 / SS
@@ -66,8 +66,8 @@ def render(size, mode):
                     if in_round_rect(ux, uy, 0, 0, 256, 256, 56):
                         colr, a = BG, 1.0
 
-                    if with_gap and in_round_rect(ux, uy, 133, 41, 82, 82, 21) \
-                            and not in_round_rect(ux, uy, 139, 47, 70, 70, 15):
+                    if with_gap and in_round_rect(ux, uy, 133, 133, 82, 82, 21) \
+                            and not in_round_rect(ux, uy, 139, 139, 70, 70, 15):
                         colr, a = GAP, 1.0
 
                     for tx, ty in tiles:

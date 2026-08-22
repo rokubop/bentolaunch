@@ -15,14 +15,15 @@
 
   <g fill="#3A4152">
     <rect x="44"  y="44"  width="76" height="76" rx="18"/>
+    <rect x="136" y="44"  width="76" height="76" rx="18"/>
     <rect x="44"  y="136" width="76" height="76" rx="18"/>
-    <rect x="136" y="136" width="76" height="76" rx="18"/>
   </g>
 
   <!-- The gap the picked tile left behind. -->
-  <rect x="136" y="44" width="76" height="76" rx="18"
+  <rect x="136" y="136" width="76" height="76" rx="18"
         fill="none" stroke="#2A2F3C" stroke-width="6"/>
 
-  <!-- Picked: up and to the right, bigger, off the grid. -->
-  <rect x="150" y="26" width="88" height="88" rx="21" fill="url(#picked)"/>
+  <!-- Picked: down and to the right, bigger, off the grid. Bottom right is
+       where the panel's own button sits, so the mark points at itself. -->
+  <rect x="150" y="154" width="88" height="88" rx="21" fill="url(#picked)"/>
 </svg>
