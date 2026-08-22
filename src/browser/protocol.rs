@@ -33,6 +33,31 @@ impl Tab {
     }
 }
 
+/// One entry off the browser's bookmarks bar. No `windowId` and no tab id:
+/// activating this opens the URL through the shell, so it never goes back over
+/// the socket.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Bookmark {
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    pub url: String,
+    #[serde(default)]
+    pub icon: Option<String>,
+}
+
+impl Bookmark {
+    /// Tile's second line, and what a titleless bookmark is named by.
+    pub fn host(&self) -> &str {
+        let rest = self
+            .url
+            .split_once("://")
+            .map_or(self.url.as_str(), |(_, rest)| rest);
+        let host = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+        host.strip_prefix("www.").unwrap_or(host)
+    }
+}
+
 /// A favicon the extension already decoded. Raw RGBA rather than PNG, so bentopick
 /// needs no image decoder and no COM on the socket thread.
 #[derive(Debug, Clone, Deserialize)]
@@ -72,7 +97,7 @@ impl IconData {
 /// used to be one checkout that changed together, and now they drift. Without
 /// this, an extension one version behind fails as "not paired", which sends the
 /// user looking for a pairing problem they do not have.
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 
 /// Extension to bentopick.
 #[derive(Debug, Clone, Deserialize)]
@@ -100,6 +125,13 @@ pub enum Inbound {
     Tabs {
         tabs: Vec<Tab>,
         /// Only the ones bentopick has not been sent yet on this connection.
+        #[serde(default)]
+        icons: HashMap<String, IconData>,
+    },
+    /// The bookmarks bar. Sent once on connect and again on every edit, so it
+    /// is a whole list rather than a delta.
+    Bookmarks {
+        bookmarks: Vec<Bookmark>,
         #[serde(default)]
         icons: HashMap<String, IconData>,
     },
@@ -199,6 +231,32 @@ mod tests {
         assert_eq!(tabs[0].window_id, 3);
         assert_eq!(tabs[0].title, "Docs");
         assert!(tabs[0].active);
+    }
+
+    #[test]
+    fn a_bookmark_list_from_the_extension_parses() {
+        let json = r#"{"type":"bookmarks","bookmarks":[
+            {"id":"14","title":"Rust","url":"https://www.rust-lang.org/learn"}
+        ]}"#;
+        let Inbound::Bookmarks { bookmarks, .. } = serde_json::from_str(json).unwrap() else {
+            panic!("expected a bookmark list");
+        };
+        assert_eq!(bookmarks.len(), 1);
+        assert_eq!(bookmarks[0].id, "14");
+        assert_eq!(bookmarks[0].title, "Rust");
+        assert_eq!(bookmarks[0].host(), "rust-lang.org");
+    }
+
+    #[test]
+    fn a_bookmark_with_no_title_keeps_its_url() {
+        // The bar carries these: a bookmarklet, or one saved from a page that
+        // had no title. The host is what names the tile.
+        let json = r#"{"type":"bookmarks","bookmarks":[{"id":"9","url":"https://example.com/x"}]}"#;
+        let Inbound::Bookmarks { bookmarks, .. } = serde_json::from_str(json).unwrap() else {
+            panic!("expected a bookmark list");
+        };
+        assert!(bookmarks[0].title.is_empty());
+        assert_eq!(bookmarks[0].host(), "example.com");
     }
 
     #[test]

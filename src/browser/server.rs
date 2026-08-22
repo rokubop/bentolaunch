@@ -29,7 +29,7 @@ use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 use crate::browser::crypto;
 use crate::browser::gate::{self, Admission, Refusal};
 use crate::browser::peers::{self, Peer};
-use crate::browser::protocol::{Inbound, Outbound, PROTOCOL, Tab};
+use crate::browser::protocol::{Bookmark, Inbound, Outbound, PROTOCOL, Tab};
 use crate::{log_info, log_warn};
 
 /// Posted to the panel when the tab list changes.
@@ -49,6 +49,8 @@ static LIVE: AtomicUsize = AtomicUsize::new(0);
 
 /// More tabs than anyone has open. A list past this is a bug or an attempt.
 const MAX_TABS: usize = 2_000;
+/// The bar, not the whole tree. A bar this long is a bug or an attempt.
+const MAX_BOOKMARKS: usize = 500;
 
 /// How long a caller has to finish proving itself. Generous for a local round
 /// trip, short enough that a connection holding a slot in silence is dropped.
@@ -73,13 +75,18 @@ pub struct Owned {
 
 struct State {
     tabs: HashMap<u64, Vec<Tab>>,
+    bookmarks: HashMap<u64, Vec<Bookmark>>,
     outbox: HashMap<u64, Sender<Outbound>>,
 }
 
 fn state() -> &'static Mutex<State> {
     static STATE: OnceLock<Mutex<State>> = OnceLock::new();
     STATE.get_or_init(|| {
-        Mutex::new(State { tabs: HashMap::new(), outbox: HashMap::new() })
+        Mutex::new(State {
+            tabs: HashMap::new(),
+            bookmarks: HashMap::new(),
+            outbox: HashMap::new(),
+        })
     })
 }
 
@@ -97,6 +104,22 @@ pub fn tabs() -> Vec<Owned> {
         }
     }
     out
+}
+
+/// Every paired browser's bar, in connection order. Two browsers connected at
+/// once contribute both bars; duplicates across them are left alone, since the
+/// same URL bookmarked in two browsers is still two places to go back to.
+pub fn bookmarks() -> Vec<Bookmark> {
+    let Ok(state) = state().lock() else {
+        log_warn!("browser state is poisoned; reporting no bookmarks");
+        return Vec::new();
+    };
+    let mut connections: Vec<&u64> = state.bookmarks.keys().collect();
+    connections.sort();
+    connections
+        .into_iter()
+        .flat_map(|connection| state.bookmarks[connection].iter().cloned())
+        .collect()
 }
 
 /// Fire and forget. bentopick has already hidden by the time the switch lands.
@@ -602,6 +625,30 @@ fn handle(text: &str, connection: u64) -> bool {
             }
             true
         }
+        Inbound::Bookmarks { bookmarks, icons } => {
+            log_info!(
+                "browser connection {connection}: {} bookmark(s), {} new icon(s)",
+                bookmarks.len(),
+                icons.len()
+            );
+            if bookmarks.len() > MAX_BOOKMARKS {
+                log_warn!(
+                    "browser connection {connection} sent {} bookmarks; ignoring the list",
+                    bookmarks.len()
+                );
+                return false;
+            }
+            for (key, icon) in &icons {
+                match icon.to_pixels() {
+                    Some(pixels) => crate::shell::icons::put_favicon(key, pixels),
+                    None => log_warn!("browser sent an unusable favicon for {key}"),
+                }
+            }
+            if let Ok(mut state) = state().lock() {
+                state.bookmarks.insert(connection, bookmarks);
+            }
+            true
+        }
         Inbound::Pong => false,
         // Admission is over. Repeating it mid-stream is not a thing this
         // protocol does, and re-running it would be a way to change identity
@@ -616,6 +663,7 @@ fn handle(text: &str, connection: u64) -> bool {
 fn disconnect(connection: u64, hwnd: isize) {
     if let Ok(mut state) = state().lock() {
         state.tabs.remove(&connection);
+        state.bookmarks.remove(&connection);
         state.outbox.remove(&connection);
     }
     log_info!("browser disconnected (connection {connection})");

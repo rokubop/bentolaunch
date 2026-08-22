@@ -39,6 +39,9 @@ struct Group {
     /// and manual entries both touch the disk, so they are read once. Windows
     /// and tabs are absent — they are read at show time.
     fixed: Vec<(usize, Vec<Item>)>,
+    /// 0 means no cap. Applied after every group has contributed, so the cut
+    /// falls at the end of the section rather than inside one group.
+    max_items: usize,
 }
 
 fn claims(matches: &[String], window: &WindowInfo) -> bool {
@@ -80,6 +83,7 @@ fn build_groups(sections: &[SectionConfig]) -> Vec<Group> {
         .map(|section| Group {
             title: section.title.clone(),
             sources: section.source.clone(),
+            max_items: section.max_items,
             // A group's own `match` wins; without one it falls back to the
             // section's, which is what an unmerged section still writes.
             matches: section
@@ -102,7 +106,7 @@ fn build_groups(sections: &[SectionConfig]) -> Vec<Group> {
                     Source::Manual => {
                         Some((index, section.items.iter().filter_map(manual_item).collect()))
                     }
-                    Source::Windows | Source::Tabs => None,
+                    Source::Windows | Source::Tabs | Source::Bookmarks | Source::Moves => None,
                 })
                 .collect(),
         })
@@ -182,6 +186,7 @@ fn manual_item(entry: &ManualItem) -> Option<Item> {
         title,
         detail: shorten_detail(target),
         target: Target::Shell(target.to_owned()),
+        app: crate::shell::link::app_stem(target),
         icon_source: Some(target.to_owned()),
         origin: Source::Manual,
         group: 0,
@@ -307,9 +312,62 @@ fn tab_items() -> Vec<Item> {
                 .icon
                 .as_ref()
                 .map(|key| format!("{}{key}", crate::shell::icons::FAVICON)),
+            app: None,
             origin: Source::Tabs,
             group: 0,
         })
+        .collect()
+}
+
+fn bookmark_items() -> Vec<Item> {
+    crate::browser::server::bookmarks()
+        .into_iter()
+        .map(|bookmark| Item {
+            id: ItemId::Shell(bookmark.url.clone()),
+            kind: Kind::Link,
+            detail: truncate(bookmark.host(), 48),
+            title: if bookmark.title.is_empty() {
+                truncate(bookmark.host(), 48)
+            } else {
+                truncate(&bookmark.title, 48)
+            },
+            // A URL the shell already opens, so this needs nothing from the
+            // socket. The browser can be closed and the tile still works.
+            target: Target::Shell(bookmark.url.clone()),
+            icon_source: bookmark
+                .icon
+                .as_ref()
+                .map(|key| format!("{}{key}", crate::shell::icons::FAVICON)),
+            app: None,
+            origin: Source::Bookmarks,
+            group: 0,
+        })
+        .collect()
+}
+
+/// The tile naming the window being moved, then the six moves. Fixed, so this
+/// reads nothing and never comes back empty.
+fn move_items() -> Vec<Item> {
+    let action = |id, title: &str, target| Item {
+        id: ItemId::Action(id),
+        kind: Kind::Action,
+        title: title.to_owned(),
+        detail: String::new(),
+        target,
+        // Drawn, not fetched: the mark on these is the shape they make.
+        icon_source: None,
+        app: None,
+        origin: Source::Moves,
+        group: 0,
+    };
+
+    // Stay first: it names what the rest act on, so it reads before them.
+    std::iter::once(action("stay", "Stay open", Target::Stay))
+        .chain(
+            crate::shell::arrange::MOVES
+                .iter()
+                .map(|mv| action(mv.key(), mv.label(), Target::Arrange(*mv))),
+        )
         .collect()
 }
 
@@ -342,6 +400,8 @@ pub fn sections() -> Vec<Section> {
                 // Read at show time, not resolved up front: they change as fast
                 // as the browser does.
                 Source::Tabs => items.extend(tab_items()),
+                Source::Bookmarks => items.extend(bookmark_items()),
+                Source::Moves => items.extend(move_items()),
                 Source::Taskbar | Source::Manual => {
                     if let Some((_, fixed)) = group.fixed.iter().find(|(n, _)| *n == index) {
                         items.extend(fixed.iter().cloned());
@@ -353,10 +413,16 @@ pub fn sections() -> Vec<Section> {
             }
         }
 
+        let total = items.len();
+        if group.max_items > 0 {
+            items.truncate(group.max_items);
+        }
+
         if !items.is_empty() {
             out.push(Section {
                 title: group.title.clone(),
                 items,
+                total,
             });
         }
     }

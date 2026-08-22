@@ -21,6 +21,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::{log_error, log_warn};
 
 static MAIN_HWND: AtomicIsize = AtomicIsize::new(0);
+/// The desktop ring. A second topmost window is a second way to strand the
+/// machine, so it neutralizes with the first.
+static SPOTLIGHT_HWND: AtomicIsize = AtomicIsize::new(0);
 static HEARTBEAT: AtomicU64 = AtomicU64::new(0);
 static SHOWN: AtomicBool = AtomicBool::new(false);
 static NEUTRALIZED: AtomicBool = AtomicBool::new(false);
@@ -33,6 +36,11 @@ const STALL_LIMIT_MS: u64 = 4_000;
 pub fn register_window(hwnd: HWND) {
     MAIN_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
     beat();
+}
+
+/// Pass a null handle to forget it, which is what its Drop does.
+pub fn register_spotlight(hwnd: HWND) {
+    SPOTLIGHT_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
 }
 
 fn window() -> Option<HWND> {
@@ -69,6 +77,19 @@ pub fn neutralize(reason: &str) {
         return;
     }
     log_error!("neutralizing bentopick window: {reason}");
+
+    // The ring first: it is the one with nothing under it worth keeping, and
+    // hiding it is a single async call that cannot block on a wedged thread.
+    if let Some(ring) = match SPOTLIGHT_HWND.load(Ordering::SeqCst) {
+        0 => None,
+        h => Some(HWND(h as *mut core::ffi::c_void)),
+    } {
+        // SAFETY: ShowWindowAsync posts rather than marshals, so a stalled UI
+        // thread does not take this call down with it.
+        unsafe {
+            let _ = ShowWindowAsync(ring, SW_HIDE);
+        }
+    }
 
     // SAFETY: hwnd came from CreateWindowExW and is only cleared on shutdown.
     // Both calls are safe on another thread's window; neither blocks on it.

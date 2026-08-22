@@ -8,7 +8,7 @@
 // What this build of the bridge speaks. Must match PROTOCOL in
 // `src/browser/protocol.rs` - the exe and this extension are separate
 // downloads, so the two drift and the mismatch has to be explainable.
-const BRIDGE_PROTOCOL = 1;
+const BRIDGE_PROTOCOL = 2;
 
 // Which half to tell the user to update. `theirs` is what BentoPick reports.
 function outdatedSide(theirs) {

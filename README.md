@@ -110,7 +110,7 @@ sideways under you.
 
 ## Arranging
 
-There is no edit mode. Same as the taskbar or the bookmarks bar:
+Tiles arrange without a mode. Same as the taskbar or the bookmarks bar:
 
 | Do | Get |
 |---|---|
@@ -124,6 +124,64 @@ Click and drag never get confused: under the system's drag threshold is a click,
 past it is a drag.
 
 Only pinned tiles move. Running windows stay in most-recent order.
+
+### Editing the layout
+
+Click the **BentoPick** button in the bottom-right corner. It is always there,
+always in the same place, and it opens a menu of big squares: **Edit layout**,
+**Add app**, **Add folder**, **Add file**, **Settings**. Right-click still works
+as a second path.
+
+**Settings** opens six more squares. Each one is a value and each click steps
+it to the next: tile size, whether tiles show a second line, how many columns,
+and whether the browser bridge listens. They write straight into
+`bentopick.toml` and your comments survive. **Open the file** is one of the six,
+for the hotkey, the theme and the sections, which need typing.
+
+In **Edit layout**, boxes light up as you move across them. Click one and its
+options appear as tile-sized squares over the middle of the panel. The button in
+the corner becomes **Stop editing**, so there is always a way out.
+
+The options are three separate ideas, kept apart:
+
+**Claim a side.** The box becomes the whole of it, full height or full width,
+and whatever was there is moved off.
+
+| | |
+|---|---|
+| **Full left** / **Full right** | The box becomes that column, top to bottom |
+| **Full top** / **Full bottom** | The box becomes that row, edge to edge |
+
+The square for the side a box already holds is **lit**, and reads **Leave
+left**. Clicking it gives that side back, so one button says where the box is
+and undoes it. There is no separate un-claim.
+
+**Arrange.** What the boxes without a side of their own do.
+
+| | |
+|---|---|
+| **Move up** / **Move down** | Earlier or later in the leftover stack |
+
+**Size.**
+
+| | |
+|---|---|
+| **Wider** / **Narrower** | More or less of its cut, for a box on a left or right side |
+| **Taller** / **Shorter** | The same buttons, for a box on a top or bottom side |
+| **Fewer tiles** / **More tiles** | How much of a long list it shows |
+
+The size buttons say which way they will go. "Bigger" means wider for a box down
+the left and taller for one across the bottom, so the button reads the way it
+will move.
+
+An option that would not apply is greyed out and does nothing. Greyed rather
+than removed, so the squares never reshuffle under the pointer.
+
+Centred and tile-sized on purpose. This panel is pointed at, sometimes by gaze,
+and the middle of the screen is the cheapest place to reach.
+
+Everything stays up while you edit, and every click is already written to
+`bentopick.toml`. Finishing leaves the panel open and ready to use.
 
 Every change goes straight into `bentopick.toml`. Nothing is remembered anywhere
 else, and all of it can be undone by hand. Taskbar order is saved as an `order`
@@ -183,6 +241,40 @@ items = [
 ]
 ```
 
+Two keys place a section's box. Both optional, both set by **Edit layout**:
+
+```toml
+[[sections]]
+title     = "Launch"
+source    = "taskbar"
+at        = "left@35"   # the whole left side, 35% of the width
+max_items = 12          # most tiles to show; omit for all of them
+```
+
+The panel is one rectangle cut in two, over and over - the same structure a
+tiling window manager uses. `at` is the run of cuts from the whole panel inward:
+
+| `at` | Where the box goes |
+|---|---|
+| `"left"` | The whole left side, top to bottom |
+| `"bottom"` | The whole bottom, edge to edge |
+| `"right/top"` | The top of what is left after the right-hand cut |
+| `"left@35"` | The left side, pinned to 35% of the width |
+
+Sections that say nothing fill whatever the cuts left over, stacking in the
+order they are listed. So `at = "left"` on one section is a complete
+instruction: that box down the left, everything else filling the right.
+
+A share pins one side of a cut; without one, the two halves are sized by what
+they hold. `"left@35"` and `"right@65"` describe the same panel.
+
+Claiming a side takes the whole of it, so anything else already there is moved
+off and goes back to filling the rest.
+
+`max_items` is what a tabs or bookmarks box wants: both lists are as long as the
+browser makes them, and a box that grows without limit pushes the rest off
+screen.
+
 `match` lists process names, case-insensitive, and only applies to
 `source = "windows"`. Sections claim windows in order and each window is claimed
 once, so put filtered sections above the unfiltered catch-all. Keep exactly one
@@ -232,6 +324,27 @@ bridge on for you if it was off. **Browser > Forget** undoes it.
 
 Tabs sit under the same header as your browser windows, right behind them,
 since both answer the same question.
+
+### Bookmarks
+
+Same extension, same switch, no extra setup. Add a `bookmarks` source:
+
+```toml
+[[sections]]
+title     = "Bookmarks"
+source    = "bookmarks"
+max_items = 12
+```
+
+The **bookmarks bar only**, one level deep. Not "Other bookmarks", which is an
+archive of thousands and would bury the panel it was pasted into, and not the
+folders sitting on the bar, since there is nothing BentoPick could do with one.
+
+A bookmark tile is a URL handed to the shell, so it opens in your default
+browser and works whether or not the browser that sent it is still running.
+
+Read-only, and it stays that way: nothing is ever written to a browser profile.
+"Bookmark this tab" is not built - to add one, use the browser.
 
 **Read this before turning it on.** It opens a port on your machine that only
 your own computer can reach, and it installs an extension that can read the
@@ -342,7 +455,9 @@ around.
 - Taskbar pin order is alphabetical until you arrange it. Windows keeps its own
   order in an undocumented registry blob, so dragging a tile writes an `order`
   list instead.
-- Bookmarks are not built.
+- Bookmarks are read-only, Chromium only, and the bookmarks bar only.
+- A box cannot be dragged to another row. Edit layout moves it a place at a
+  time, which is the same thing in more keystrokes.
 - Firefox needs its own extension build.
 - Tab tiles cannot be rearranged, and neither can a filtered grid.
 - Dragging moves a tile within its own section. Moving one between sections

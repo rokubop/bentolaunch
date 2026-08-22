@@ -45,6 +45,12 @@ pub enum Target {
     Shell(String),
     /// The one thing bentopick cannot reach itself. Goes back over the socket.
     Tab { connection: u64, tab_id: i64, window_id: i64 },
+    /// Move the targeted window. The only target that acts on another tile
+    /// rather than on itself, and the only one that leaves the panel up.
+    Arrange(crate::shell::arrange::Move),
+    /// Hold the panel open, so the next window clicked is picked as the thing
+    /// to move rather than switched to.
+    Stay,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -57,6 +63,9 @@ pub enum Kind {
     Link,
     /// An open browser tab.
     Tab,
+    /// A tile that does something to the panel or to another window, rather
+    /// than being a thing to switch to.
+    Action,
 }
 
 impl Kind {
@@ -67,6 +76,7 @@ impl Kind {
             Kind::Folder => "open folder",
             Kind::Link => "open",
             Kind::Tab => "switch to tab",
+            Kind::Action => "run",
         }
     }
 }
@@ -78,6 +88,8 @@ pub enum ItemId {
     Shell(String),
     /// Scoped by connection: two browsers number their tabs independently.
     Tab(u64, i64),
+    /// The action tiles. Their names are fixed, so the id is the name.
+    Action(&'static str),
 }
 
 #[derive(Debug, Clone)]
@@ -91,6 +103,11 @@ pub struct Item {
     /// Shell parsing name to source the icon from. `None` for windows whose
     /// process path could not be read.
     pub icon_source: Option<String>,
+    /// The app this tile stands for, as a lowercased executable stem. What
+    /// makes a pin and that app's running window answer to each other, which
+    /// nothing else here can: they share no string otherwise. `None` for a tab,
+    /// a bookmark, or an action.
+    pub app: Option<String>,
     /// Which of a section's sources produced this tile. A merged section holds
     /// more than one, and what may be dragged, removed and written back to
     /// config is a property of the tile, not of the header above it.
@@ -108,7 +125,7 @@ impl Item {
     pub fn shell_target(&self) -> Option<&str> {
         match &self.target {
             Target::Shell(name) => Some(name),
-            Target::Window(_) | Target::Tab { .. } => None,
+            Target::Window(_) | Target::Tab { .. } | Target::Arrange(_) | Target::Stay => None,
         }
     }
 
@@ -127,6 +144,8 @@ impl Item {
             Target::Tab { tab_id, .. } => {
                 format!("{} {} \"{}\" ({})", self.kind.verb(), tab_id, self.title, self.detail)
             }
+            Target::Arrange(mv) => format!("move the target window {}", mv.key()),
+            Target::Stay => "hold the panel open".to_owned(),
         }
     }
 }
@@ -137,4 +156,7 @@ impl Item {
 pub struct Section {
     pub title: String,
     pub items: Vec<Item>,
+    /// How many items the section had before `max_items` cut it down. Edit
+    /// mode needs it: "more tiles" has to stop at the number that exist.
+    pub total: usize,
 }

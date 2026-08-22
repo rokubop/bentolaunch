@@ -72,6 +72,13 @@ pub enum Source {
     Manual,
     /// Open browser tabs, from the extension. Empty until one connects.
     Tabs,
+    /// The browser's bookmarks bar, from the extension. Read-only: bentopick
+    /// never writes to a browser profile (safety rule 4).
+    Bookmarks,
+    /// The six window moves. A fixed set, so nothing enumerates and the box is
+    /// the same shape every summon.
+    #[serde(rename = "move")]
+    Moves,
 }
 
 /// One group of tiles inside a section: where they come from, and for windows
@@ -196,6 +203,21 @@ pub struct SectionConfig {
     /// such as `ms-settings:display` or `https://example.com`.
     #[serde(default)]
     pub items: Vec<ManualItem>,
+    /// Where this box sits, as cuts from the whole panel inward.
+    ///
+    /// `"left"` is the whole left side. `"right/top"` is the top of what is
+    /// left after that cut. `"left@35"` pins it to 35% of the width. Sections
+    /// that say nothing fill whatever the cuts left over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+    /// Tile columns inside this box. 0 fits as many as its rectangle takes.
+    #[serde(default)]
+    pub columns: usize,
+    /// Most tiles this box will show. 0 means all of them. What a bookmarks or
+    /// tabs box needs: both lists are as long as the browser makes them, and a
+    /// box that grows without limit is one that pushes the rest off screen.
+    #[serde(default)]
+    pub max_items: usize,
     /// Only for `source = "taskbar"`. Pin names, in the order they should
     /// appear. Windows does not expose the taskbar's own order (see
     /// `model/taskbar.rs`), so this is where dragging a taskbar tile in edit
@@ -292,6 +314,10 @@ pub struct Theme {
     /// The tile Enter would take. Distinct from `tile_hover`: cursor and
     /// keyboard can point at different tiles.
     pub tile_selected: String,
+    /// Ring around the window the move bar acts on. An outline rather than a
+    /// fill: it has to survive hover and selection colouring the same tile,
+    /// and it is a different question from either of them.
+    pub tile_target: String,
 }
 
 /// Browsers, grouped together because that is how they are thought about. Any
@@ -312,6 +338,9 @@ fn section(title: &str, sources: &[SourceSpec]) -> SectionConfig {
         title: title.into(),
         source: Sources(sources.to_vec()),
         matches: Vec::new(),
+        at: None,
+        columns: 0,
+        max_items: 0,
         items: Vec::new(),
         order: Vec::new(),
     }
@@ -396,6 +425,7 @@ impl Default for Theme {
             header: "#FF9A9AA8".into(),
             tile_drag: "#FF4A4460".into(),
             tile_selected: "#FF4C5A78".into(),
+            tile_target: "#FFCE9B4A".into(),
         }
     }
 }
@@ -445,7 +475,10 @@ impl Config {
     }
 
     /// Clamp anything that would produce a degenerate or offscreen layout.
-    fn validated(mut self) -> Self {
+    ///
+    /// `pub(crate)` so the settings squares can prove their presets survive it.
+    /// A preset that got clamped would be a knob that silently does nothing.
+    pub(crate) fn validated(mut self) -> Self {
         let d = Grid::default();
         let g = &mut self.grid;
         if !(16.0..=1024.0).contains(&g.tile_width) {

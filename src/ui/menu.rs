@@ -1,9 +1,12 @@
 //! Right-click menus on the panel.
 //!
-//! Where managing a tile lives, now that there is no edit mode. This is the
-//! convention every comparable surface follows — the taskbar's jump list, the
-//! bookmarks bar, Quick Access — so it is the first place a user looks, and it
-//! costs the grid no pixels at rest.
+//! Where managing a tile lives. This is the convention every comparable surface
+//! follows — the taskbar's jump list, the bookmarks bar, Quick Access — so it is
+//! the first place a user looks, and it costs the grid no pixels at rest.
+//!
+//! Section layout is the one thing behind a mode instead, and this is where it
+//! is entered: it changes the shape of the panel rather than one tile's place
+//! in it, so it needs the panel to stay up while it is being changed.
 
 use windows::Win32::Foundation::{HWND, POINT};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -21,6 +24,7 @@ pub const CMD_ADD_APP: usize = 203;
 pub const CMD_ADD_FOLDER: usize = 204;
 pub const CMD_ADD_FILE: usize = 205;
 pub const CMD_SETTINGS: usize = 207;
+pub const CMD_EDIT_LAYOUT: usize = 208;
 
 pub struct Entry {
     pub id: usize,

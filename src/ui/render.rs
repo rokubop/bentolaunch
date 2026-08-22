@@ -15,8 +15,9 @@ use windows::Win32::Graphics::Direct2D::Common::{
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_PROPERTIES1, D2D1_DRAW_TEXT_OPTIONS_NONE,
-    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
-    D2D1CreateFactory, ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Factory1,
+    D2D1_ELLIPSE, D2D1_FACTORY_TYPE_SINGLE_THREADED,
+    D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1Bitmap1,
+    ID2D1Device, ID2D1DeviceContext, ID2D1Factory1,
 };
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP};
 use windows::Win32::Graphics::Direct3D11::{
@@ -34,7 +35,7 @@ use windows::Win32::Graphics::DirectWrite::{
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::core::{Interface, Result, w};
-use windows_numerics::Matrix3x2;
+use windows_numerics::{Matrix3x2, Vector2};
 
 use windows::Win32::System::WinRT::Composition::{
     ICompositionDrawingSurfaceInterop, ICompositorInterop,
@@ -50,6 +51,21 @@ pub struct TextColors {
     pub detail: D2D1_COLOR_F,
 }
 
+/// The figure on a tile that has no icon to fetch.
+///
+/// Drawn rather than set in a glyph, because the whole point of these is to be
+/// a picture of the shape the window ends up in. No font has that, and the
+/// nearest geometric characters are a guess at what the UI font carries.
+#[derive(Clone, Copy)]
+pub enum Mark {
+    /// A screen outline with the destination filled, as fractions of it.
+    Half { left: f32, top: f32, right: f32, bottom: f32 },
+    /// Two screens side by side, the destination filled.
+    Screen { second: bool },
+    /// On or off, read the way a radio button is.
+    Latch { on: bool },
+}
+
 /// Everything one tile needs painted. Grouped so callers pass a value rather
 /// than a long positional argument list.
 pub struct TilePaint<'a> {
@@ -60,8 +76,40 @@ pub struct TilePaint<'a> {
     pub detail: &'a str,
     /// `None` until the shell worker delivers an icon.
     pub icon: Option<&'a IconPixels>,
+    /// Drawn in the icon's place on tiles that are an action rather than a
+    /// thing. Never set on a tile that has an icon coming.
+    pub mark: Option<Mark>,
     pub colors: TextColors,
 }
+
+/// Everything one option square needs painted. Grouped for the same reason
+/// `TilePaint` is: seven of these went positional and the eighth was one too
+/// many to read at the call site.
+pub struct OptionPaint<'a> {
+    pub width: f32,
+    pub height: f32,
+    /// The big mark. Ignored when there is an icon: they occupy the same band,
+    /// and the glyph is what stands in until one arrives.
+    pub glyph: &'a str,
+    pub label: &'a str,
+    pub colors: TextColors,
+    pub icon: Option<&'a IconPixels>,
+}
+
+/// Wide enough to read as a screen rather than a box.
+const SCREEN_ASPECT: f32 = 0.625;
+const MARK_STROKE: f32 = 1.5;
+const MARK_RADIUS: f32 = 2.0;
+/// A window sits inside its screen, so the fill stops short of the frame. This
+/// is what stops "half of one screen" reading as "one of two screens" at the
+/// size these are actually drawn.
+const MARK_INSET: f32 = 2.0;
+/// A pair of screens is wider and shorter than one screen, and the gap between
+/// them is wide enough to be a gap rather than a seam. Fractions of the single
+/// screen's width, so the two marks differ in outline before you read either.
+const PAIR_WIDTH: f32 = 1.24;
+const PAIR_HEIGHT: f32 = 0.52;
+const PAIR_GAP: f32 = 0.2;
 
 /// Reads as a search box without needing a border or a caret.
 const SEARCH_GLYPH: &str = "\u{E721}";
@@ -162,7 +210,7 @@ impl Renderer {
         offset: POINT,
         paint: TilePaint<'_>,
     ) -> Result<()> {
-        let TilePaint { width, height, label_height, title, detail, icon, colors } = paint;
+        let TilePaint { width, height, label_height, title, detail, icon, mark, colors } = paint;
         // The surface may live inside a shared atlas, so everything is drawn
         // relative to the offset BeginDraw reported.
         let dx = offset.x as f32;
@@ -196,6 +244,8 @@ impl Renderer {
                     None,
                     None,
                 );
+            } else if let Some(mark) = mark {
+                self.draw_mark(context, mark, width, icon_area_h, colors)?;
             }
 
             let pad = 8.0;
@@ -274,7 +324,100 @@ impl Renderer {
         result
     }
 
-    /// Search glyph, the query, and how much of the grid survived it.
+    /// One option tile in edit mode: a big mark, and what it does underneath.
+    ///
+    /// Same footprint as an app tile. The controls in this app are aimed at,
+    /// sometimes by gaze, so an option has to be as easy to hit as the things
+    /// it sits among.
+    pub fn draw_option(
+        &self,
+        surface: &CompositionDrawingSurface,
+        paint: OptionPaint<'_>,
+    ) -> Result<()> {
+        let OptionPaint { width, height, glyph, label, colors, icon } = paint;
+        let glyph_format = text_format(
+            &self.dwrite,
+            DWRITE_FONT_WEIGHT_SEMI_BOLD,
+            (height * 0.30).clamp(14.0, 48.0),
+            DWRITE_TEXT_ALIGNMENT_CENTER,
+        )?;
+        let label_format = text_format(
+            &self.dwrite,
+            DWRITE_FONT_WEIGHT_NORMAL,
+            (height * 0.13).clamp(10.0, 20.0),
+            DWRITE_TEXT_ALIGNMENT_CENTER,
+        )?;
+        let split = height * 0.62;
+
+        let interop: ICompositionDrawingSurfaceInterop = surface.cast()?;
+
+        // SAFETY: BeginDraw hands back a context valid until EndDraw, which the
+        // matching call below always runs.
+        let (context, offset): (ID2D1DeviceContext, POINT) = unsafe {
+            let mut offset = POINT::default();
+            let context = interop.BeginDraw(None, &mut offset)?;
+            (context, offset)
+        };
+
+        // SAFETY: the context is live until EndDraw.
+        let result = unsafe {
+            context.SetTransform(&Matrix3x2::translation(offset.x as f32, offset.y as f32));
+            context.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
+            // A real icon in the glyph's place when the caller has one. The
+            // glyph is the stand-in: an option that is a picture of an app
+            // should show that app, not a symbol standing for it.
+            let top = height * 0.16;
+            let band = split - top;
+            match icon.and_then(|icon| Some((icon, create_bitmap(&context, icon).ok()?))) {
+                Some((icon, bitmap)) => {
+                    // Same rule as a tile's: fit the band, never upscale past
+                    // the source, which would only blur it.
+                    let side = band
+                        .min(width * 0.5)
+                        .min(icon.width.max(icon.height) as f32)
+                        .max(1.0);
+                    let left = (width - side) / 2.0;
+                    let top = top + (band - side) / 2.0;
+                    context.DrawBitmap(
+                        &bitmap,
+                        Some(&D2D_RECT_F {
+                            left,
+                            top,
+                            right: left + side,
+                            bottom: top + side,
+                        }),
+                        1.0,
+                        D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
+                        None,
+                        None,
+                    );
+                }
+                None => self.draw_text(
+                    &context,
+                    glyph,
+                    &glyph_format,
+                    D2D_RECT_F { left: 0.0, top, right: width, bottom: split },
+                    colors.title,
+                )?,
+            }
+            self.draw_text(
+                &context,
+                label,
+                &label_format,
+                D2D_RECT_F { left: 0.0, top: split, right: width, bottom: height },
+                colors.detail,
+            )
+        };
+
+        // SAFETY: pairs with BeginDraw; must run even on failure or the surface
+        // stays locked.
+        unsafe {
+            interop.EndDraw()?;
+        }
+        result
+    }
+
+    /// Search glyph, the query, and how much of the grid survived it.    /// Search glyph, the query, and how much of the grid survived it.
     ///
     /// The count matters: without it, matching nothing and matching everything
     /// both look like an empty grid.
@@ -465,6 +608,82 @@ impl Renderer {
             interop.EndDraw()?;
         }
         result
+    }
+
+    /// Sized off the same numbers the icon block uses, so a bar of these lines
+    /// up with a row of app tiles.
+    unsafe fn draw_mark(
+        &self,
+        context: &ID2D1DeviceContext,
+        mark: Mark,
+        width: f32,
+        icon_area_h: f32,
+        colors: TextColors,
+    ) -> Result<()> {
+        let side = (icon_area_h * 0.6).min(width * 0.5).max(8.0);
+        let (w, h) = match mark {
+            Mark::Screen { .. } => (side * PAIR_WIDTH, side * PAIR_HEIGHT),
+            _ => (side, side * SCREEN_ASPECT),
+        };
+        let left = (width - w) / 2.0;
+        let top = (icon_area_h - h) / 2.0;
+
+        // SAFETY: the caller holds a live device context, and both brushes
+        // outlive every draw below.
+        unsafe {
+            let line = context.CreateSolidColorBrush(&colors.detail, None)?;
+            let fill = context.CreateSolidColorBrush(&colors.title, None)?;
+
+            let outline = |x: f32, y: f32, w: f32, h: f32| D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F { left: x, top: y, right: x + w, bottom: y + h },
+                radiusX: MARK_RADIUS,
+                radiusY: MARK_RADIUS,
+            };
+
+            match mark {
+                Mark::Half { left: x0, top: y0, right: x1, bottom: y1 } => {
+                    let inset = |a: f32, b: f32| {
+                        if b - a > MARK_INSET * 2.0 { (a + MARK_INSET, b - MARK_INSET) } else { (a, b) }
+                    };
+                    let (fl, fr) = inset(left + w * x0, left + w * x1);
+                    let (ft, fb) = inset(top + h * y0, top + h * y1);
+                    context.FillRectangle(
+                        &D2D_RECT_F { left: fl, top: ft, right: fr, bottom: fb },
+                        &fill,
+                    );
+                    context.DrawRoundedRectangle(&outline(left, top, w, h), &line, MARK_STROKE, None);
+                }
+                Mark::Screen { second } => {
+                    let gap = w * PAIR_GAP;
+                    let each = (w - gap) / 2.0;
+                    let lit = if second { left + each + gap } else { left };
+                    context.FillRoundedRectangle(&outline(lit, top, each, h), &fill);
+                    for x in [left, left + each + gap] {
+                        context.DrawRoundedRectangle(
+                            &outline(x, top, each, h),
+                            &line,
+                            MARK_STROKE,
+                            None,
+                        );
+                    }
+                }
+                Mark::Latch { on } => {
+                    let radius = h / 2.0;
+                    let centre = Vector2 { X: width / 2.0, Y: top + radius };
+                    let ring = D2D1_ELLIPSE { point: centre, radiusX: radius, radiusY: radius };
+                    context.DrawEllipse(&ring, &line, MARK_STROKE, None);
+                    if on {
+                        let dot = D2D1_ELLIPSE {
+                            point: centre,
+                            radiusX: radius * 0.5,
+                            radiusY: radius * 0.5,
+                        };
+                        context.FillEllipse(&dot, &fill);
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     unsafe fn draw_text(

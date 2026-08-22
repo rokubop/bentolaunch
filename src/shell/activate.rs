@@ -30,6 +30,9 @@ pub fn activate(item: &Item) {
         Target::Tab { connection, tab_id, window_id } => {
             switch_to_tab(*connection, *tab_id, *window_id, &item.title)
         }
+        // Handled by the panel: these act on it, or on another tile's window,
+        // and neither leaves the panel the way everything here does.
+        Target::Arrange(_) | Target::Stay => {}
     }
 }
 

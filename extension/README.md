@@ -1,6 +1,7 @@
 # BentoPick bridge
 
-Sends open tabs to BentoPick. Switches to one when BentoPick asks.
+Sends open tabs and the bookmarks bar to BentoPick. Switches to a tab when
+BentoPick asks.
 
 Chromium only for now: Chrome, Edge, Brave, Vivaldi. Firefox needs a separate
 build.
@@ -13,7 +14,14 @@ No OS API exposes browser tabs. The alternatives are closed:
   accessibility mode.
 - DevTools port 9222: needs Chrome launched with a flag.
 - The profile's `Bookmarks` / `places.sqlite` files: locked while running, and
-  writing near them breaks safety rule 3.
+  writing near them breaks safety rule 3. Bookmarks come through this extension
+  for the same reason tabs do.
+
+## What it sends
+
+- Every open tab: title, URL, favicon.
+- The **bookmarks bar**, one level deep. Not "Other bookmarks", and not the
+  folders on the bar. Read-only - nothing is ever written back.
 
 ## Pairing
 

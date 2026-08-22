@@ -12,12 +12,14 @@ importScripts("bridge.js");
 const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 const TAB_DEBOUNCE_MS = 250;
+const BOOKMARK_DEBOUNCE_MS = 500;
 
 const ICON_PX = 32;
 
 let socket = null;
 let backoff = RECONNECT_MIN_MS;
 let debounce = null;
+let bookmarkDebounce = null;
 // Set once the far end has proved itself. Nothing is sent while it is false.
 let proven = false;
 let nonceClient = null;
@@ -46,7 +48,10 @@ async function connect() {
   nonceClient = randomHex(16);
   socket = new WebSocket(`ws://127.0.0.1:${port}/`);
   socket.onopen = () => {
-    backoff = RECONNECT_MIN_MS;
+    // Backoff is not reset here. The socket opening proves nothing: a refusal
+    // for a bad token or a stale protocol arrives after it, and resetting on
+    // open turns that into a reconnect once a second forever.
+    //
     // A new bentopick process knows none of them.
     iconsSent = new Set();
     // Opens the exchange and says nothing else. The token stays here.
@@ -61,8 +66,17 @@ async function connect() {
   socket.onerror = () => {};
 }
 
+// One pending retry at a time. `connect` is called by the close handler and by
+// a one-minute alarm, and without this each becomes its own reconnect chain:
+// two sockets a second, neither aware of the other.
+let pendingRetry = null;
+
 function retry() {
-  setTimeout(connect, backoff);
+  if (pendingRetry) return;
+  pendingRetry = setTimeout(() => {
+    pendingRetry = null;
+    connect();
+  }, backoff);
   backoff = Math.min(backoff * 2, RECONNECT_MAX_MS);
 }
 
@@ -155,6 +169,54 @@ async function sendTabs() {
   });
 }
 
+// Only the bookmarks bar, not the whole tree. The bar is the row someone
+// already curated; "Other bookmarks" is an archive of thousands and would bury
+// the panel it is pasted into.
+//
+// Chrome numbers the bar "1". Anything else falls back to the first root folder
+// that has children, which is where Firefox's toolbar lands.
+async function barFolder() {
+  const roots = await chrome.bookmarks.getTree();
+  const children = (roots[0] && roots[0].children) || [];
+  return children.find((node) => node.id === "1") || children.find((node) => node.children);
+}
+
+// One level deep. A folder on the bar stays a folder: bentopick has no way to
+// open one, and flattening it would spill a nested archive onto the panel.
+async function sendBookmarks() {
+  if (!proven || !live()) return;
+  const bar = await barFolder();
+  const entries = ((bar && bar.children) || []).filter((node) => node.url);
+  const keys = await Promise.all(entries.map((node) => iconFor(node.url)));
+
+  const icons = {};
+  keys.forEach((key) => {
+    if (key && !iconsSent.has(key)) {
+      icons[key] = iconCache.get(key);
+      iconsSent.add(key);
+    }
+  });
+
+  send({
+    type: "bookmarks",
+    bookmarks: entries.map((node, i) => ({
+      id: node.id,
+      title: node.title || "",
+      url: node.url,
+      icon: keys[i],
+    })),
+    icons,
+  });
+}
+
+function scheduleBookmarks() {
+  if (bookmarkDebounce) clearTimeout(bookmarkDebounce);
+  bookmarkDebounce = setTimeout(() => {
+    bookmarkDebounce = null;
+    sendBookmarks();
+  }, BOOKMARK_DEBOUNCE_MS);
+}
+
 // Tab events arrive in bursts.
 function scheduleTabs() {
   if (debounce) clearTimeout(debounce);
@@ -183,7 +245,9 @@ async function proveTheServer(message) {
     proof: await bridgeProof("resume-client", token, nonceClient, message.nonce),
   });
   proven = true;
+  backoff = RECONNECT_MIN_MS;
   sendTabs();
+  sendBookmarks();
 }
 
 function receive(data) {
@@ -225,6 +289,15 @@ function receive(data) {
     chrome.tabs.update(message.tabId, { active: true });
     chrome.windows.update(message.windowId, { focused: true });
   }
+}
+
+for (const event of [
+  chrome.bookmarks.onCreated,
+  chrome.bookmarks.onRemoved,
+  chrome.bookmarks.onChanged,
+  chrome.bookmarks.onMoved,
+]) {
+  event.addListener(scheduleBookmarks);
 }
 
 for (const event of [
