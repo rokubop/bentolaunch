@@ -168,6 +168,13 @@ pub enum Outbound {
         #[serde(rename = "windowId")]
         window_id: i64,
     },
+    /// Open a tab. No id: which window it lands in is the browser's business,
+    /// and it already knows which one you were last in.
+    ///
+    /// Deliberately not a PROTOCOL bump. An extension predating this drops an
+    /// unknown type on the floor, which costs one button; refusing the whole
+    /// connection over it would cost every tab.
+    NewTab,
     /// Keeps the MV3 worker alive. bentopick drives it: the worker cannot be
     /// trusted to wake itself.
     Ping,

@@ -32,6 +32,7 @@ pub const WM_MODEL_CHANGED: u32 = WM_APP + 1;
 /// One configured section, with whatever could be resolved up front.
 struct Group {
     title: String,
+    color: Option<String>,
     sources: Sources,
     /// Lowercased process names, one entry per source. Empty means catch-all.
     matches: Vec<Vec<String>>,
@@ -82,6 +83,7 @@ fn build_groups(sections: &[SectionConfig]) -> Vec<Group> {
         .iter()
         .map(|section| Group {
             title: section.title.clone(),
+            color: section.color.clone(),
             sources: section.source.clone(),
             max_items: section.max_items,
             // A group's own `match` wins; without one it falls back to the
@@ -284,8 +286,29 @@ pub fn browser_pids() -> Vec<u32> {
     pids
 }
 
+/// "New tab", when there is a browser to ask. Only ever the lowest connection:
+/// with two browsers paired this would otherwise be two buttons that look the
+/// same, or one that changes which browser it means.
+fn new_tab_item() -> Option<Item> {
+    let connection = *crate::browser::server::connections().first()?;
+    Some(Item {
+        id: ItemId::Action("newtab"),
+        kind: Kind::Action,
+        title: "New tab".into(),
+        detail: String::new(),
+        target: Target::NewTab { connection },
+        icon_source: None,
+        app: None,
+        origin: Source::Tabs,
+        group: 0,
+    })
+}
+
 fn tab_items() -> Vec<Item> {
-    crate::browser::server::tabs()
+    new_tab_item()
+        .into_iter()
+        .chain(
+            crate::browser::server::tabs()
         .into_iter()
         .map(|owned| Item {
             id: ItemId::Tab(owned.connection, owned.tab.id),
@@ -315,7 +338,8 @@ fn tab_items() -> Vec<Item> {
             app: None,
             origin: Source::Tabs,
             group: 0,
-        })
+        }),
+        )
         .collect()
 }
 
@@ -421,6 +445,7 @@ pub fn sections() -> Vec<Section> {
         if !items.is_empty() {
             out.push(Section {
                 title: group.title.clone(),
+                color: group.color.clone(),
                 items,
                 total,
             });

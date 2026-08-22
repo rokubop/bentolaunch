@@ -646,6 +646,9 @@ impl Panel {
             color_of(&self.config.theme.panel),
         )?;
         children.InsertAtTop(&backdrop)?;
+        // Straight after the backdrop, so a plate sits on it rather than under
+        // it. The panel colour is 94% opaque; anything below it is not seen.
+        self.build_box_plates(radius)?;
 
         // Boxes get a face of their own while editing. The tile is no longer
         // the thing being pointed at, so the whole box has to light up under
@@ -784,6 +787,36 @@ impl Panel {
         self.build_menu(radius)?;
         self.build_settings(radius)?;
         self.build_home(radius)?;
+        Ok(())
+    }
+
+    /// A tint behind a box, for the sections that asked for one in config.
+    ///
+    /// Under everything, header included: the point is to say where the box
+    /// begins and ends, and a plate that stopped at the header would say it
+    /// twice. `InsertAtBottom` rather than build order, so this stays
+    /// independent of when the tiles go in.
+    fn build_box_plates(&mut self, radius: f32) -> Result<()> {
+        let plates: Vec<(GridRect, Color)> = self
+            .layout
+            .bands()
+            .iter()
+            .filter_map(|band| {
+                let color = self.sections.get(band.section)?.color.as_deref()?;
+                Some((band.rect.shifted_by(self.scroll), color_of(color)))
+            })
+            .collect();
+        if plates.is_empty() {
+            return Ok(());
+        }
+
+        let children = self.content.Children()?;
+        for (rect, color) in plates {
+            let (face, _) =
+                self.rounded_rect(Vector2 { X: rect.w, Y: rect.h }, radius * 1.5, color)?;
+            face.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 })?;
+            children.InsertAtTop(&face)?;
+        }
         Ok(())
     }
 
@@ -1574,6 +1607,9 @@ impl Panel {
             // it. A pin resolves to the window its app already has open: the
             // Discord in Launch and the Discord in Active are the same app,
             // and clicking either has to mean the same thing here.
+            // Not a window, so holding the panel open has nothing to pick from
+            // it. Falls through and opens, the way it would with stay off.
+            Target::NewTab { .. } => {}
             _ if self.stay => {
                 self.pick(&item);
                 return;
@@ -1734,6 +1770,7 @@ impl Panel {
     fn action_face(&self, item: &Item) -> (Option<Mark>, Option<String>) {
         match item.target {
             Target::Arrange(mv) => (Some(mark_of(mv)), None),
+            Target::NewTab { .. } => (Some(Mark::Plus), None),
             Target::Stay => {
                 let name = self.stay.then(|| {
                     self.target
@@ -2789,7 +2826,7 @@ impl Panel {
                 // Bookmarking a tab arrives with the rest of Milestone 4.
                 Target::Tab { .. } => {}
                 // Fixed tiles. Nothing to pin, unpin or locate.
-                Target::Arrange(_) | Target::Stay => {}
+                Target::Arrange(_) | Target::Stay | Target::NewTab { .. } => {}
             }
             if self.locatable(index) {
                 entries.push(Some(menu::Entry::new(

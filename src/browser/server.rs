@@ -134,6 +134,29 @@ pub fn focus(connection: u64, tab_id: i64, window_id: i64) -> bool {
     outbox.send(Outbound::Focus { tab_id, window_id }).is_ok()
 }
 
+/// Open a tab in one browser. Same fire and forget as `focus`.
+pub fn new_tab(connection: u64) -> bool {
+    let Ok(state) = state().lock() else {
+        return false;
+    };
+    let Some(outbox) = state.outbox.get(&connection) else {
+        log_warn!("browser connection {connection} has gone; cannot open a tab");
+        return false;
+    };
+    outbox.send(Outbound::NewTab).is_ok()
+}
+
+/// Connections with tabs, lowest first, so the same browser answers every time
+/// rather than the button moving between them.
+pub fn connections() -> Vec<u64> {
+    let Ok(state) = state().lock() else {
+        return Vec::new();
+    };
+    let mut open: Vec<u64> = state.outbox.keys().copied().collect();
+    open.sort_unstable();
+    open
+}
+
 /// What the tray reports. The failure that matters is `PortTaken`: it used to
 /// be one line in the log, and a silent bridge is exactly what something else
 /// holding the port looks like.

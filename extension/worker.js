@@ -288,6 +288,15 @@ function receive(data) {
     // bentopick grants them with AllowSetForegroundWindow before asking.
     chrome.tabs.update(message.tabId, { active: true });
     chrome.windows.update(message.windowId, { focused: true });
+    return;
+  }
+
+  if (message.type === "newtab") {
+    // No window id: the last focused one is where you were, which is where a
+    // new tab belongs. Raised the same way a focus is.
+    chrome.tabs.create({}, (tab) => {
+      if (tab) chrome.windows.update(tab.windowId, { focused: true });
+    });
   }
 }
 

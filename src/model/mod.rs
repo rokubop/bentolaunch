@@ -51,6 +51,9 @@ pub enum Target {
     /// Hold the panel open, so the next window clicked is picked as the thing
     /// to move rather than switched to.
     Stay,
+    /// Ask a browser for a new tab. Goes back over the socket for the same
+    /// reason focusing one does: only the browser can do it.
+    NewTab { connection: u64 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -125,7 +128,11 @@ impl Item {
     pub fn shell_target(&self) -> Option<&str> {
         match &self.target {
             Target::Shell(name) => Some(name),
-            Target::Window(_) | Target::Tab { .. } | Target::Arrange(_) | Target::Stay => None,
+            Target::Window(_)
+            | Target::Tab { .. }
+            | Target::Arrange(_)
+            | Target::Stay
+            | Target::NewTab { .. } => None,
         }
     }
 
@@ -146,6 +153,7 @@ impl Item {
             }
             Target::Arrange(mv) => format!("move the target window {}", mv.key()),
             Target::Stay => "hold the panel open".to_owned(),
+            Target::NewTab { .. } => "open a new tab".to_owned(),
         }
     }
 }
@@ -156,6 +164,8 @@ impl Item {
 pub struct Section {
     pub title: String,
     pub items: Vec<Item>,
+    /// Tint behind the box, straight off config.
+    pub color: Option<String>,
     /// How many items the section had before `max_items` cut it down. Edit
     /// mode needs it: "more tiles" has to stop at the number that exist.
     pub total: usize,

@@ -203,6 +203,14 @@ pub struct SectionConfig {
     /// such as `ms-settings:display` or `https://example.com`.
     #[serde(default)]
     pub items: Vec<ManualItem>,
+    /// Tint behind this box, "#AARRGGBB" or "#RRGGBB". Absent leaves it on the
+    /// panel colour.
+    ///
+    /// The alpha is the point: these sit over a translucent panel, and an
+    /// opaque plate would punch a hole in it. Something in the low twenties
+    /// reads as a tint rather than as a second surface.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
     /// Where this box sits, as cuts from the whole panel inward.
     ///
     /// `"left"` is the whole left side. `"right/top"` is the top of what is
@@ -338,6 +346,7 @@ fn section(title: &str, sources: &[SourceSpec]) -> SectionConfig {
         title: title.into(),
         source: Sources(sources.to_vec()),
         matches: Vec::new(),
+        color: None,
         at: None,
         columns: 0,
         max_items: 0,

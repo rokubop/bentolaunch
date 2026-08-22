@@ -64,6 +64,8 @@ pub enum Mark {
     Screen { second: bool },
     /// On or off, read the way a radio button is.
     Latch { on: bool },
+    /// One more of the thing this box is full of.
+    Plus,
 }
 
 /// Everything one tile needs painted. Grouped so callers pass a value rather
@@ -623,7 +625,9 @@ impl Renderer {
         let side = (icon_area_h * 0.6).min(width * 0.5).max(8.0);
         let (w, h) = match mark {
             Mark::Screen { .. } => (side * PAIR_WIDTH, side * PAIR_HEIGHT),
-            _ => (side, side * SCREEN_ASPECT),
+            // Not a screen, so not a screen's shape.
+            Mark::Plus | Mark::Latch { .. } => (side, side),
+            Mark::Half { .. } => (side, side * SCREEN_ASPECT),
         };
         let left = (width - w) / 2.0;
         let top = (icon_area_h - h) / 2.0;
@@ -666,6 +670,29 @@ impl Renderer {
                             None,
                         );
                     }
+                }
+                Mark::Plus => {
+                    let arm = w * 0.42;
+                    let mid = (left + w / 2.0, top + h / 2.0);
+                    let bar = MARK_STROKE * 1.4;
+                    context.FillRectangle(
+                        &D2D_RECT_F {
+                            left: mid.0 - arm,
+                            top: mid.1 - bar / 2.0,
+                            right: mid.0 + arm,
+                            bottom: mid.1 + bar / 2.0,
+                        },
+                        &fill,
+                    );
+                    context.FillRectangle(
+                        &D2D_RECT_F {
+                            left: mid.0 - bar / 2.0,
+                            top: mid.1 - arm,
+                            right: mid.0 + bar / 2.0,
+                            bottom: mid.1 + arm,
+                        },
+                        &fill,
+                    );
                 }
                 Mark::Latch { on } => {
                     let radius = h / 2.0;

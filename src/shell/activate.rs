@@ -30,6 +30,7 @@ pub fn activate(item: &Item) {
         Target::Tab { connection, tab_id, window_id } => {
             switch_to_tab(*connection, *tab_id, *window_id, &item.title)
         }
+        Target::NewTab { connection } => new_tab(*connection),
         // Handled by the panel: these act on it, or on another tile's window,
         // and neither leaves the panel the way everything here does.
         Target::Arrange(_) | Target::Stay => {}
@@ -54,6 +55,24 @@ fn switch_to_tab(connection: u64, tab_id: i64, window_id: i64, title: &str) {
         log_info!("asked the browser to switch to \"{title}\"");
     } else {
         log_warn!("could not reach the browser to switch to \"{title}\"");
+    }
+}
+
+/// Same hand-off as switching to a tab: only the browser can open one, and it
+/// needs the foreground right to come up with it.
+fn new_tab(connection: u64) {
+    // SAFETY: as in switch_to_tab. A stale pid fails harmlessly, and this
+    // grants a right rather than taking one.
+    for pid in crate::model::store::browser_pids() {
+        unsafe {
+            let _ = AllowSetForegroundWindow(pid);
+        }
+    }
+
+    if crate::browser::server::new_tab(connection) {
+        log_info!("asked the browser for a new tab");
+    } else {
+        log_warn!("could not reach the browser to open a tab");
     }
 }
 
