@@ -24,8 +24,20 @@ use crate::{log_info, log_warn};
 const SHELL_EXECUTE_ERROR_MAX: isize = 32;
 
 pub fn activate(item: &Item) {
+    // Switch rather than start a second copy, as a taskbar button does. The
+    // window can close between the panel drawing and the tile being taken, so
+    // fall through to launching rather than trust the handle.
+    if let Some(handle) = item.running
+        && let Target::Shell(_) = &item.target
+        && focus(handle.hwnd(), &item.title)
+    {
+        return;
+    }
+
     match &item.target {
-        Target::Window(handle) => focus(handle.hwnd(), &item.title),
+        Target::Window(handle) => {
+            focus(handle.hwnd(), &item.title);
+        }
         Target::Shell(name) => launch(name, &item.title),
         Target::Tab { connection, tab_id, window_id } => {
             switch_to_tab(*connection, *tab_id, *window_id, &item.title)
@@ -82,13 +94,16 @@ fn new_tab(connection: u64) {
 /// the last input event is allowed to call it — and `RegisterHotKey` delivers
 /// `WM_HOTKEY` as exactly that. So summoning bentopick by its hotkey grants the
 /// right that activation needs. See DESIGN.md "Focus model".
-fn focus(hwnd: HWND, title: &str) {
+/// `false` only when no window was left to focus, which is what lets a pin fall
+/// back to launching. A declined foreground change is still success: the window
+/// exists, and a second copy is the wrong answer to that.
+fn focus(hwnd: HWND, title: &str) -> bool {
     // SAFETY: the window may have closed between enumeration and this click, in
     // which case IsWindow says so and the rest is skipped.
     unsafe {
         if !IsWindow(Some(hwnd)).as_bool() {
             log_warn!("window \"{title}\" closed before it could be focused");
-            return;
+            return false;
         }
 
         // A minimized window will not come forward until it is restored.
@@ -105,6 +120,7 @@ fn focus(hwnd: HWND, title: &str) {
             // window is restored and flashing in the taskbar.
             log_warn!("the OS declined to foreground \"{title}\"");
         }
+        true
     }
 }
 

@@ -111,6 +111,13 @@ pub struct Item {
     /// nothing else here can: they share no string otherwise. `None` for a tab,
     /// a bookmark, or an action.
     pub app: Option<String>,
+    /// The window this tile's app already has open. Set while a section is
+    /// assembled, by matching `app` against the live window list.
+    ///
+    /// A pin keeps its `target` and stays a pin: config, drag and unpin all
+    /// still see the shell name. This only decides what taking the tile does
+    /// (switch, not launch a second copy) and whether it draws a running mark.
+    pub running: Option<Handle>,
     /// Which of a section's sources produced this tile. A merged section holds
     /// more than one, and what may be dragged, removed and written back to
     /// config is a property of the tile, not of the header above it.

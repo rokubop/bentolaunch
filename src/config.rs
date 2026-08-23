@@ -68,6 +68,23 @@ pub enum Source {
     Taskbar,
     /// Every open window.
     Windows,
+    /// `windows`, minus the redundant half: only apps with more than one window
+    /// open.
+    ///
+    /// One window is already on the panel as an app tile, so repeating it by
+    /// title says nothing. Four windows is the opposite, since the app tile
+    /// reaches only the most recent and the titles are what pick the rest.
+    ///
+    /// Assumes apps come from `taskbar` and `running`. Alone it would leave
+    /// single-window apps unreachable.
+    Extra,
+    /// One tile per open-but-unpinned app, after the pins and never among them.
+    /// The taskbar's own rule: an app that comes and goes cannot hold a fixed
+    /// slot, so it takes the one position costing nothing to learn.
+    ///
+    /// Deduplicated against what the section already listed, so a pin is never
+    /// doubled by its own running app.
+    Running,
     /// Whatever is listed in `items`.
     Manual,
     /// Open browser tabs, from the extension. Empty until one connects.

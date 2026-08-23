@@ -81,6 +81,9 @@ pub struct TilePaint<'a> {
     /// Drawn in the icon's place on tiles that are an action rather than a
     /// thing. Never set on a tile that has an icon coming.
     pub mark: Option<Mark>,
+    /// Underline colour for a pin whose app is open, `None` otherwise. A colour
+    /// not a flag: the accent lives in config, which this file never reads.
+    pub running: Option<D2D1_COLOR_F>,
     pub colors: TextColors,
 }
 
@@ -208,7 +211,8 @@ impl Renderer {
         offset: POINT,
         paint: TilePaint<'_>,
     ) -> Result<()> {
-        let TilePaint { width, height, label_height, title, detail, icon, mark, colors } = paint;
+        let TilePaint { width, height, label_height, title, detail, icon, mark, running, colors } =
+            paint;
         // The surface may live inside a shared atlas, so everything is drawn
         // relative to the offset BeginDraw reported.
         let dx = offset.x as f32;
@@ -244,6 +248,31 @@ impl Renderer {
                 );
             } else if let Some(mark) = mark {
                 self.draw_mark(context, mark, width, icon_area_h, colors)?;
+            }
+
+            // The taskbar's underline, same place, same meaning. A marker not a
+            // control: the tile stays one whole hit target.
+            if let Some(accent) = running {
+                let bar_w = (width * 0.22).max(10.0);
+                let bar_h = (height * 0.035).clamp(2.5, 5.0);
+                let left = (width - bar_w) / 2.0;
+                // Under the icon, not the text: it belongs to the picture, and
+                // survives labels being turned off.
+                let top = (icon_area_h - bar_h * 2.0).max(0.0);
+                let brush = context.CreateSolidColorBrush(&accent, None)?;
+                context.FillRoundedRectangle(
+                    &D2D1_ROUNDED_RECT {
+                        rect: D2D_RECT_F {
+                            left,
+                            top,
+                            right: left + bar_w,
+                            bottom: top + bar_h,
+                        },
+                        radiusX: bar_h / 2.0,
+                        radiusY: bar_h / 2.0,
+                    },
+                    &brush,
+                );
             }
 
             let pad = 8.0;

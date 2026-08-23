@@ -734,6 +734,9 @@ impl Panel {
                             detail: if show_detail { &item.detail } else { "" },
                             icon: icon.as_deref(),
                             mark,
+                            running: item
+                                .running
+                                .map(|_| d2d_color(&self.config.theme.tile_target)),
                             colors,
                         };
                         if let Err(e) = renderer.draw_tile(&drawn, paint) {
@@ -1776,6 +1779,9 @@ impl Panel {
                 // Only reached by a tile waiting on an icon, which an action
                 // tile never is.
                 mark: None,
+                running: item
+                    .running
+                    .map(|_| d2d_color(&self.config.theme.tile_target)),
                 colors,
             };
             if renderer.draw_tile(surface, paint).is_ok() {
@@ -2676,7 +2682,8 @@ impl Panel {
             Source::Manual => pins::reorder(&title, &keys),
             Source::Taskbar => pins::set_order(&title, &keys),
             // Ordered by the foreground hook and the browser, not by bentopick.
-            Source::Windows | Source::Tabs | Source::Bookmarks => false,
+            Source::Windows | Source::Extra | Source::Running | Source::Tabs
+            | Source::Bookmarks => false,
             // A fixed set in a fixed order. Nowhere to write one down.
             Source::Moves => false,
         };

@@ -45,6 +45,15 @@ pub struct WindowInfo {
 }
 
 impl WindowInfo {
+    /// Lowercased executable stem. Same shape `shell::link::app_stem` gives a
+    /// pin, which is what makes the two comparable.
+    pub fn app(&self) -> Option<String> {
+        self.exe
+            .as_ref()
+            .and_then(|p| p.file_stem())
+            .map(|stem| stem.to_string_lossy().to_lowercase())
+    }
+
     pub fn to_item(&self) -> Item {
         let detail = self
             .exe
@@ -60,12 +69,9 @@ impl WindowInfo {
             target: Target::Window(self.handle),
             // A filesystem path is already a valid shell parsing name.
             icon_source: self.exe.as_ref().map(|p| p.to_string_lossy().into_owned()),
-            app: self
-                .exe
-                .as_ref()
-                .and_then(|p| p.file_stem())
-                .map(|stem| stem.to_string_lossy().to_lowercase()),
+            app: self.app(),
             origin: crate::config::Source::Windows,
+            running: None,
             group: 0,
         }
     }

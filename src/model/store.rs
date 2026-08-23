@@ -45,6 +45,21 @@ struct Group {
     max_items: usize,
 }
 
+/// Open windows of this window's app, itself included. `1` makes a window tile
+/// redundant: the app tile already reaches the only window there is.
+///
+/// No readable executable counts as a crowd, so such a window is never hidden.
+/// Nothing can match it to an app tile either, so hiding it would strand it.
+fn siblings(windows: &[WindowInfo], window: &WindowInfo) -> usize {
+    let Some(app) = window.app() else {
+        return usize::MAX;
+    };
+    windows
+        .iter()
+        .filter(|other| other.app().as_deref() == Some(app.as_str()))
+        .count()
+}
+
 fn claims(matches: &[String], window: &WindowInfo) -> bool {
     if matches.is_empty() {
         return true;
@@ -108,7 +123,9 @@ fn build_groups(sections: &[SectionConfig]) -> Vec<Group> {
                     Source::Manual => {
                         Some((index, section.items.iter().filter_map(manual_item).collect()))
                     }
-                    Source::Windows | Source::Tabs | Source::Bookmarks | Source::Moves => None,
+                    Source::Windows | Source::Extra | Source::Running | Source::Tabs
+                    | Source::Bookmarks
+                    | Source::Moves => None,
                 })
                 .collect(),
         })
@@ -191,6 +208,7 @@ fn manual_item(entry: &ManualItem) -> Option<Item> {
         app: crate::shell::link::app_stem(target),
         icon_source: Some(target.to_owned()),
         origin: Source::Manual,
+        running: None,
         group: 0,
     })
 }
@@ -300,6 +318,7 @@ fn new_tab_item() -> Option<Item> {
         icon_source: None,
         app: None,
         origin: Source::Tabs,
+        running: None,
         group: 0,
     })
 }
@@ -337,6 +356,7 @@ fn tab_items() -> Vec<Item> {
                 .map(|key| format!("{}{key}", crate::shell::icons::FAVICON)),
             app: None,
             origin: Source::Tabs,
+            running: None,
             group: 0,
         }),
         )
@@ -364,6 +384,7 @@ fn bookmark_items() -> Vec<Item> {
                 .map(|key| format!("{}{key}", crate::shell::icons::FAVICON)),
             app: None,
             origin: Source::Bookmarks,
+            running: None,
             group: 0,
         })
         .collect()
@@ -382,6 +403,7 @@ fn move_items() -> Vec<Item> {
         icon_source: None,
         app: None,
         origin: Source::Moves,
+        running: None,
         group: 0,
     };
 
@@ -421,6 +443,54 @@ pub fn sections() -> Vec<Section> {
                         items.push(window.to_item());
                     }
                 }
+                Source::Extra => {
+                    let matches = group.matches.get(index).map_or(&[][..], Vec::as_slice);
+                    for (n, window) in s.windows.iter().enumerate() {
+                        if claimed[n] || !claims(matches, window) {
+                            continue;
+                        }
+                        // One window: the app tile reaches it. Two or more:
+                        // only titles say which one you want.
+                        if siblings(&s.windows, window) < 2 {
+                            continue;
+                        }
+                        claimed[n] = true;
+                        items.push(window.to_item());
+                    }
+                }
+                Source::Running => {
+                    // Against what the section already holds, or a pin marked
+                    // running gets doubled by the window that marked it.
+                    let mut seen: Vec<String> =
+                        items.iter().filter_map(|item| item.app.clone()).collect();
+                    for window in &s.windows {
+                        let (Some(app), Some(exe)) = (window.app(), window.exe.as_ref()) else {
+                            continue;
+                        };
+                        if seen.contains(&app) {
+                            continue;
+                        }
+                        let name = exe.to_string_lossy().into_owned();
+                        items.push(Item {
+                            id: ItemId::Shell(name.clone()),
+                            kind: Kind::App,
+                            // Executable name, never the window title. One tile
+                            // per app, and a tile that renames itself as you
+                            // browse has no learnable position.
+                            title: exe
+                                .file_stem()
+                                .map_or_else(|| app.clone(), |s| s.to_string_lossy().into_owned()),
+                            detail: "running".into(),
+                            target: Target::Window(window.handle),
+                            icon_source: Some(name),
+                            app: Some(app.clone()),
+                            origin: Source::Running,
+                            running: Some(window.handle),
+                            group: 0,
+                        });
+                        seen.push(app);
+                    }
+                }
                 // Read at show time, not resolved up front: they change as fast
                 // as the browser does.
                 Source::Tabs => items.extend(tab_items()),
@@ -435,6 +505,21 @@ pub fn sections() -> Vec<Section> {
             for item in &mut items[start..] {
                 item.group = index;
             }
+        }
+
+        // Mark the pin rather than grow a second tile, as the taskbar does.
+        // Pins only: a window tile is already the window. `windows` is MRU
+        // first, so the first match is the one to switch to.
+        for item in &mut items {
+            if item.shell_target().is_none() {
+                continue;
+            }
+            let Some(app) = item.app.clone() else { continue };
+            item.running = s
+                .windows
+                .iter()
+                .find(|window| window.app().as_deref() == Some(app.as_str()))
+                .map(|window| window.handle);
         }
 
         let total = items.len();
@@ -655,6 +740,55 @@ mod tests {
     #[test]
     fn blank_entries_are_dropped() {
         assert!(manual_item(&ManualItem::Plain("   ".into())).is_none());
+    }
+
+    fn window(exe: Option<&str>, title: &str) -> WindowInfo {
+        WindowInfo {
+            handle: Handle::new(HWND(std::ptr::null_mut())),
+            title: title.into(),
+            class: "Test".into(),
+            exe: exe.map(std::path::PathBuf::from),
+            pid: 0,
+        }
+    }
+
+    /// The rule behind `source = "extra"`: one window is already reached by the
+    /// app tile, so listing it again by title says nothing.
+    #[test]
+    fn an_apps_only_window_has_no_siblings() {
+        let windows = vec![
+            window(Some(r"C:\Windows\explorer.exe"), "Downloads"),
+            window(Some(r"C:\chrome.exe"), "A tab"),
+        ];
+        assert_eq!(siblings(&windows, &windows[0]), 1);
+    }
+
+    #[test]
+    fn windows_of_one_app_count_each_other() {
+        let windows = vec![
+            window(Some(r"C:\Windows\explorer.exe"), "Downloads"),
+            window(Some(r"C:\Windows\explorer.exe"), "R:\\dev"),
+            window(Some(r"C:\chrome.exe"), "A tab"),
+        ];
+        assert_eq!(siblings(&windows, &windows[0]), 2);
+        assert_eq!(siblings(&windows, &windows[2]), 1);
+    }
+
+    /// Case and directory differ, the app does not.
+    #[test]
+    fn the_same_app_from_two_paths_still_counts_as_one() {
+        let windows = vec![
+            window(Some(r"C:\Program Files\App\Thing.exe"), "one"),
+            window(Some(r"D:\other\thing.EXE"), "two"),
+        ];
+        assert_eq!(siblings(&windows, &windows[0]), 2);
+    }
+
+    /// Nothing pairs this with an app tile, so it must never be hidden.
+    #[test]
+    fn a_window_with_no_executable_is_never_hidden() {
+        let windows = vec![window(None, "mystery")];
+        assert!(siblings(&windows, &windows[0]) >= 2);
     }
 
     #[test]

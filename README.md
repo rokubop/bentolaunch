@@ -209,7 +209,19 @@ Order here is order on screen. Empty sections do not render.
 Running things are listed before launchable ones, because switching to something
 that exists beats starting something new. Out of the box that is three headers:
 `Browsing` (browser windows and tabs), `Active` (every other window), and
-`Launch` (taskbar pins and anything you pin yourself).
+`Apps` (taskbar pins and anything you pin yourself).
+
+`Apps` mirrors your taskbar:
+
+- same pins, same left-to-right order
+- a line under the icon when the app is open
+- clicking an open one switches to it, never starts a second copy
+- open but unpinned apps follow the pins
+
+So a pin sits where you already know it, running or not.
+
+`Apps` lists apps. `Browsing` and `Active` list windows and tabs, which is a
+different question.
 
 ```toml
 [[sections]]
@@ -224,12 +236,13 @@ match  = ["explorer.exe"]
 
 [[sections]]
 title  = "Active"
-source = "windows"   # no match: everything not claimed above
+source = "extra"     # windows the Apps row cannot reach; see below
 
 [[sections]]
-title  = "Launch"
-source = "taskbar"   # apps pinned to your Windows taskbar
-order  = []          # pin names, in order; written by dragging a tile
+title  = "Apps"
+source = ["taskbar", "running"]  # your taskbar pins, then anything else open
+order  = []          # pin names, in order; written by dragging a tile.
+                     # Empty means the taskbar's own order is mirrored.
 
 [[sections]]
 title  = "Places"
@@ -275,11 +288,21 @@ off and goes back to filling the rest.
 browser makes them, and a box that grows without limit pushes the rest off
 screen.
 
-`match` lists process names, case-insensitive, and only applies to
-`source = "windows"`. Sections claim windows in order and each window is claimed
-once, so put filtered sections above the unfiltered catch-all. Keep exactly one
-windows section without a `match`, or windows from an unlisted app have nowhere
-to go.
+`match` lists process names, case-insensitive, and only applies to `windows` and
+`extra`. Sections claim windows in order and each window is claimed once, so put
+filtered sections above the unfiltered catch-all. Keep exactly one windows
+section without a `match`, or windows from an unlisted app have nowhere to go.
+
+`extra` is `windows` minus the redundant half: only apps with **more than one**
+window open.
+
+One window is already in `Apps` under its own name, so repeating it by title
+says nothing. Four windows is the opposite: the `Apps` tile reaches only the
+most recent, and the titles pick the rest.
+
+So an `extra` section stays empty until it has something to add. It needs apps
+coming from `taskbar` and `running`. Alone it leaves single-window apps
+unreachable.
 
 Use `'single quotes'` for Windows paths. Inside `"double quotes"` TOML reads `\`
 as an escape, so `"R:\dev"` is a parse error.
@@ -305,9 +328,10 @@ Off by default. Windows has no API for browser tabs, so this needs an extension:
 
 ```toml
 [[sections]]
-title  = "Browsing"  # the default: windows first, then tabs
+title  = "Browsing"  # the default: extra windows first, then tabs
 source = [
-    { source = "windows", match = ["chrome.exe", "msedge.exe", "firefox.exe"] },
+    # Only once a browser has a second window: one is reached from Apps.
+    { source = "extra", match = ["chrome.exe", "msedge.exe", "firefox.exe"] },
     "tabs",          # empty until the extension connects
 ]
 
@@ -452,9 +476,10 @@ around.
 
 ## Known gaps
 
-- Taskbar pin order is alphabetical until you arrange it. Windows keeps its own
-  order in an undocumented registry blob, so dragging a tile writes an `order`
-  list instead.
+- Unpinned running apps are named by their executable: `WindowsTerminal`, not
+  `Windows Terminal`. Pins are named by their shortcut and read properly.
+- A Store app pinned to the taskbar matches no window, so it never shows as
+  running. It pins by AppUserModelID with no target path.
 - Bookmarks are read-only, Chromium only, and the bookmarks bar only.
 - A box cannot be dragged to another row. Edit layout moves it a place at a
   time, which is the same thing in more keystrokes.
