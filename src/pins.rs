@@ -528,9 +528,6 @@ pub enum Change {
     CenterSize { columns: usize, rows: usize },
     /// Which lists the block holds, and whether they are kept apart.
     CenterContents(Contents),
-    /// Share of the columns the left lane takes. One seam for the whole panel,
-    /// so this is one number rather than a width on every box.
-    Split(f32),
 }
 
 /// Apply one settings change. Returns whether the file changed.
@@ -553,7 +550,6 @@ fn set_in(path: &Path, change: Change) -> bool {
             set_key(&mut doc, "favorites", "columns", (columns as i64).into());
             set_key(&mut doc, "favorites", "rows", (rows as i64).into());
         }
-        Change::Split(share) => set_key(&mut doc, "grid", "split", f64::from(share).into()),
         Change::CenterContents(contents) => {
             set_key(&mut doc, "favorites", "contents", contents.key().into());
             // The key `contents` replaced. Left in, it would keep answering

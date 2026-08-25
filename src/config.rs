@@ -486,6 +486,10 @@ pub struct Grid {
     pub corner_radius: f32,
     /// Share of the columns the left lane takes. One seam for the whole panel,
     /// because there is only one line down the middle to argue about.
+    ///
+    /// Hand-edited: no square writes it. Which lane a box is in is a question
+    /// about that box, and a width square beside the three that answer it read
+    /// as a fourth answer.
     pub split: f32,
     /// Filter strip. Only appears while there is a query. 0 filters silently.
     /// Its text is sized from this, so raising it makes the query bigger.

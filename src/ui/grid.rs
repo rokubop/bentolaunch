@@ -752,9 +752,6 @@ pub enum Control {
     /// Earlier or later down this box's own lane.
     MoveUp,
     MoveDown,
-    /// Where the seam down the middle of the panel sits.
-    Narrower,
-    Wider,
     Fewer,
     More,
     Done,
@@ -794,8 +791,6 @@ impl Control {
             Control::FullWidth => "\u{2588}",
             Control::MoveUp => "\u{2191}",
             Control::MoveDown => "\u{2193}",
-            Control::Narrower => "\u{2192}\u{2190}",
-            Control::Wider => "\u{2194}",
             Control::Fewer => "\u{2212}",
             Control::More => "+",
             Control::Done => "\u{2713}",
@@ -811,8 +806,6 @@ impl Control {
             Control::FullWidth => "Full width",
             Control::MoveUp => "Move up",
             Control::MoveDown => "Move down",
-            Control::Narrower => "Narrower",
-            Control::Wider => "Wider",
             Control::Fewer => "Fewer tiles",
             Control::More => "More tiles",
             Control::Done => "Done",
@@ -821,32 +814,6 @@ impl Control {
 }
 
 impl Control {
-    /// The panel split this option should write, given where the box is now.
-    ///
-    /// A whole column at a time, so every click moves the seam somewhere
-    /// visible. A 5% nudge often did not cross a column boundary at all, and a
-    /// button that sometimes does nothing reads as broken.
-    ///
-    /// One seam for the whole panel, so "wider" on a box in the right lane
-    /// moves it the other way from "wider" on one in the left.
-    pub fn resized(self, state: &BoxState) -> Option<f32> {
-        let step = match self {
-            Control::Wider => 1.0,
-            Control::Narrower => -1.0,
-            _ => return None,
-        };
-        let toward = match state.lane {
-            Lane::Left => 1.0,
-            Lane::Right => -1.0,
-            Lane::Full => return None,
-        };
-        if state.panel_cols < 2 {
-            return None;
-        }
-        let held = (state.split * state.panel_cols as f32).round() + step * toward;
-        Some(held.clamp(1.0, state.panel_cols as f32 - 1.0) / state.panel_cols as f32)
-    }
-
     /// Whether this is the lane the box is already in. Drawn lit: it is where
     /// the box is, and clicking it changes nothing.
     pub fn holds(self, state: &BoxState) -> bool {
@@ -876,11 +843,6 @@ pub struct BoxState {
     /// Where it comes down its own lane, and how many are in that lane.
     pub at_lane: usize,
     pub lane_len: usize,
-    /// Columns the box takes, and the panel's whole budget.
-    pub cols: usize,
-    pub panel_cols: usize,
-    /// Where the seam down the panel sits now.
-    pub split: f32,
 }
 
 impl Control {
@@ -907,10 +869,6 @@ impl Control {
             // meant the two arrows were dead on most of the panel.
             Control::MoveUp => state.at_lane > 0,
             Control::MoveDown => state.at_lane + 1 < state.lane_len,
-            // The seam only exists between the two side lanes.
-            Control::Narrower | Control::Wider => {
-                state.lane != Lane::Full && self.resized(state) != Some(state.split)
-            }
         }
     }
 }
@@ -918,7 +876,14 @@ impl Control {
 /// Reading order, four to a row.
 /// Reading order, five to a row.
 /// Reading order, four to a row.
-pub const CONTROLS: [Control; 10] = [
+/// Two rows of four. Three answers about the x axis, two about the order down
+/// a lane, two about how much of its list a box shows, and the way out.
+///
+/// Where the seam down the panel sits is not on here. It is one number for the
+/// whole panel rather than anything about this box, and a fourth square among
+/// the three that decide the x axis read as a fourth answer to that question.
+/// `grid.split` is hand-edited, like the hotkey and the theme.
+pub const CONTROLS: [Control; 8] = [
     // Which lane. One question, three answers, and the x axis is settled.
     Control::Left,
     Control::FullWidth,
@@ -926,9 +891,7 @@ pub const CONTROLS: [Control; 10] = [
     // Where in it.
     Control::MoveUp,
     Control::MoveDown,
-    // The panel's seam, and how much this box shows.
-    Control::Narrower,
-    Control::Wider,
+    // How much of its list it shows.
     Control::Fewer,
     Control::More,
     Control::Done,
@@ -2079,9 +2042,6 @@ mod tests {
             boxes: 3,
             at_lane: 1,
             lane_len: 3,
-            cols: 4,
-            panel_cols: 9,
-            split: 4.0 / 9.0,
         }
     }
 
@@ -2132,75 +2092,20 @@ mod tests {
     }
 
     #[test]
-    fn the_seam_only_exists_between_the_two_side_lanes() {
-        // A full-width box has no seam to move: it spans both lanes.
-        let wide = loose();
-        assert!(!Control::Wider.allowed(&wide));
-        assert!(!Control::Narrower.allowed(&wide));
-        assert!(Control::Left.allowed(&wide), "it can still pick a lane");
+    fn the_x_axis_has_exactly_three_answers() {
+        // No fourth square beside them. Where the seam down the panel sits is
+        // one number for the whole panel rather than anything about this box,
+        // and a width button among the three read as a fourth answer to the
+        // question they answer.
+        let lanes: Vec<Control> = CONTROLS.iter().copied().filter(|c| c.lane().is_some()).collect();
+        assert_eq!(lanes, [Control::Left, Control::FullWidth, Control::Right]);
 
-        assert!(Control::Wider.allowed(&placed()));
-        assert!(Control::Narrower.allowed(&placed()));
-    }
-
-    #[test]
-    fn the_seam_moves_by_a_whole_column() {
-        // A 5% nudge often did not cross a column boundary, so the click
-        // appeared to do nothing at all.
-        let state = BoxState { split: 4.0 / 9.0, panel_cols: 9, ..placed() };
-        let narrower = Control::Narrower.resized(&state).unwrap();
-        let wider = Control::Wider.resized(&state).unwrap();
-        assert_eq!((narrower * 9.0).round() as usize, 3);
-        assert_eq!((wider * 9.0).round() as usize, 5);
-    }
-
-    #[test]
-    fn wider_means_wider_whichever_lane_the_box_is_in() {
-        // One seam for the panel, so the right lane grows by moving it the
-        // other way. A button that made the box smaller would be the bug.
-        let split = 4.0 / 9.0;
-        let left = BoxState { lane: Lane::Left, split, panel_cols: 9, ..placed() };
-        let right = BoxState { lane: Lane::Right, split, panel_cols: 9, ..placed() };
-
-        assert!(Control::Wider.resized(&left).unwrap() > split, "left lane grows right");
-        assert!(Control::Wider.resized(&right).unwrap() < split, "right lane grows left");
-        assert!(Control::Narrower.resized(&left).unwrap() < split);
-        assert!(Control::Narrower.resized(&right).unwrap() > split);
-    }
-
-    #[test]
-    fn the_seam_cannot_be_pushed_off_either_end() {
-        let thin = BoxState { lane: Lane::Left, split: 1.0 / 9.0, panel_cols: 9, ..placed() };
-        assert!(!Control::Narrower.allowed(&thin), "the left lane is owed a column");
-        assert!(Control::Wider.allowed(&thin));
-
-        let fat = BoxState { lane: Lane::Left, split: 8.0 / 9.0, panel_cols: 9, ..placed() };
-        assert!(!Control::Wider.allowed(&fat), "the right lane is owed a column");
-        assert!(Control::Narrower.allowed(&fat));
-    }
-
-    #[test]
-    fn the_button_and_the_action_agree_about_the_seam() {
-        // Whenever the rule says a size option applies, it also has a split to
-        // write. A button that is offered and then does nothing is the bug
-        // this pairing prevents.
-        for lane in [Lane::Left, Lane::Right, Lane::Full] {
-            for cols in [1usize, 3, 8] {
-                let state = BoxState {
-                    lane,
-                    split: cols as f32 / 9.0,
-                    panel_cols: 9,
-                    ..placed()
-                };
-                for control in [Control::Wider, Control::Narrower] {
-                    if control.allowed(&state) {
-                        assert!(
-                            control.resized(&state).is_some(),
-                            "{control:?} offered for {lane:?} at {cols} cols but writes nothing"
-                        );
-                    }
-                }
-            }
+        // And every one of them is a picture of the panel rather than a glyph.
+        for control in lanes {
+            assert!(control.span().is_some(), "{control:?} has no shape to draw");
+        }
+        for control in CONTROLS.iter().filter(|c| c.lane().is_none()) {
+            assert!(control.span().is_none(), "{control:?} is not about the x axis");
         }
     }
 
@@ -2245,9 +2150,6 @@ mod tests {
             boxes: 1,
             at_lane: 0,
             lane_len: 1,
-            cols: 1,
-            panel_cols: 1,
-            split: 0.5,
         };
         assert_eq!(offered(&stuck), [Control::Done]);
     }

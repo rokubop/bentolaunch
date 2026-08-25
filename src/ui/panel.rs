@@ -2522,16 +2522,6 @@ impl Panel {
                         .or(self.edit);
                 }
             }
-            Control::Narrower | Control::Wider => {
-                // Worked out by the same rule that decided this button was
-                // available, so the two cannot disagree about where the seam
-                // is now.
-                let Some(state) = self.edit_state() else { return };
-                let Some(split) = control.resized(&state) else { return };
-                if pins::set(pins::Change::Split(split)) {
-                    self.reload_config();
-                }
-            }
         }
     }
 
@@ -2564,11 +2554,6 @@ impl Panel {
             .map(|s| s.title.as_str())
             .collect();
         let at_lane = siblings.iter().position(|name| *name == title).unwrap_or(0);
-        let band = self
-            .layout
-            .bands()
-            .iter()
-            .find(|band| band.section == section);
 
         Some(BoxState {
             shown: self.sections.get(section).map_or(0, |s| s.items.len()),
@@ -2577,9 +2562,6 @@ impl Panel {
             boxes: self.layout.bands().len(),
             at_lane,
             lane_len: siblings.len(),
-            cols: band.map_or(1, |band| band.cols),
-            panel_cols: self.layout.cols,
-            split: self.config.grid.split,
         })
     }
 
