@@ -2,7 +2,7 @@
 //! scattered state). Missing file => defaults, written out on first run so it is
 //! discoverable and editable.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -717,22 +717,23 @@ impl Default for Theme {
 
 impl Config {
     pub fn path() -> Option<PathBuf> {
-        let exe = std::env::current_exe().ok()?;
-        let dir = exe.parent()?;
+        Some(Self::path_in(std::env::current_exe().ok()?.parent()?))
+    }
+
+    /// Renamed from BentoPick. A move, not a rewrite, so comments and ordering
+    /// survive it, and it only fires while the old name is the only one there.
+    /// A failed move keeps the old file: reading one name and writing the other
+    /// would drop every edit made since.
+    fn path_in(dir: &Path) -> PathBuf {
         let path = dir.join("bentolaunch.toml");
         if path.exists() {
-            return Some(path);
+            return path;
         }
-        // Renamed from BentoPick. A move, not a rewrite, so comments and
-        // ordering survive it - and it can only fire while the old name is the
-        // only one there, which makes it once per install. If the move fails
-        // the old file is still the config: reading one name and writing the
-        // other would drop every edit made since.
         let legacy = dir.join("bentopick.toml");
         if legacy.is_file() && std::fs::rename(&legacy, &path).is_err() {
-            return Some(legacy);
+            return legacy;
         }
-        Some(path)
+        path
     }
 
     /// Never fails: a broken or absent config falls back to defaults rather than
@@ -1251,5 +1252,46 @@ items = [{ title = "Display", target = "ms-settings:display" }]
     fn empty_section_list_falls_back_rather_than_showing_nothing() {
         let cfg = Config { sections: Vec::new(), ..Config::default() }.validated();
         assert!(!cfg.sections.is_empty());
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir()
+            .join(format!("bentolaunch-test-config-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_bentopick_config_is_carried_over_with_its_comments() {
+        let dir = scratch("carried");
+        let original = "# hand written
+hotkey = \"ctrl+alt+q\"
+";
+        std::fs::write(dir.join("bentopick.toml"), original).unwrap();
+
+        let path = Config::path_in(&dir);
+
+        assert_eq!(path, dir.join("bentolaunch.toml"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        assert!(!dir.join("bentopick.toml").exists(), "moved, not copied");
+    }
+
+    #[test]
+    fn an_existing_bentolaunch_config_wins_and_the_old_one_is_left_alone() {
+        let dir = scratch("existing");
+        std::fs::write(dir.join("bentolaunch.toml"), "current").unwrap();
+        std::fs::write(dir.join("bentopick.toml"), "stale").unwrap();
+
+        let path = Config::path_in(&dir);
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "current");
+        assert!(dir.join("bentopick.toml").exists(), "nothing is deleted");
+    }
+
+    #[test]
+    fn a_fresh_install_names_the_new_config() {
+        let dir = scratch("fresh");
+        assert_eq!(Config::path_in(&dir), dir.join("bentolaunch.toml"));
     }
 }
