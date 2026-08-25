@@ -12,7 +12,8 @@ use windows::UI::Composition::{CompositionDrawingSurface, CompositionGraphicsDev
 use windows::Win32::Foundation::{HMODULE, POINT, RECT};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_FIGURE_BEGIN_HOLLOW,
-    D2D1_FIGURE_END_CLOSED, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_F, D2D_SIZE_U,
+    D2D1_FIGURE_BEGIN, D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_END_CLOSED, D2D1_PIXEL_FORMAT,
+    D2D_RECT_F, D2D_SIZE_F, D2D_SIZE_U,
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_SMALL, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_PROPERTIES1,
@@ -478,11 +479,14 @@ impl Renderer {
         let result = unsafe {
             context.SetTransform(&Matrix3x2::translation(offset.x as f32, offset.y as f32));
             context.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
-            rounded_path(&context.GetFactory()?, rings, radius).and_then(|path| {
-                let brush = context.CreateSolidColorBrush(&color, None)?;
-                context.FillGeometry(&path, &brush, None);
-                Ok(())
-            })
+            // Filled, not hollow. A hollow figure strokes fine and fills as
+            // nothing at all, which is a face that is simply never there.
+            rounded_path(&context.GetFactory()?, rings, radius, D2D1_FIGURE_BEGIN_FILLED)
+                .and_then(|path| {
+                    let brush = context.CreateSolidColorBrush(&color, None)?;
+                    context.FillGeometry(&path, &brush, None);
+                    Ok(())
+                })
         };
 
         // SAFETY: pairs with the BeginDraw above; must run even on failure or
@@ -528,11 +532,12 @@ impl Renderer {
         let result = unsafe {
             context.SetTransform(&Matrix3x2::translation(offset.x as f32, offset.y as f32));
             context.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
-            rounded_path(&context.GetFactory()?, rings, radius).and_then(|path| {
-                let brush = context.CreateSolidColorBrush(&color, None)?;
-                context.DrawGeometry(&path, &brush, stroke, None);
-                Ok(())
-            })
+            rounded_path(&context.GetFactory()?, rings, radius, D2D1_FIGURE_BEGIN_HOLLOW)
+                .and_then(|path| {
+                    let brush = context.CreateSolidColorBrush(&color, None)?;
+                    context.DrawGeometry(&path, &brush, stroke, None);
+                    Ok(())
+                })
         };
 
         // SAFETY: pairs with BeginDraw; must run even on failure or the surface
@@ -1018,6 +1023,7 @@ unsafe fn rounded_path(
     factory: &ID2D1Factory,
     rings: &[Vec<(f32, f32)>],
     radius: f32,
+    begin: D2D1_FIGURE_BEGIN,
 ) -> Result<ID2D1PathGeometry> {
     // SAFETY: the factory outlives the geometry, and the sink is closed on
     // every path out of this function.
@@ -1055,7 +1061,7 @@ unsafe fn rounded_path(
 
         // SAFETY: the sink is open and is closed once, below.
         unsafe {
-            sink.BeginFigure(cut[0].0, D2D1_FIGURE_BEGIN_HOLLOW);
+            sink.BeginFigure(cut[0].0, begin);
             for i in 0..n {
                 let (_, arc_end, sweep) = cut[i];
                 let r = length(ring[i], (arc_end.X, arc_end.Y));
