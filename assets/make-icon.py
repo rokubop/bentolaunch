@@ -11,11 +11,17 @@ os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 BG      = (0x1A, 0x1A, 0x1E)
 SLATE   = (0x4C, 0x55, 0x68)
-GAP     = (0x2A, 0x2F, 0x3C)
 WARM_A  = (0xFF, 0xC2, 0x4B)
 WARM_B  = (0xFF, 0x5F, 0x6D)
 
 SS = 4  # supersampling factor per axis
+
+# One 2x2 grid. The fourth cell is the lit one - a tile like the other three,
+# sharing their size and rounding, differing only in colour.
+TILES = [(44, 44), (136, 44), (44, 136)]
+LIT = (136, 136)
+TILE = 76
+RADIUS = 18
 
 
 def in_round_rect(px, py, x, y, w, h, r):
@@ -32,25 +38,16 @@ def lerp(a, b, t):
     return tuple(round(a[i] + (b[i] - a[i]) * t) for i in range(3))
 
 
-def render(size, mode):
-    """RGBA bytes, top-down. `mode` is "full", "plain" or "tiny".
+def render(size):
+    """RGBA bytes, top-down.
 
-    The lift that carries the idea at 256px turns to mush at 16, where the
-    picked tile collides with the one below it. Small sizes get a clean 2x2
-    instead: same four tiles, same one in colour, nothing overlapping.
+    One drawing at every size. The three modes this used to take were all for a
+    tile that sat outside the grid: it collided with its neighbour at 16px, so
+    small sizes needed their own geometry, and the cell it had vacated needed an
+    outline to explain itself. On the grid there is no collision and no vacancy.
     """
     s = size / 256.0
     px = bytearray(size * size * 4)
-
-    if mode == "tiny":
-        tiles = [(40, 40), (140, 40), (40, 140)]
-        picked = (140, 140, 76, 76, 20)
-        radius = 20
-    else:
-        tiles = [(44, 44), (136, 44), (44, 136)]
-        picked = (150, 154, 88, 88, 21)
-        radius = 18
-    with_gap = mode == "full"
     step = 1.0 / SS
 
     for row in range(size):
@@ -66,18 +63,14 @@ def render(size, mode):
                     if in_round_rect(ux, uy, 0, 0, 256, 256, 56):
                         colr, a = BG, 1.0
 
-                    if with_gap and in_round_rect(ux, uy, 133, 133, 82, 82, 21) \
-                            and not in_round_rect(ux, uy, 139, 139, 70, 70, 15):
-                        colr, a = GAP, 1.0
-
-                    for tx, ty in tiles:
-                        if in_round_rect(ux, uy, tx, ty, 76, 76, radius):
+                    for tx, ty in TILES:
+                        if in_round_rect(ux, uy, tx, ty, TILE, TILE, RADIUS):
                             colr, a = SLATE, 1.0
                             break
 
-                    pxx, pyy, pw, ph, pr = picked
-                    if in_round_rect(ux, uy, pxx, pyy, pw, ph, pr):
-                        t = ((ux - pxx) / pw + (uy - pyy) / ph) / 2
+                    lx, ly = LIT
+                    if in_round_rect(ux, uy, lx, ly, TILE, TILE, RADIUS):
+                        t = ((ux - lx) / TILE + (uy - ly) / TILE) / 2
                         colr, a = lerp(WARM_A, WARM_B, min(max(t, 0.0), 1.0)), 1.0
 
                     if colr:
@@ -126,8 +119,7 @@ def dib(size, rgba):
 SIZES = [16, 20, 24, 32, 40, 48, 64, 128, 256]
 images = []
 for sz in SIZES:
-    mode = "tiny" if sz <= 20 else ("plain" if sz < 48 else "full")
-    rgba = render(sz, mode)
+    rgba = render(sz)
     payload = png(sz, rgba) if sz == 256 else dib(sz, rgba)
     images.append((sz, payload))
     if sz == 256:
@@ -137,8 +129,7 @@ for sz in SIZES:
 # icon cannot drift from the app's.
 os.makedirs("extension/icons", exist_ok=True)
 for sz in (16, 32, 48, 128):
-    mode = "tiny" if sz <= 20 else ("plain" if sz < 48 else "full")
-    open(f"extension/icons/{sz}.png", "wb").write(png(sz, render(sz, mode)))
+    open(f"extension/icons/{sz}.png", "wb").write(png(sz, render(sz)))
 print("extension icons: 16, 32, 48, 128")
 
 out = bytearray(struct.pack("<HHH", 0, 1, len(images)))
