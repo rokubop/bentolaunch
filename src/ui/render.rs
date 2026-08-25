@@ -451,6 +451,48 @@ impl Renderer {
         measured.unwrap_or_else(|_| text.chars().count() as f32 * limit * 0.02)
     }
 
+    /// The same shape, filled rather than stroked: the face edit mode puts over
+    /// a box.
+    ///
+    /// A box is not a rectangle - it wraps round the centre block - so a
+    /// rectangular face lit up half the panel for a box holding one lane of it.
+    pub fn draw_shape(
+        &self,
+        surface: &CompositionDrawingSurface,
+        rings: &[Vec<(f32, f32)>],
+        radius: f32,
+        color: D2D1_COLOR_F,
+    ) -> Result<()> {
+        let interop: ICompositionDrawingSurfaceInterop = surface.cast()?;
+
+        // SAFETY: BeginDraw hands back a context valid until EndDraw, which the
+        // matching call below always runs.
+        let (context, offset): (ID2D1DeviceContext, POINT) = unsafe {
+            let mut offset = POINT::default();
+            let context = interop.BeginDraw(None, &mut offset)?;
+            (context, offset)
+        };
+
+        // SAFETY: the context is live until EndDraw, and the geometry is built
+        // from the factory that context reports.
+        let result = unsafe {
+            context.SetTransform(&Matrix3x2::translation(offset.x as f32, offset.y as f32));
+            context.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
+            rounded_path(&context.GetFactory()?, rings, radius).and_then(|path| {
+                let brush = context.CreateSolidColorBrush(&color, None)?;
+                context.FillGeometry(&path, &brush, None);
+                Ok(())
+            })
+        };
+
+        // SAFETY: pairs with the BeginDraw above; must run even on failure or
+        // the surface stays locked.
+        unsafe {
+            interop.EndDraw()?;
+        }
+        result
+    }
+
     /// The ring round one box, as closed runs of corners with the turns rounded
     /// off.
     ///

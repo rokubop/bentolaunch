@@ -757,9 +757,13 @@ pub enum Control {
     /// The centre block's own options. It is not in the tree - it claims its
     /// rectangle first and the boxes wrap around it - so no lane means
     /// anything to it. A shape and a pair of lists is all it has.
-    CenterSmaller,
-    CenterBigger,
+    CenterNarrower,
+    CenterWider,
+    CenterShorter,
+    CenterTaller,
     CenterHolds,
+    /// Switch the block off, and back on again.
+    CenterOn,
     Done,
 }
 
@@ -799,8 +803,13 @@ impl Control {
             Control::MoveDown => "\u{2193}",
             Control::Fewer => "\u{2212}",
             Control::More => "+",
-            Control::CenterSmaller => "\u{2192}\u{2190}",
-            Control::CenterBigger => "\u{2194}",
+            Control::CenterNarrower => "\u{2192}\u{2190}",
+            Control::CenterWider => "\u{2194}",
+            Control::CenterShorter => "\u{2193}\u{2191}",
+            Control::CenterTaller => "\u{2195}",
+            // On or off, read the way a radio button is - the same mark the
+            // move bar's own latch wears.
+            Control::CenterOn => "\u{25C9}",
             // The same mark the settings square for this wears.
             Control::CenterHolds => "\u{25EB}",
             Control::Done => "\u{2713}",
@@ -818,8 +827,13 @@ impl Control {
             Control::MoveDown => "Move down",
             Control::Fewer => "Fewer tiles",
             Control::More => "More tiles",
-            Control::CenterSmaller => "Smaller",
-            Control::CenterBigger => "Bigger",
+            Control::CenterNarrower => "Narrower",
+            Control::CenterWider => "Wider",
+            Control::CenterShorter => "Shorter",
+            Control::CenterTaller => "Taller",
+            // Replaced by what it will do: a square that says "off" while the
+            // block is already off is a square nobody can read.
+            Control::CenterOn => "Center off",
             Control::CenterHolds => "What it holds",
             Control::Done => "Done",
         }
@@ -868,10 +882,17 @@ pub struct BoxState {
 /// live with the settings squares, which step the same list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CenterState {
-    /// Where its shape sits in the list of shapes it can take, and how many
-    /// there are. `0` is off.
-    pub size: usize,
-    pub sizes: usize,
+    /// Tiles across and down in one half. Stepped apart, because a block is a
+    /// shape and the two directions are two questions: three columns of
+    /// favorites and one row of them is a real answer.
+    pub columns: usize,
+    pub rows: usize,
+    /// The most it may be either way.
+    pub most: usize,
+    /// Whether it is on at all. Off, it holds no tiles - so edit mode keeps a
+    /// single empty slot on the panel for it, or there would be nothing left
+    /// to click to switch it back on.
+    pub on: bool,
 }
 
 impl Control {
@@ -888,17 +909,24 @@ impl Control {
         // it holds a fixed number of slots rather than a list to show more of.
         if let Some(center) = state.center {
             return match self {
-                Control::Done => true,
-                Control::CenterSmaller => center.size > 1,
-                Control::CenterBigger => center.size + 1 < center.sizes,
-                Control::CenterHolds => center.size > 0,
+                Control::Done | Control::CenterOn => true,
+                Control::CenterNarrower => center.on && center.columns > 1,
+                Control::CenterWider => center.on && center.columns < center.most,
+                Control::CenterShorter => center.on && center.rows > 1,
+                Control::CenterTaller => center.on && center.rows < center.most,
+                Control::CenterHolds => center.on,
                 _ => false,
             };
         }
         match self {
             Control::Done => true,
             // Only the centre is asked these.
-            Control::CenterSmaller | Control::CenterBigger | Control::CenterHolds => false,
+            Control::CenterNarrower
+            | Control::CenterWider
+            | Control::CenterShorter
+            | Control::CenterTaller
+            | Control::CenterHolds
+            | Control::CenterOn => false,
             Control::Fewer => state.shown > 1,
             Control::More => state.shown < state.total,
             // Nothing to divide the panel with.
@@ -919,20 +947,22 @@ impl Control {
 /// Reading order, four to a row.
 /// Reading order, five to a row.
 /// Reading order, four to a row.
-/// The centre block's own row.
+/// The centre block's own squares.
 ///
-/// Four, because four is all there is to say to it. It is not in the tree, so
-/// there is no lane to pick and nowhere to move it to - it claims the middle of
-/// the screen and the boxes wrap around it. What is left is how big and what it
-/// holds.
+/// It is not in the tree - it claims the middle of the screen and the boxes
+/// wrap around it - so there is no lane to pick and nowhere to move it to.
+/// What is left is a shape, what it holds, and whether it is there at all.
 ///
-/// Switching it off is not here. Off, it has no tiles, so it is not a box on
-/// the panel any more - and a square that made the thing you are editing
-/// unreachable is a one-way door. The settings square owns that.
-pub const CENTER_CONTROLS: [Control; 4] = [
-    Control::CenterSmaller,
-    Control::CenterBigger,
+/// The two directions are stepped apart. A block is a shape, and three columns
+/// of favorites with one row of them is a real answer that one Bigger/Smaller
+/// pair walking a list of presets could not give.
+pub const CENTER_CONTROLS: [Control; 7] = [
+    Control::CenterNarrower,
+    Control::CenterWider,
+    Control::CenterShorter,
+    Control::CenterTaller,
     Control::CenterHolds,
+    Control::CenterOn,
     Control::Done,
 ];
 
@@ -2153,46 +2183,73 @@ mod tests {
         assert!(Control::Fewer.allowed(&state));
     }
 
+    /// The block at a middling shape, with room to grow either way.
+    fn block_state() -> BoxState {
+        BoxState {
+            center: Some(CenterState { columns: 3, rows: 2, most: 4, on: true }),
+            ..placed()
+        }
+    }
+
     #[test]
     fn the_centre_is_asked_a_different_set_of_questions() {
         // It is not in the tree, so no lane means anything to it and there is
-        // nowhere to move it to. A shape and a pair of lists is all it has.
-        let block = BoxState {
-            center: Some(CenterState { size: 3, sizes: 6 }),
-            ..placed()
-        };
+        // nowhere to move it to. A shape, a pair of lists, and whether it is
+        // there at all.
         let on_the_block: Vec<Control> = CENTER_CONTROLS
             .iter()
             .copied()
-            .filter(|c| c.allowed(&block))
+            .filter(|c| c.allowed(&block_state()))
             .collect();
         assert_eq!(on_the_block, CENTER_CONTROLS, "every square on its row applies");
+
         for control in CONTROLS.iter().filter(|c| **c != Control::Done) {
-            assert!(!control.allowed(&block), "{control:?} applies to the centre");
+            assert!(!control.allowed(&block_state()), "{control:?} applies to the centre");
         }
-        // And nothing on the block's own row applies to an ordinary box.
         for control in CENTER_CONTROLS.iter().filter(|c| **c != Control::Done) {
             assert!(!control.allowed(&placed()), "{control:?} applies to a box in the tree");
         }
     }
 
     #[test]
-    fn the_block_cannot_be_stepped_off_either_end_of_its_shapes() {
-        // Nor onto `off`, which is step zero: the settings square owns that,
-        // because a block that is off has no tiles to click to bring it back.
-        let smallest = BoxState {
-            center: Some(CenterState { size: 1, sizes: 6 }),
+    fn the_block_grows_in_both_directions_apart() {
+        // A block is a shape. Three columns of favorites with one row of them
+        // is a real answer, and one Bigger/Smaller pair walking a list of
+        // presets could not give it.
+        let thin = BoxState {
+            center: Some(CenterState { columns: 1, rows: 4, most: 4, on: true }),
             ..placed()
         };
-        assert!(!Control::CenterSmaller.allowed(&smallest));
-        assert!(Control::CenterBigger.allowed(&smallest));
+        assert!(!Control::CenterNarrower.allowed(&thin), "one column is as narrow as it goes");
+        assert!(Control::CenterWider.allowed(&thin));
+        assert!(Control::CenterShorter.allowed(&thin));
+        assert!(!Control::CenterTaller.allowed(&thin), "four rows is as tall as it goes");
 
-        let biggest = BoxState {
-            center: Some(CenterState { size: 5, sizes: 6 }),
+        let squat = BoxState {
+            center: Some(CenterState { columns: 4, rows: 1, most: 4, on: true }),
             ..placed()
         };
-        assert!(Control::CenterSmaller.allowed(&biggest));
-        assert!(!Control::CenterBigger.allowed(&biggest));
+        assert!(Control::CenterNarrower.allowed(&squat));
+        assert!(!Control::CenterWider.allowed(&squat));
+        assert!(!Control::CenterShorter.allowed(&squat));
+        assert!(Control::CenterTaller.allowed(&squat));
+    }
+
+    #[test]
+    fn a_block_that_is_off_can_still_be_switched_back_on() {
+        // Off it holds no tiles, so edit mode keeps one empty slot in the
+        // middle for it. Everything about its shape is dead while it is off -
+        // there is no shape - but the square that brings it back is not.
+        let off = BoxState {
+            center: Some(CenterState { columns: 3, rows: 0, most: 4, on: false }),
+            ..placed()
+        };
+        let offered: Vec<Control> = CENTER_CONTROLS
+            .iter()
+            .copied()
+            .filter(|c| c.allowed(&off))
+            .collect();
+        assert_eq!(offered, [Control::CenterOn, Control::Done]);
     }
 
     #[test]

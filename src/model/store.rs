@@ -621,9 +621,25 @@ fn wearing_favicon(item: &Item) -> Item {
     }
 }
 
-fn center_sections(center: &Center) -> Vec<Section> {
+fn center_sections(center: &Center, mode: Mode) -> Vec<Section> {
+    // Off, the block holds nothing and so is not a box on the panel at all -
+    // and a square that switched it off would then have nowhere to be clicked
+    // to switch it back on. Edit mode keeps one empty slot in the middle for
+    // it, which is a box, which is somewhere to click.
     if !center.shape.on() {
-        return Vec::new();
+        return match mode {
+            Mode::Layout => vec![Section {
+                title: String::new(),
+                items: vec![empty_slot(0)],
+                color: center.shape.color.clone(),
+                edge: None,
+                slot: usize::MAX,
+                total: 0,
+                center: Some(0),
+                columns: 1,
+            }],
+            _ => Vec::new(),
+        };
     }
     let slots = center.shape.slots();
     let halves: Vec<Vec<Item>> = match center.shape.contents {
@@ -821,7 +837,7 @@ pub fn sections(mode: Mode) -> Vec<Section> {
     }
 
     // The centre last, so the flat run of every other box is where it was.
-    for mut section in center_sections(&s.center) {
+    for mut section in center_sections(&s.center, mode) {
         mark_running(&mut section.items, &s.windows);
         out.push(section);
     }
@@ -1124,7 +1140,7 @@ mod tests {
     #[test]
     fn a_half_is_padded_out_to_its_slots_so_the_block_keeps_its_shape() {
         let center = build_center(&favorites(&["ms-settings:display"], &[]));
-        let out = center_sections(&center);
+        let out = center_sections(&center, Mode::Grid);
         assert_eq!(out.len(), 2, "split means two halves");
         // Two rows of two: four slots, one filled and three waiting.
         assert_eq!(out[0].items.len(), 4);
@@ -1138,7 +1154,7 @@ mod tests {
 
     #[test]
     fn the_halves_are_numbered_left_to_right() {
-        let out = center_sections(&build_center(&favorites(&[], &[])));
+        let out = center_sections(&build_center(&favorites(&[], &[])), Mode::Grid);
         assert_eq!(out[0].center, Some(0));
         assert_eq!(out[1].center, Some(1));
     }
@@ -1149,7 +1165,7 @@ mod tests {
             contents: Contents::One,
             ..favorites(&["ms-settings:display"], &["https://example.com"])
         });
-        let out = center_sections(&center);
+        let out = center_sections(&center, Mode::Grid);
         assert_eq!(out.len(), 1);
         let filled: Vec<&str> = out[0]
             .items
@@ -1168,7 +1184,7 @@ mod tests {
                 contents,
                 ..favorites(&["ms-settings:display"], &["https://example.com"])
             });
-            let out = center_sections(&center);
+            let out = center_sections(&center, Mode::Grid);
             assert_eq!(out.len(), 1, "{contents:?} drew more than one box");
             let filled: Vec<&str> =
                 out[0].items.iter().filter_map(|item| item.shell_target()).collect();
@@ -1193,14 +1209,14 @@ mod tests {
     #[test]
     fn a_block_turned_off_is_no_sections_at_all() {
         let center = build_center(&Favorites { rows: 0, ..favorites(&["x"], &["y"]) });
-        assert!(center_sections(&center).is_empty());
+        assert!(center_sections(&center, Mode::Grid).is_empty());
     }
 
     #[test]
     fn more_favorites_than_slots_are_cut_rather_than_growing_the_block() {
         let many: Vec<&str> = vec!["a:1", "b:2", "c:3", "d:4", "e:5", "f:6"];
         let center = build_center(&favorites(&many, &[]));
-        let out = center_sections(&center);
+        let out = center_sections(&center, Mode::Grid);
         assert_eq!(out[0].items.len(), 4);
         // And the section still says how many there really were, which is what
         // "more tiles" in edit mode has to stop at.
@@ -1217,7 +1233,7 @@ mod tests {
 
     #[test]
     fn an_empty_slot_is_its_own_group_so_a_drag_cannot_run_into_one() {
-        let out = center_sections(&build_center(&favorites(&["ms-settings:display"], &[])));
+        let out = center_sections(&build_center(&favorites(&["ms-settings:display"], &[])), Mode::Grid);
         let filled = &out[0].items[0];
         let empty = &out[0].items[1];
         assert_ne!(filled.group, empty.group);
@@ -1247,7 +1263,7 @@ mod tests {
         // Nothing paired in a test, so this is the no-browser case: the URL
         // itself, which the shell answers with the default browser's logo.
         let center = build_center(&favorites(&[], &["https://example.com"]));
-        let out = center_sections(&center);
+        let out = center_sections(&center, Mode::Grid);
         assert_eq!(out[1].items[0].icon_source.as_deref(), Some("https://example.com"));
     }
 

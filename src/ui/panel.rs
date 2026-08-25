@@ -192,7 +192,10 @@ pub struct Panel {
     hover_box: Option<usize>,
     /// One fill per band, in band order, so hovering repaints a box without
     /// rebuilding the grid under the pointer.
-    box_faces: Vec<CompositionColorBrush>,
+    /// One per band while editing. Not a colour brush - the face follows the
+    /// box's cells, which can be an L or a C, and composition has rectangle
+    /// geometry and nothing else.
+    box_faces: Vec<BoxFace>,
     /// The option tiles, their hit rects and their fills. Rebuilt whenever the
     /// selected box changes, repainted in place on hover.
     options: Vec<(Control, GridRect, CompositionColorBrush)>,
@@ -1011,32 +1014,42 @@ impl Panel {
             return Ok(());
         }
 
-        let sheets: Vec<(GridRect, Color)> = self
-            .layout
-            .bands()
-            .iter()
-            .enumerate()
-            .map(|(index, band)| (self.tiles_of(band), self.box_color(index)))
-            .collect();
-
+        let Some(renderer) = &self.renderer else { return Ok(()) };
         let children = self.content.Children()?;
-        for (rect, color) in sheets {
-            let (face, brush) =
-                self.rounded_rect(Vector2 { X: rect.w, Y: rect.h }, radius * 1.5, color)?;
-            face.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 })?;
-            children.InsertAtTop(&face)?;
-            self.box_faces.push(brush);
+        // The box's own cells, not `band.rect`. That rectangle is stretched to
+        // tile the panel - a lane with nothing opposite it takes the whole
+        // width - so a face drawn on it lit up half the panel for a box holding
+        // one side of it.
+        for index in 0..self.layout.bands().len() {
+            let rings = self.layout.band_ring(index, self.scroll);
+            let Some(bounds) = covering(&rings, 0.0) else { continue };
+            let surface = match renderer.create_surface(bounds.w, bounds.h) {
+                Ok(surface) => surface,
+                Err(e) => {
+                    log_warn!("could not create a box face: {e}");
+                    continue;
+                }
+            };
+            let local: Vec<Vec<(f32, f32)>> = rings
+                .into_iter()
+                .map(|ring| {
+                    ring.into_iter().map(|(x, y)| (x - bounds.x, y - bounds.y)).collect()
+                })
+                .collect();
+            if let Err(e) =
+                renderer.draw_shape(&surface, &local, radius * 1.5, d2d_color_of(self.box_color(index)))
+            {
+                log_warn!("could not draw a box face: {e}");
+                continue;
+            }
+            let sprite = self.compositor.CreateSpriteVisual()?;
+            sprite.SetSize(Vector2 { X: bounds.w, Y: bounds.h })?;
+            sprite.SetOffset(Vector3 { X: bounds.x, Y: bounds.y, Z: 0.0 })?;
+            sprite.SetBrush(&self.compositor.CreateSurfaceBrushWithSurface(&surface)?)?;
+            children.InsertAtTop(&sprite)?;
+            self.box_faces.push((surface, local));
         }
         Ok(())
-    }
-
-    /// A band's tile area, panel-local: the whole box minus the header above it.
-    fn tiles_of(&self, band: &Band) -> GridRect {
-        let rect = band.rect.shifted_by(self.scroll);
-        let first = self.layout.tile_rect(band.first, self.scroll);
-        let pad = self.config.grid.gap * self.scale() * 0.5;
-        let top = (first.y - pad).max(rect.y);
-        GridRect { x: rect.x, y: top, w: rect.w, h: (rect.y + rect.h - top).max(0.0) }
     }
 
     /// The option tiles for the box being edited, over the middle of the panel.
@@ -1117,6 +1130,13 @@ impl Panel {
                     Some(_) if control == Control::CenterHolds => {
                         (control.glyph(), settings::center_holds_said(&self.config))
                     }
+                    // Says what the click does, not what the block is. A square
+                    // reading "off" while the block is already off is a square
+                    // nobody can read.
+                    Some(_) if control == Control::CenterOn => match self.config.favorites.on() {
+                        true => (control.glyph(), "Center off"),
+                        false => (control.glyph(), "Center on"),
+                    },
                     Some(state) => control.wording(state),
                     None => (control.glyph(), control.label()),
                 };
@@ -2532,18 +2552,25 @@ impl Panel {
             // The block's shape and its lists, off the same tables the
             // settings squares step. One list of shapes, whichever surface is
             // asking, so the two cannot drift apart.
-            Control::CenterSmaller | Control::CenterBigger => {
-                let delta = if control == Control::CenterBigger { 1 } else { -1 };
-                if let Some(change) = settings::center_resize(&self.config, delta)
-                    && pins::set(change)
-                {
-                    self.reload_config();
+            Control::CenterNarrower
+            | Control::CenterWider
+            | Control::CenterShorter
+            | Control::CenterTaller => {
+                let (across, down) = match control {
+                    Control::CenterNarrower => (-1, 0),
+                    Control::CenterWider => (1, 0),
+                    Control::CenterShorter => (0, -1),
+                    _ => (0, 1),
+                };
+                if let Some(change) = settings::center_resize(&self.config, across, down) {
+                    self.apply_to_center(change);
                 }
             }
             Control::CenterHolds => {
-                if pins::set(settings::center_holds_next(&self.config)) {
-                    self.reload_config();
-                }
+                self.apply_to_center(settings::center_holds_next(&self.config));
+            }
+            Control::CenterOn => {
+                self.apply_to_center(settings::center_toggle(&self.config));
             }
             Control::MoveUp | Control::MoveDown => {
                 let Some(title) = self.edit_title() else { return };
@@ -2559,6 +2586,19 @@ impl Panel {
                         .or(self.edit);
                 }
             }
+        }
+    }
+
+    /// Write one of the block's own settings and stay pointed at the block.
+    ///
+    /// Its sections are rebuilt by the reload, and switching it off replaces
+    /// its two halves with one placeholder - so the index edit mode was holding
+    /// is not the block any more. Every other box is followed by its title; the
+    /// block has none.
+    fn apply_to_center(&mut self, change: pins::Change) {
+        if pins::set(change) {
+            self.reload_config();
+            self.edit = self.center_section();
         }
     }
 
@@ -2592,8 +2632,13 @@ impl Panel {
             .collect();
         let at_lane = siblings.iter().position(|name| *name == title).unwrap_or(0);
         let center = self.editing_center().then(|| {
-            let (size, sizes) = settings::center_steps(&self.config);
-            CenterState { size, sizes }
+            let f = &self.config.favorites;
+            CenterState {
+                columns: f.columns,
+                rows: f.rows,
+                most: settings::CENTER_MOST,
+                on: f.on(),
+            }
         });
 
         Some(BoxState {
@@ -2806,8 +2851,11 @@ impl Panel {
     /// Repaint the box faces in place. Rebuilding the grid on every mouse move
     /// would tear the thing being pointed at out from under the pointer.
     fn refresh_boxes(&self) {
-        for (band, brush) in self.box_faces.iter().enumerate() {
-            let _ = brush.SetColor(self.box_color(band));
+        let Some(renderer) = &self.renderer else { return };
+        let radius = self.config.grid.corner_radius * self.scale() * 1.5;
+        for (band, (surface, rings)) in self.box_faces.iter().enumerate() {
+            let color = d2d_color_of(self.box_color(band));
+            let _ = renderer.draw_shape(surface, rings, radius, color);
         }
     }
 
@@ -4075,6 +4123,21 @@ fn covering(rings: &[Vec<(f32, f32)>], margin: f32) -> Option<GridRect> {
         w: right - left + 2.0 * margin,
         h: bottom - top + 2.0 * margin,
     })
+}
+
+/// A box's face while editing: the surface it is drawn on, and the shape to
+/// redraw on it when the colour changes.
+type BoxFace = (CompositionDrawingSurface, Vec<Vec<(f32, f32)>>);
+
+/// A composition colour as Direct2D wants it. The theme is parsed once into
+/// the composition form; this is the one place the other form is needed.
+fn d2d_color_of(color: Color) -> D2D1_COLOR_F {
+    D2D1_COLOR_F {
+        r: color.R as f32 / 255.0,
+        g: color.G as f32 / 255.0,
+        b: color.B as f32 / 255.0,
+        a: color.A as f32 / 255.0,
+    }
 }
 
 /// The same colour at full strength. A ring is drawn faint enough to sit behind

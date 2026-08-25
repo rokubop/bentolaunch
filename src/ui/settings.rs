@@ -12,7 +12,7 @@
 //! already has. `Open the file` is one of the squares for exactly that reason -
 //! this surface is the common half, not a replacement.
 
-use crate::config::{Config, Contents};
+use crate::config::{Config, Contents, Favorites};
 use crate::pins::Change;
 
 /// Tile sizes, smallest first: width, height, the strip the label gets, and
@@ -232,27 +232,39 @@ fn columns_now(config: &Config) -> Option<usize> {
 /// Off is off however it was written: `rows = 0` with a width still set is the
 /// same block as no block, and a square that called that "as set" would take
 /// two clicks to turn anything on.
-/// The centre block's shape as a step in the list of shapes it can take, and
-/// how many steps there are. `0` is off.
+/// The most tiles the block may take either way. `Config::validated` stops
+/// here: wider than this and the grid around it has nowhere to wrap to.
+pub const CENTER_MOST: usize = 4;
+
+/// Step the block's shape one tile in one direction.
 ///
-/// Public because edit layout drives the same list from its own squares: the
-/// block is a box on the panel, and the shapes it can take are the same shapes
-/// whichever surface is asking.
-pub fn center_steps(config: &Config) -> (usize, usize) {
-    (center_now(config).unwrap_or(0), CENTER_SIZES.len())
+/// The two directions apart, because a block is a shape: three columns of
+/// favorites with one row of them is a real answer, and a single list of
+/// presets cannot give it. Clamped rather than wrapped - a Wider that came
+/// back round to one column is a button that undoes itself.
+pub fn center_resize(config: &Config, across: isize, down: isize) -> Option<Change> {
+    let f = &config.favorites;
+    let step = |now: usize, by: isize| {
+        now.checked_add_signed(by).filter(|n| (1..=CENTER_MOST).contains(n))
+    };
+    let columns = step(f.columns, across)?;
+    let rows = step(f.rows, down)?;
+    (columns != f.columns || rows != f.rows).then_some(Change::CenterSize { columns, rows })
 }
 
-/// Step the block's shape by one, never onto `off` - that is the settings
-/// square's job, and a button here that could switch the block off would leave
-/// nothing to click to switch it back on.
-pub fn center_resize(config: &Config, delta: isize) -> Option<Change> {
-    let (now, count) = center_steps(config);
-    let next = now.checked_add_signed(delta)?;
-    if next == 0 || next >= count {
-        return None;
+/// Switch the block off, or back on at the shape it last had.
+///
+/// Off is `rows = 0`, and the columns are left alone so turning it back on
+/// gives back the block that was there rather than a default one.
+pub fn center_toggle(config: &Config) -> Change {
+    let f = &config.favorites;
+    match f.on() {
+        true => Change::CenterSize { columns: f.columns, rows: 0 },
+        false => Change::CenterSize {
+            columns: f.columns.clamp(1, CENTER_MOST),
+            rows: Favorites::default().rows,
+        },
     }
-    let (columns, rows, _) = CENTER_SIZES[next];
-    Some(Change::CenterSize { columns, rows })
 }
 
 /// Step what the block holds, wrapping. Four answers to one question.
