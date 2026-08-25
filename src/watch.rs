@@ -14,7 +14,7 @@ use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 use crate::config::Config;
 use crate::log_info;
 
-/// Posted to the panel when `bentopick.toml` changed on disk.
+/// Posted to the panel when `bentolaunch.toml` changed on disk.
 pub const WM_CONFIG_RELOAD: u32 = WM_APP + 4;
 
 static NOTIFY: AtomicIsize = AtomicIsize::new(0);
@@ -27,7 +27,7 @@ pub fn start(notify: HWND) {
 
     let watched = path.clone();
     let spawned = std::thread::Builder::new()
-        .name("bentopick-config-watch".into())
+        .name("bentolaunch-config-watch".into())
         .spawn(move || {
             let path = watched;
             let mut seen = modified(&path);

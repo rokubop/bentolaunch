@@ -96,7 +96,7 @@ pub fn start(notify: HWND) {
     for n in 0..WORKERS {
         let rx: Arc<Mutex<Receiver<Key>>> = Arc::clone(&rx);
         let spawned = std::thread::Builder::new()
-            .name(format!("bentopick-icons-{n}"))
+            .name(format!("bentolaunch-icons-{n}"))
             .spawn(move || worker(rx));
         if let Err(e) = spawned {
             log_warn!("could not start icon worker {n}: {e}");

@@ -1,4 +1,4 @@
-//! Who is allowed on bentopick's socket, and how each side proves it.
+//! Who is allowed on bentolaunch's socket, and how each side proves it.
 //!
 //! Web page: can script a WebSocket to localhost, so without a check any site
 //! could enumerate your tabs. The browser stamps `Origin` on the handshake and
@@ -9,8 +9,8 @@
 //! know it against fresh nonces.
 //!
 //! That proof runs in both directions, which is the part that is not about
-//! bentopick's safety at all. Whoever holds the port is what the extension
-//! believes bentopick to be; a server that cannot prove itself gets no tabs.
+//! bentolaunch's safety at all. Whoever holds the port is what the extension
+//! believes bentolaunch to be; a server that cannot prove itself gets no tabs.
 //!
 //! Neither gate stops code already running as you. That code has better targets.
 
@@ -41,7 +41,7 @@ impl Refusal {
 /// What a handshake earned. Neither one is trusted yet - both still have to
 /// prove themselves over the socket before anything is registered.
 pub enum Admission {
-    /// A browser bentopick has paired with before.
+    /// A browser bentolaunch has paired with before.
     Known(Box<Peer>),
     /// Unknown, but a pairing window is open, so it gets to try the code.
     Pairing,
@@ -71,15 +71,15 @@ pub fn admit(loopback: bool, origin: Option<&str>) -> Result<Admission, Refusal>
 //
 // Resuming, the secret is a 192-bit token, so the server proves first: the
 // extension can then hang up before sending a single tab title to something
-// that turned out not to be bentopick. Proving first costs nothing when the
+// that turned out not to be bentolaunch. Proving first costs nothing when the
 // secret is too large to guess from the proof.
 //
 // Pairing, the secret is six digits a human retyped, which *is* guessable from
 // a proof. So the client proves first and one wrong answer closes the window -
 // a guess is worth one in a million, and there is no oracle to grind against.
 //
-// The reason that ordering is safe: pairing is only offered while bentopick
-// itself holds the port. Something squatting the port means bentopick never
+// The reason that ordering is safe: pairing is only offered while bentolaunch
+// itself holds the port. Something squatting the port means bentolaunch never
 // bound, which means the tray refuses to open a pairing window at all, so
 // there is no window in which a fake server can be handed a code proof.
 

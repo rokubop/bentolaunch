@@ -1,9 +1,9 @@
-// Dials bentopick, streams the tab list, switches tabs on request.
+// Dials bentolaunch, streams the tab list, switches tabs on request.
 //
 // Connects out rather than being connected to: an MV3 worker is killed when
-// idle, and socket traffic keeps it alive. bentopick's 20s ping is what holds it.
+// idle, and socket traffic keeps it alive. bentolaunch's 20s ping is what holds it.
 //
-// Whatever answers 127.0.0.1 is not automatically bentopick. So nothing is sent
+// Whatever answers 127.0.0.1 is not automatically bentolaunch. So nothing is sent
 // until the far end has proved it holds this browser's token: the tab list goes
 // out after the handshake in `proveTheServer`, never before.
 
@@ -52,7 +52,7 @@ async function connect() {
     // for a bad token or a stale protocol arrives after it, and resetting on
     // open turns that into a reconnect once a second forever.
     //
-    // A new bentopick process knows none of them.
+    // A new bentolaunch process knows none of them.
     iconsSent = new Set();
     // Opens the exchange and says nothing else. The token stays here.
     raw({ type: "hello", v: BRIDGE_PROTOCOL, mode: "resume", nonce: nonceClient });
@@ -105,8 +105,8 @@ function originOf(url) {
   }
 }
 
-// Decoded here rather than in bentopick: a service worker already has an image
-// decoder, and shipping raw pixels keeps bentopick free of one.
+// Decoded here rather than in bentolaunch: a service worker already has an image
+// decoder, and shipping raw pixels keeps bentolaunch free of one.
 async function decodeIcon(pageUrl) {
   const url = new URL(chrome.runtime.getURL("/_favicon/"));
   url.searchParams.set("pageUrl", pageUrl);
@@ -146,7 +146,7 @@ async function sendTabs() {
   const tabs = await chrome.tabs.query({});
   const keys = await Promise.all(tabs.map((tab) => iconFor(tab.url || "")));
 
-  // Only what bentopick has not been sent on this connection. It keeps them.
+  // Only what bentolaunch has not been sent on this connection. It keeps them.
   const icons = {};
   keys.forEach((key) => {
     if (key && !iconsSent.has(key)) {
@@ -181,7 +181,7 @@ async function barFolder() {
   return children.find((node) => node.id === "1") || children.find((node) => node.children);
 }
 
-// One level deep. A folder on the bar stays a folder: bentopick has no way to
+// One level deep. A folder on the bar stays a folder: bentolaunch has no way to
 // open one, and flattening it would spill a nested archive onto the panel.
 async function sendBookmarks() {
   if (!proven || !live()) return;
@@ -226,7 +226,7 @@ function scheduleTabs() {
   }, TAB_DEBOUNCE_MS);
 }
 
-// bentopick proves itself first, so a wrong answer here costs nothing: the
+// bentolaunch proves itself first, so a wrong answer here costs nothing: the
 // socket closes with not one tab title having crossed it.
 //
 // The token is not cleared on a failure. Something else holding the port would
@@ -235,7 +235,7 @@ async function proveTheServer(message) {
   const { token } = await settings();
   const expected = await bridgeProof("resume-server", token, nonceClient, message.nonce);
   if (message.proof !== expected) {
-    console.warn("bentopick: whatever answered the port could not prove itself; not sending tabs");
+    console.warn("bentolaunch: whatever answered the port could not prove itself; not sending tabs");
     if (socket) socket.close();
     return;
   }
@@ -263,7 +263,7 @@ function receive(data) {
     // backoff still applies, so this settles into one line every 30 seconds
     // rather than a stream.
     console.warn(
-      `bentopick: BentoPick speaks bridge protocol ${message.protocol}, this extension speaks ` +
+      `bentolaunch: BentoLaunch speaks bridge protocol ${message.protocol}, this extension speaks ` +
         `${BRIDGE_PROTOCOL}. Update ${outdatedSide(message.protocol)}.`,
     );
     return;
@@ -285,7 +285,7 @@ function receive(data) {
 
   if (message.type === "focus") {
     // The switch needs no foreground rights. Raising the window does, and
-    // bentopick grants them with AllowSetForegroundWindow before asking.
+    // bentolaunch grants them with AllowSetForegroundWindow before asking.
     chrome.tabs.update(message.tabId, { active: true });
     chrome.windows.update(message.windowId, { focused: true });
     return;
@@ -322,7 +322,7 @@ for (const event of [
 }
 
 // The worker still gets killed eventually. The alarm wakes it back up.
-chrome.alarms.create("bentopick-reconnect", { periodInMinutes: 1 });
+chrome.alarms.create("bentolaunch-reconnect", { periodInMinutes: 1 });
 chrome.alarms.onAlarm.addListener(connect);
 chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);

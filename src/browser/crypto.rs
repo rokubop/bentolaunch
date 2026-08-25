@@ -41,7 +41,7 @@ pub fn sha256_hex(input: &str) -> Option<String> {
 /// `label` is what stops a proof being replayed in the other direction: the
 /// client and the server hash the same secret and nonces under different names.
 pub fn proof(label: &str, secret: &str, nonce_c: &str, nonce_s: &str) -> Option<String> {
-    sha256_hex(&format!("bentopick\0{label}\0{secret}\0{nonce_c}\0{nonce_s}"))
+    sha256_hex(&format!("bentolaunch\0{label}\0{secret}\0{nonce_c}\0{nonce_s}"))
 }
 
 /// No early return. A secret comparison that leaks its progress stops being

@@ -1,6 +1,6 @@
 //! Moving a window around the screens.
 //!
-//! `SetWindowPos`, not a synthesized Win+arrow. bentopick already holds the
+//! `SetWindowPos`, not a synthesized Win+arrow. bentolaunch already holds the
 //! HWND, so none of this needs the target foregrounded, needs `super` held down
 //! across a run, or raises snap assist to escape from afterwards.
 
@@ -196,7 +196,7 @@ pub fn movable(handle: Handle) -> bool {
     still_switchable(handle.hwnd())
 }
 
-/// Where a window sat before bentopick first moved it.
+/// Where a window sat before bentolaunch first moved it.
 ///
 /// Windows keeps this itself, as `rcNormalPosition`, and that is what "restore"
 /// means to it. `SetWindowPos` overwrites it, so the first move takes a copy:
@@ -302,7 +302,7 @@ fn step(handle: Handle, hwnd: HWND, mv: Move) -> Option<bool> {
 }
 
 /// One rung down: maximized or snapped goes back to where the window was before
-/// bentopick touched it, and a window already there minimizes.
+/// bentolaunch touched it, and a window already there minimizes.
 ///
 /// The middle rung is the one Windows loses once something calls
 /// `SetWindowPos`. Restoring through the placement rather than by rect keeps it

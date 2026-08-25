@@ -70,7 +70,7 @@ const DEACTIVATED_MS: u32 = 120;
 const TARGET_STROKE: f32 = 3.0;
 /// A press that never travels this far is a click, not a drag.
 ///
-/// Taken from the shell rather than picked, so bentopick's idea of "that was a
+/// Taken from the shell rather than picked, so bentolaunch's idea of "that was a
 /// drag" is the same as every other window's on this machine. This is what
 /// makes an explicit edit mode unnecessary: a 3px wobble activates, a real drag
 /// rearranges, and the two are never confused.
@@ -106,7 +106,7 @@ pub struct Panel {
     /// dispatcher queue the compositor depends on.
     _dispatcher: windows::System::DispatcherQueueController,
 
-    /// `None` if D3D/D2D could not start. bentopick still runs; tiles just lose
+    /// `None` if D3D/D2D could not start. bentolaunch still runs; tiles just lose
     /// their icons and labels, which beats refusing to launch.
     renderer: Option<Renderer>,
 
@@ -230,7 +230,7 @@ pub struct Panel {
 struct Press {
     /// Flat index of the tile under the press.
     tile: usize,
-    /// Its section, if this tile's order is bentopick's to rearrange.
+    /// Its section, if this tile's order is bentolaunch's to rearrange.
     band: Option<usize>,
     /// The tiles this drag may reorder: flat index of the first, and how many.
     /// One source's run inside the band. See `Panel::origin_run`.
@@ -375,7 +375,7 @@ impl Panel {
     fn bind_hotkey(&mut self) {
         let Some(hk) = config::parse_hotkey(&self.config.hotkey) else {
             log_error!(
-                "hotkey '{}' could not be parsed; bentopick has no way to be summoned",
+                "hotkey '{}' could not be parsed; bentolaunch has no way to be summoned",
                 self.config.hotkey
             );
             return;
@@ -658,7 +658,7 @@ impl Panel {
             let _ = ShowWindow(self.hwnd, SW_HIDE);
         }
 
-        // Restoring the caller is bentopick undoing its own activation, not acting
+        // Restoring the caller is bentolaunch undoing its own activation, not acting
         // on a target. Skipped when we are about to activate something else.
         if restore_caller && !self.caller.is_invalid() && self.caller != self.hwnd {
             // SAFETY: a stale hwnd makes this fail harmlessly.
@@ -1188,7 +1188,7 @@ impl Panel {
 
         let (label, glyph) = match self.mode.done() {
             Some(done) => (done, "\u{2713}"),
-            None => ("BentoPick", "\u{25A6}"),
+            None => ("BentoLaunch", "\u{25A6}"),
         };
 
         // Our own logo on our own button, off the same cache the tiles use.
@@ -1914,7 +1914,7 @@ impl Panel {
             }
             log_info!("waiting for \"{}\" to open", item.title);
         } else {
-            // A tab or a link is not a window. bentopick cannot map a tab onto
+            // A tab or a link is not a window. bentolaunch cannot map a tab onto
             // an HWND, which is why the browser raises its own.
             log_info!("nothing to move for \"{}\"", item.title);
         }
@@ -2167,7 +2167,7 @@ impl Panel {
                     height: rect.h,
                     glyph: "",
                     mark: None,
-                    label: "BentoPick",
+                    label: "BentoLaunch",
                     colors,
                     icon: Some(&icon),
                 },
@@ -2780,7 +2780,7 @@ impl Panel {
             return;
         };
         if handle.hwnd() == self.hwnd {
-            log_warn!("close: refusing to close bentopick's own window");
+            log_warn!("close: refusing to close bentolaunch's own window");
             return;
         }
         if self.config.dry_run {
@@ -3087,8 +3087,8 @@ impl Panel {
         self.sections.get(band.section)
     }
 
-    /// Only pins bentopick owns can be removed. A taskbar entry belongs to the
-    /// taskbar, and unpinning it there is Windows' business, not bentopick's
+    /// Only pins bentolaunch owns can be removed. A taskbar entry belongs to the
+    /// taskbar, and unpinning it there is Windows' business, not bentolaunch's
     /// (safety rule 3).
     fn removable(&self, tile: usize) -> bool {
         self.items.get(tile).is_some_and(|i| i.origin == Source::Manual)
@@ -3096,7 +3096,7 @@ impl Panel {
 
     /// Window tiles are MRU ordered by the foreground hook, so a saved order
     /// would fight the hook on every focus change. Pinned sections have an order
-    /// that is bentopick's to keep.
+    /// that is bentolaunch's to keep.
     ///
     /// Never while filtering: writing back a subset's order would drop every
     /// pin the query hid.
@@ -3151,7 +3151,7 @@ impl Panel {
                 return;
             }
             press.dragging = true;
-            // Past the threshold on a tile bentopick cannot rearrange: nothing to
+            // Past the threshold on a tile bentolaunch cannot rearrange: nothing to
             // drag, and no activation either — this was not a click.
             if press.band.is_none() {
                 self.press = Some(press);
@@ -3278,7 +3278,7 @@ impl Panel {
                 Some(1) => pins::order_favorites(pins::Half::Sites, &keys),
                 _ => pins::order_favorites(pins::Half::Apps, &keys),
             },
-            // Ordered by the foreground hook and the browser, not by bentopick.
+            // Ordered by the foreground hook and the browser, not by bentolaunch.
             Source::Windows | Source::Extra | Source::Running | Source::Tabs
             | Source::Bookmarks => false,
             // A fixed set in a fixed order. Nowhere to write one down.
@@ -3297,7 +3297,7 @@ impl Panel {
     ///
     /// Managing a pin lives here rather than in a mode, and the most useful
     /// entry is on the tiles that are not pins at all: something already running
-    /// is the thing a user most often wants to pin, and bentopick is already showing
+    /// is the thing a user most often wants to pin, and bentolaunch is already showing
     /// it.
     fn show_menu(&mut self, lparam: LPARAM) {
         let (x, y) = point_of(lparam);
@@ -3343,7 +3343,7 @@ impl Panel {
         {
             match item.target {
                 // The pin-what-is-in-front case. No picker, no typing: the app is
-                // already on screen and bentopick already knows its path.
+                // already on screen and bentolaunch already knows its path.
                 Target::Window(_) => {
                     if item.icon_source.is_some() {
                         // Not "Pin <name>": the name available here is the
@@ -3478,15 +3478,15 @@ impl Panel {
         if status != server::Status::Listening {
             // Refusing to pair here is the point. Something else on the port
             // is the one situation where the extension could be talking to
-            // something that is not bentopick, and handing out a code in that
+            // something that is not bentolaunch, and handing out a code in that
             // state would be handing it to whatever answered.
             self.say(
                 "Cannot pair right now",
                 &format!(
-                    "Another process is using port {port}, so BentoPick's browser \
+                    "Another process is using port {port}, so BentoLaunch's browser \
                      bridge is not listening.\n\n\
                      Close whatever is using it, or set a different browser.port in \
-                     bentopick.toml, then try again."
+                     bentolaunch.toml, then try again."
                 ),
             );
             return;
@@ -3501,8 +3501,8 @@ impl Panel {
             "Pair a browser",
             &format!(
                 "Pairing code:  {}  {}\n\n\
-                 Open the BentoPick extension's options page, choose \"Pair with \
-                 BentoPick\", and type this code.\n\n\
+                 Open the BentoLaunch extension's options page, choose \"Pair with \
+                 BentoLaunch\", and type this code.\n\n\
                  Pairing stays open until you close this window.",
                 &code[..3],
                 &code[3..]
@@ -3534,7 +3534,7 @@ impl Panel {
         }
     }
 
-    /// The only dialog bentopick has. Everything else it draws itself, but a
+    /// The only dialog bentolaunch has. Everything else it draws itself, but a
     /// pairing code has to be readable while the user is typing into another
     /// window, and a stock modal is exactly that.
     fn say(&self, caption: &str, text: &str) {
@@ -3779,7 +3779,7 @@ impl Panel {
                 let handled = std::mem::take(&mut self.handled_down);
                 if let Some(press) = self.press.take() {
                     match (press.dragging, press.band) {
-                        // Travelled, and over something bentopick can rearrange.
+                        // Travelled, and over something bentolaunch can rearrange.
                         (true, Some(_)) => self.commit_drag(&press),
                         // Travelled, but not a rearrangeable tile. A drag that
                         // went nowhere is not an activation.
@@ -3899,7 +3899,7 @@ fn app_icon(size: u32) -> Option<std::sync::Arc<icons::IconPixels>> {
     icons::request(exe.to_str()?, size.max(16))
 }
 
-/// Open `bentopick.toml` in whatever the user edits TOML with. Falls back to
+/// Open `bentolaunch.toml` in whatever the user edits TOML with. Falls back to
 /// Notepad, since a bare `.toml` often has no registered handler.
 fn open_config() {
     let Some(path) = Config::path() else { return };
@@ -4031,7 +4031,7 @@ fn rect_to_grid(r: RECT) -> GridRect {
     }
 }
 
-pub const CLASS_NAME: PCWSTR = w!("bentopick_panel");
+pub const CLASS_NAME: PCWSTR = w!("bentolaunch_panel");
 
 unsafe fn create_window() -> Result<HWND> {
     unsafe {
@@ -4051,11 +4051,11 @@ unsafe fn create_window() -> Result<HWND> {
 
         // WS_EX_NOREDIRECTIONBITMAP: no GDI redirection surface, so the
         // composition tree owns every pixel including alpha.
-        // WS_EX_TOOLWINDOW: keeps bentopick out of alt-tab and the taskbar.
+        // WS_EX_TOOLWINDOW: keeps bentolaunch out of alt-tab and the taskbar.
         CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOREDIRECTIONBITMAP,
             CLASS_NAME,
-            w!("BentoPick"),
+            w!("BentoLaunch"),
             WS_POPUP,
             0,
             0,

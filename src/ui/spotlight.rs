@@ -32,7 +32,7 @@ use crate::safety;
 use crate::shell::arrange;
 use crate::{log_info, log_warn};
 
-const CLASS_NAME: PCWSTR = w!("bentopick_spotlight");
+const CLASS_NAME: PCWSTR = w!("bentolaunch_spotlight");
 /// Thick enough to find with your eyes across a 5760px desktop.
 const THICKNESS: i32 = 4;
 /// How far outside the window the ring sits, so it frames rather than covers.
@@ -67,7 +67,7 @@ impl Spotlight {
             let hwnd = CreateWindowExW(
                 WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE,
                 CLASS_NAME,
-                w!("BentoPick target"),
+                w!("BentoLaunch target"),
                 WS_POPUP,
                 0,
                 0,

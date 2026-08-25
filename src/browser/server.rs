@@ -43,7 +43,7 @@ const READ_TIMEOUT: Duration = Duration::from_millis(250);
 const PING_EVERY: Duration = Duration::from_secs(20);
 
 /// Live connections. One browser needs one; the cap is here so nothing local
-/// can spend bentopick's threads and per-connection buffers by dialling in a loop.
+/// can spend bentolaunch's threads and per-connection buffers by dialling in a loop.
 const MAX_CONNECTIONS: usize = 8;
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 
@@ -122,7 +122,7 @@ pub fn bookmarks() -> Vec<Bookmark> {
         .collect()
 }
 
-/// Fire and forget. bentopick has already hidden by the time the switch lands.
+/// Fire and forget. bentolaunch has already hidden by the time the switch lands.
 pub fn focus(connection: u64, tab_id: i64, window_id: i64) -> bool {
     let Ok(state) = state().lock() else {
         return false;
@@ -209,7 +209,7 @@ pub fn start(hwnd: HWND, config: &crate::config::Browser) -> bool {
         Ok(listener) => listener,
         Err(e) => {
             // Deliberately not a fallback port. An extension cannot read a
-            // file to find out where bentopick went, so a bridge that wanders
+            // file to find out where bentolaunch went, so a bridge that wanders
             // is a bridge nobody finds - and this failure is also what a
             // process squatting the port looks like, which is worth saying out
             // loud rather than retrying around.
@@ -393,7 +393,7 @@ fn negotiate(
         // Named, not just refused. Once the exe and the extension are separate
         // downloads they drift, and "not paired" is the wrong thing to tell
         // someone whose only problem is a stale install.
-        let behind = if v < PROTOCOL { "extension" } else { "BentoPick" };
+        let behind = if v < PROTOCOL { "extension" } else { "BentoLaunch" };
         log_warn!(
             "browser connection {connection}: {origin} speaks bridge protocol {v}, \
              this build speaks {PROTOCOL}; the {behind} is out of date"
@@ -427,7 +427,7 @@ fn negotiate(
 }
 
 /// First contact. The client proves it knows the code the app is showing before
-/// bentopick says anything, because six digits are guessable from a proof and
+/// bentolaunch says anything, because six digits are guessable from a proof and
 /// this side must not be an oracle for them.
 fn pair(
     socket: &mut WebSocket<TcpStream>,

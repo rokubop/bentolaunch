@@ -126,7 +126,7 @@ struct Store {
     /// nothing left to turn the mode on with, so the old bar stays.
     has_modes: bool,
     center: Center,
-    /// bentopick's own panel, which must never appear in its own grid.
+    /// bentolaunch's own panel, which must never appear in its own grid.
     exclude: Handle,
 }
 
@@ -284,7 +284,7 @@ pub fn init(exclude: HWND, sections: &[SectionConfig], favorites: &Favorites) {
 ///
 /// Everything here is a shell parsing name, so nothing needs to exist on disk —
 /// `ms-settings:display` is as valid a target as `R:\dev`. Existence only
-/// affects which title and icon bentopick can infer.
+/// affects which title and icon bentolaunch can infer.
 fn manual_item(entry: &ManualItem) -> Option<Item> {
     let target = entry.target().trim();
     if target.is_empty() {
@@ -874,7 +874,7 @@ pub fn install_hooks(notify: HWND) {
     NOTIFY.store(notify.0 as isize, Ordering::SeqCst);
 
     // Grouped into contiguous ranges; one hook per range is cheaper than one per
-    // event. WINEVENT_SKIPOWNPROCESS keeps bentopick from reacting to itself.
+    // event. WINEVENT_SKIPOWNPROCESS keeps bentolaunch from reacting to itself.
     let ranges = [
         (EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND),
         (EVENT_OBJECT_CREATE, EVENT_OBJECT_HIDE),

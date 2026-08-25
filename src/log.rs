@@ -1,6 +1,6 @@
-//! Minimal logger: appends to `%LOCALAPPDATA%\bentopick\bentopick.log` and mirrors to stderr.
+//! Minimal logger: appends to `%LOCALAPPDATA%\bentolaunch\bentolaunch.log` and mirrors to stderr.
 //!
-//! Milestone 1 is a dry run, so the log *is* the product — every action bentopick
+//! Milestone 1 is a dry run, so the log *is* the product — every action bentolaunch
 //! would have taken gets recorded here instead of executed.
 
 use std::fs::{self, OpenOptions};
@@ -12,11 +12,25 @@ use windows::Win32::System::SystemInformation::GetLocalTime;
 
 static SINK: OnceLock<Mutex<Option<std::fs::File>>> = OnceLock::new();
 
-/// `%LOCALAPPDATA%\bentopick` — the only directory bentopick writes to besides its own
+/// `%LOCALAPPDATA%\bentolaunch` — the only directory bentolaunch writes to besides its own
 /// config file (safety rule 2).
 pub fn cache_dir() -> Option<PathBuf> {
-    let base = std::env::var_os("LOCALAPPDATA")?;
-    let dir = PathBuf::from(base).join("bentopick");
+    let base = PathBuf::from(std::env::var_os("LOCALAPPDATA")?);
+    let dir = base.join("bentolaunch");
+    if !dir.exists() {
+        // Renamed from BentoPick. The move carries `peers.json` across, so a
+        // browser paired before the rename stays paired. If it fails - an old
+        // build still holding the log open - the old directory is the one with
+        // the pairing in it, so keep using it rather than silently starting
+        // empty and making the user pair again.
+        let legacy = base.join("bentopick");
+        if legacy.is_dir() {
+            if fs::rename(&legacy, &dir).is_err() {
+                return Some(legacy);
+            }
+            let _ = fs::rename(dir.join("bentopick.log"), dir.join("bentolaunch.log"));
+        }
+    }
     fs::create_dir_all(&dir).ok()?;
     Some(dir)
 }
@@ -26,7 +40,7 @@ pub fn init() {
         OpenOptions::new()
             .create(true)
             .append(true)
-            .open(dir.join("bentopick.log"))
+            .open(dir.join("bentolaunch.log"))
             .ok()
     });
     let _ = SINK.set(Mutex::new(file));
@@ -68,7 +82,7 @@ macro_rules! log_error {
     ($($arg:tt)*) => { $crate::log::write("ERROR", &format!($($arg)*)) };
 }
 
-/// Dry-run marker: "this is what bentopick *would* have done."
+/// Dry-run marker: "this is what bentolaunch *would* have done."
 #[macro_export]
 macro_rules! log_dry {
     ($($arg:tt)*) => { $crate::log::write("DRY", &format!($($arg)*)) };

@@ -8,11 +8,11 @@
 // What this build of the bridge speaks. Must match PROTOCOL in
 // `src/browser/protocol.rs` - the exe and this extension are separate
 // downloads, so the two drift and the mismatch has to be explainable.
-const BRIDGE_PROTOCOL = 2;
+const BRIDGE_PROTOCOL = 3;
 
-// Which half to tell the user to update. `theirs` is what BentoPick reports.
+// Which half to tell the user to update. `theirs` is what BentoLaunch reports.
 function outdatedSide(theirs) {
-  return theirs > BRIDGE_PROTOCOL ? "this extension" : "BentoPick";
+  return theirs > BRIDGE_PROTOCOL ? "this extension" : "BentoLaunch";
 }
 
 const HEX = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -32,5 +32,5 @@ async function sha256Hex(text) {
 // unambiguous. The label is what stops a proof being replayed back the other
 // way: each side hashes the same secret and nonces under a different name.
 async function bridgeProof(label, secret, nonceClient, nonceServer) {
-  return sha256Hex(`bentopick\0${label}\0${secret}\0${nonceClient}\0${nonceServer}`);
+  return sha256Hex(`bentolaunch\0${label}\0${secret}\0${nonceClient}\0${nonceServer}`);
 }

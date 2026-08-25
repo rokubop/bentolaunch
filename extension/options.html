@@ -2,7 +2,7 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>BentoPick bridge</title>
+    <title>BentoLaunch bridge</title>
     <style>
       body {
         font: 14px/1.5 "Segoe UI", system-ui, sans-serif;
@@ -28,24 +28,24 @@
     </style>
   </head>
   <body>
-    <h1>BentoPick bridge</h1>
+    <h1>BentoLaunch bridge</h1>
 
     <p id="status">Checking…</p>
 
     <section id="pairing">
       <ol>
-        <li>Right-click the BentoPick tray icon and choose <b>Browser &rsaquo; Pair a browser…</b></li>
+        <li>Right-click the BentoLaunch tray icon and choose <b>Browser &rsaquo; Pair a browser…</b></li>
         <li>Type the six digits it shows here.</li>
       </ol>
 
       <label for="code">Pairing code</label>
       <input id="code" type="text" inputmode="numeric" maxlength="7" spellcheck="false" autocomplete="off" />
 
-      <button id="pair">Pair with BentoPick</button><span id="message"></span>
+      <button id="pair">Pair with BentoLaunch</button><span id="message"></span>
     </section>
 
     <section id="unpair" hidden>
-      <p>To unpair, use <b>Browser &rsaquo; Forget</b> in the BentoPick tray menu - that removes
+      <p>To unpair, use <b>Browser &rsaquo; Forget</b> in the BentoLaunch tray menu - that removes
       the token at both ends. <button id="forget">Forget it here only</button></p>
     </section>
 
@@ -53,7 +53,7 @@
       <summary>Advanced</summary>
       <label for="port">Port</label>
       <input id="port" type="number" min="1" max="65535" />
-      <p>Only change this if BentoPick's <code>browser.port</code> was changed too.</p>
+      <p>Only change this if BentoLaunch's <code>browser.port</code> was changed too.</p>
     </details>
 
     <script src="bridge.js"></script>

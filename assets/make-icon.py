@@ -1,4 +1,4 @@
-"""Rasterise bentopick.svg to a multi-size .ico. Stdlib only, no image libraries.
+"""Rasterise bentolaunch.svg to a multi-size .ico. Stdlib only, no image libraries.
 
     python assets/make-icon.py
 
@@ -131,7 +131,7 @@ for sz in SIZES:
     payload = png(sz, rgba) if sz == 256 else dib(sz, rgba)
     images.append((sz, payload))
     if sz == 256:
-        open("assets/bentopick-256.png", "wb").write(payload)
+        open("assets/bentolaunch-256.png", "wb").write(payload)
 
 # Chrome wants loose PNGs. Same shapes from the same script, so the extension
 # icon cannot drift from the app's.
@@ -149,6 +149,6 @@ for sz, payload in images:
     blobs += payload
     offset += len(payload)
 
-open("assets/bentopick.ico", "wb").write(bytes(out + entries + blobs))
-print("ico:", os.path.getsize("assets/bentopick.ico"), "bytes,", len(images), "sizes")
-print("png:", os.path.getsize("assets/bentopick-256.png"), "bytes")
+open("assets/bentolaunch.ico", "wb").write(bytes(out + entries + blobs))
+print("ico:", os.path.getsize("assets/bentolaunch.ico"), "bytes,", len(images), "sizes")
+print("png:", os.path.getsize("assets/bentolaunch-256.png"), "bytes")

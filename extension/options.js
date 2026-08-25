@@ -3,8 +3,8 @@
 //
 // The code the app shows is the shared secret for exactly one exchange. This
 // side proves it knows the code first - six digits are guessable from a proof,
-// so BentoPick must not answer one it was not asked for - and then checks
-// BentoPick's own proof before storing the token it sends back.
+// so BentoLaunch must not answer one it was not asked for - and then checks
+// BentoLaunch's own proof before storing the token it sends back.
 
 const PAIR_TIMEOUT_MS = 10000;
 
@@ -26,7 +26,7 @@ async function render() {
   const paired = !!stored.token;
 
   status.textContent = paired
-    ? "Paired with BentoPick. Open tabs appear in the panel automatically."
+    ? "Paired with BentoLaunch. Open tabs appear in the panel automatically."
     : "Not paired yet.";
   status.className = paired ? "paired" : "";
   pairing.hidden = paired;
@@ -38,7 +38,7 @@ function say(text, good) {
   message.className = good ? "good" : "bad";
 }
 
-// One socket, one attempt. BentoPick closes its pairing window on a wrong code,
+// One socket, one attempt. BentoLaunch closes its pairing window on a wrong code,
 // so retrying means asking it for a new one.
 function pair(digits, portNumber) {
   return new Promise((resolve, reject) => {
@@ -57,7 +57,7 @@ function pair(digits, portNumber) {
 
     const socket = new WebSocket(`ws://127.0.0.1:${portNumber}/`);
     const timer = setTimeout(
-      () => finish(reject, new Error("BentoPick did not answer. Is the pairing window open?")),
+      () => finish(reject, new Error("BentoLaunch did not answer. Is the pairing window open?")),
       PAIR_TIMEOUT_MS,
     );
     const nonce = randomHex(16);
@@ -85,7 +85,7 @@ function pair(digits, portNumber) {
         finish(
           reject,
           new Error(
-            `BentoPick speaks bridge protocol ${reply.protocol}, this extension speaks ` +
+            `BentoLaunch speaks bridge protocol ${reply.protocol}, this extension speaks ` +
               `${BRIDGE_PROTOCOL}. Update ${outdatedSide(reply.protocol)} and try again.`,
           ),
         );
@@ -97,25 +97,25 @@ function pair(digits, portNumber) {
       // than from whatever happened to answer the port.
       const expected = await bridgeProof("pair-server", digits, nonce, "");
       if (reply.proof !== expected) {
-        finish(reject, new Error("That was not BentoPick. Nothing has been paired."));
+        finish(reject, new Error("That was not BentoLaunch. Nothing has been paired."));
         return;
       }
       finish(resolve, reply.token);
     };
 
     // A refused or dropped socket is what a wrong code looks like from here:
-    // BentoPick answers a wrong proof with silence.
+    // BentoLaunch answers a wrong proof with silence.
     socket.onclose = () =>
-      finish(reject, new Error("BentoPick refused the code. Ask it for a new one and try again."));
+      finish(reject, new Error("BentoLaunch refused the code. Ask it for a new one and try again."));
     socket.onerror = () =>
-      finish(reject, new Error("Could not reach BentoPick on that port. Is it running?"));
+      finish(reject, new Error("Could not reach BentoLaunch on that port. Is it running?"));
   });
 }
 
 document.getElementById("pair").addEventListener("click", async () => {
   const digits = code.value.replace(/\D/g, "");
   if (digits.length !== 6) {
-    say("Enter the six digits BentoPick is showing.", false);
+    say("Enter the six digits BentoLaunch is showing.", false);
     return;
   }
 

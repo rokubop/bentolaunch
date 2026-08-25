@@ -161,7 +161,7 @@ pub struct Browser {
     pub enabled: bool,
     /// Loopback only. Never bound on any other interface.
     pub port: u16,
-    /// Legacy. Paired browsers now live in `%LOCALAPPDATA%\bentopick\peers.json`,
+    /// Legacy. Paired browsers now live in `%LOCALAPPDATA%\bentolaunch\peers.json`,
     /// one token each, added by "Pair a browser..." in the tray. Origins left
     /// here are carried over on startup and this is blanked.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -213,7 +213,7 @@ pub enum Source {
     Manual,
     /// Open browser tabs, from the extension. Empty until one connects.
     Tabs,
-    /// The browser's bookmarks bar, from the extension. Read-only: bentopick
+    /// The browser's bookmarks bar, from the extension. Read-only: bentolaunch
     /// never writes to a browser profile (safety rule 4).
     Bookmarks,
     /// The six window moves. A fixed set, so nothing enumerates and the box is
@@ -718,7 +718,21 @@ impl Default for Theme {
 impl Config {
     pub fn path() -> Option<PathBuf> {
         let exe = std::env::current_exe().ok()?;
-        Some(exe.parent()?.join("bentopick.toml"))
+        let dir = exe.parent()?;
+        let path = dir.join("bentolaunch.toml");
+        if path.exists() {
+            return Some(path);
+        }
+        // Renamed from BentoPick. A move, not a rewrite, so comments and
+        // ordering survive it - and it can only fire while the old name is the
+        // only one there, which makes it once per install. If the move fails
+        // the old file is still the config: reading one name and writing the
+        // other would drop every edit made since.
+        let legacy = dir.join("bentopick.toml");
+        if legacy.is_file() && std::fs::rename(&legacy, &path).is_err() {
+            return Some(legacy);
+        }
+        Some(path)
     }
 
     /// Never fails: a broken or absent config falls back to defaults rather than

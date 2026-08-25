@@ -1,11 +1,11 @@
-<img src="assets/bentopick-256.png" width="88" alt="">
+<img src="assets/bentolaunch-256.png" width="88" alt="">
 
-# BentoPick (WIP)
+# BentoLaunch (WIP)
 
 A hotkey-triggered overlay in the center of your screen for all your running apps and browser tabs represented as big icons that are easily clickable. Type filtering also supported.
 
 Example:
-1) Press `` Alt+` `` to immediately show BentoPick - See running apps, taskbar pins, and browser tabs in a grid of tiles.
+1) Press `` Alt+` `` to immediately show BentoLaunch - See running apps, taskbar pins, and browser tabs in a grid of tiles.
 2) Click what you want to switch to, or type to filter the grid
 
 ## Install
@@ -14,8 +14,8 @@ Windows 11 only.
 
 ### 1. The app
 
-1. Download [bentopick.exe](https://github.com/rokubop/bentopick/releases/latest/download/bentopick.exe).
-2. Put it in `%LOCALAPPDATA%\Programs\bentopick` (not `Program Files`).
+1. Download [bentolaunch.exe](https://github.com/rokubop/bentolaunch/releases/latest/download/bentolaunch.exe).
+2. Put it in `%LOCALAPPDATA%\Programs\bentolaunch` (not `Program Files`).
 3. Run it. Windows warns about an unrecognised app: **More info** > **Run anyway**.
 4. Press `` Alt+` `` to summon it.
 
@@ -23,12 +23,12 @@ Windows 11 only.
 
 Required for tabs and bookmarks. Chromium for now.
 
-1. Download and unzip `bentopick-extension.zip` from the
-   [same release](https://github.com/rokubop/bentopick/releases/latest).
+1. Download and unzip `bentolaunch-extension.zip` from the
+   [same release](https://github.com/rokubop/bentolaunch/releases/latest).
 2. `chrome://extensions` > Developer mode > **Load unpacked** > the folder.
 3. Tray icon > **Browser > Pair a browser...**. It shows six digits.
-4. On the **BentoPick bridge** card: **Details > Extension options**, type them,
-   **Pair with BentoPick**.
+4. On the **BentoLaunch bridge** card: **Details > Extension options**, type them,
+   **Pair with BentoLaunch**.
 
 ### Start it at login
 
@@ -42,10 +42,10 @@ Needs [Rust](https://rustup.rs). From **PowerShell, not WSL**, the toolchain and
 the window are Windows-native.
 
 ```powershell
-git clone https://github.com/rokubop/bentopick
-cd bentopick
+git clone https://github.com/rokubop/bentolaunch
+cd bentolaunch
 cargo build --release
-target\release\bentopick.exe
+target\release\bentolaunch.exe
 ```
 
 `cargo build` without `--release` keeps a console window so the log is visible.
@@ -62,15 +62,15 @@ Right-click the tray icon:
 
 | Item | Does |
 |---|---|
-| Show BentoPick | Same as the hotkey |
+| Show BentoLaunch | Same as the hotkey |
 | Add app… | Browse installed apps, Store apps included, and pin one |
 | Add folder… | Pin a folder |
 | Add file or shortcut… | Pin a file or `.lnk` |
 | Browser ▸ | Pair a browser for tabs, or forget one |
-| Edit settings… | Open `bentopick.toml` in your editor |
+| Edit settings… | Open `bentolaunch.toml` in your editor |
 | Exit | Quit |
 
-Log: `%LOCALAPPDATA%\bentopick\bentopick.log`
+Log: `%LOCALAPPDATA%\bentolaunch\bentolaunch.log`
 
 ## Finding
 
@@ -224,7 +224,7 @@ Only pinned tiles move. Running windows stay in most-recent order.
 
 ### Editing the layout
 
-Click the **BentoPick** button in the bottom-right corner. It is always there,
+Click the **BentoLaunch** button in the bottom-right corner. It is always there,
 always in the same place, and it opens a menu of big squares: the four modes,
 then **Add app**, **Add folder**, **Add file**, **Settings**. The modes bar in
 the grid is the first way to reach them; this is the second, and right-click is
@@ -233,7 +233,7 @@ the third.
 **Settings** opens eight more squares. Each one is a value and each click steps
 it to the next: tile size, whether tiles show a second line, how many columns,
 whether the browser bridge listens, the center block's shape and what it holds.
-They write straight into `bentopick.toml` and your comments survive.
+They write straight into `bentolaunch.toml` and your comments survive.
 **Open the file** is one of the eight, for the hotkey, the theme and the
 sections, which need typing.
 
@@ -287,9 +287,9 @@ Centred and tile-sized on purpose. This panel is pointed at, sometimes by gaze,
 and the middle of the screen is the cheapest place to reach.
 
 Everything stays up while you edit, and every click is already written to
-`bentopick.toml`. Finishing leaves the panel open and ready to use.
+`bentolaunch.toml`. Finishing leaves the panel open and ready to use.
 
-Every change goes straight into `bentopick.toml`. Nothing is remembered anywhere
+Every change goes straight into `bentolaunch.toml`. Nothing is remembered anywhere
 else, and all of it can be undone by hand. Taskbar order is saved as an `order`
 list, since Windows does not expose its own.
 
@@ -297,9 +297,9 @@ The panel closes the moment it loses focus.
 
 ## Config
 
-`bentopick.toml`, next to the exe. Written with defaults on first run.
+`bentolaunch.toml`, next to the exe. Written with defaults on first run.
 
-**No restart needed.** BentoPick watches the file and reloads on save, hotkey
+**No restart needed.** BentoLaunch watches the file and reloads on save, hotkey
 included. Pins added from the tray are written here, and hand-written comments
 and formatting are preserved.
 
@@ -466,7 +466,7 @@ port    = 8777
 ```
 
 Pairing is not a config edit. Load the extension, then right-click the tray
-icon: **Browser > Pair a browser...**. BentoPick shows six digits, you type them
+icon: **Browser > Pair a browser...**. BentoLaunch shows six digits, you type them
 into the extension's options page, and that is the whole setup - it switches the
 bridge on for you if it was off. **Browser > Forget** undoes it.
 `extension/README.md` has the details.
@@ -536,7 +536,7 @@ max_items = 12
 
 The **bookmarks bar only**, one level deep. Not "Other bookmarks", which is an
 archive of thousands and would bury the panel it was pasted into, and not the
-folders sitting on the bar, since there is nothing BentoPick could do with one.
+folders sitting on the bar, since there is nothing BentoLaunch could do with one.
 
 A bookmark tile is a URL handed to the shell, so it opens in your default
 browser and works whether or not the browser that sent it is still running.
@@ -557,10 +557,10 @@ What guards that port:
   machine, but browsers stamp every connection with who is making it and pages
   cannot fake that stamp. Only a paired extension is let through.
 - A separate secret per browser, from the OS random generator, kept in
-  `%LOCALAPPDATA%\bentopick\peers.json`, which Windows restricts to your
+  `%LOCALAPPDATA%\bentolaunch\peers.json`, which Windows restricts to your
   account. It never travels over the socket; each side proves it knows it.
 
-And the guard that points the other way: **BentoPick proves itself to the
+And the guard that points the other way: **BentoLaunch proves itself to the
 extension too**, before the extension sends a single tab title. Otherwise
 anything that grabbed port 8777 first would be handed your open tabs by an
 extension with no way to tell the difference. For the same reason, pairing is
@@ -645,13 +645,13 @@ documented transport. MV3 service workers die after ~30s idle, and there are
 [reports of them dying anyway](https://github.com/GoogleChrome/developer.chrome.com/issues/2688)
 at 5-6 minutes with `connectNative()`. Chrome 116+ keeps the worker alive as
 long as messages flow. Native messaging would also have the browser spawn the
-host, and BentoPick is a long-running GUI that would end up with a second copy
+host, and BentoLaunch is a long-running GUI that would end up with a second copy
 of itself - plus a registry key and a host manifest, which is footprint this app
 does not want.
 
 What a fixed port costs is that something else can take it, and an extension
-cannot read a file to find out where BentoPick went. So the answer is not a
-fallback port but a handshake: both ends prove they know the token, BentoPick
+cannot read a file to find out where BentoLaunch went. So the answer is not a
+fallback port but a handshake: both ends prove they know the token, BentoLaunch
 going first, and a bind failure is reported in the tray rather than retried
 around.
 
@@ -667,4 +667,4 @@ around.
 - Firefox needs its own extension build.
 - Tab tiles cannot be rearranged, and neither can a filtered grid.
 - Dragging moves a tile within its own section. Moving one between sections
-  means editing `bentopick.toml`.
+  means editing `bentolaunch.toml`.

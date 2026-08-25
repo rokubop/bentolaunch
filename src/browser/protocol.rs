@@ -1,4 +1,4 @@
-//! What bentopick and the extension say to each other. JSON over the socket.
+//! What bentolaunch and the extension say to each other. JSON over the socket.
 
 use std::collections::HashMap;
 
@@ -58,7 +58,7 @@ impl Bookmark {
     }
 }
 
-/// A favicon the extension already decoded. Raw RGBA rather than PNG, so bentopick
+/// A favicon the extension already decoded. Raw RGBA rather than PNG, so bentolaunch
 /// needs no image decoder and no COM on the socket thread.
 #[derive(Debug, Clone, Deserialize)]
 pub struct IconData {
@@ -97,9 +97,12 @@ impl IconData {
 /// used to be one checkout that changed together, and now they drift. Without
 /// this, an extension one version behind fails as "not paired", which sends the
 /// user looking for a pairing problem they do not have.
-pub const PROTOCOL: u32 = 2;
+/// 3 is the BentoPick rename: the proof's domain separator carries the name, so
+/// both sides changed string at once. The version check runs before the proof,
+/// which is what turns a stale extension into "update it" instead of silence.
+pub const PROTOCOL: u32 = 3;
 
-/// Extension to bentopick.
+/// Extension to bentolaunch.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Inbound {
@@ -124,7 +127,7 @@ pub enum Inbound {
     },
     Tabs {
         tabs: Vec<Tab>,
-        /// Only the ones bentopick has not been sent yet on this connection.
+        /// Only the ones bentolaunch has not been sent yet on this connection.
         #[serde(default)]
         icons: HashMap<String, IconData>,
     },
@@ -138,7 +141,7 @@ pub enum Inbound {
     Pong,
 }
 
-/// bentopick to the extension.
+/// bentolaunch to the extension.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Outbound {
@@ -175,7 +178,7 @@ pub enum Outbound {
     /// unknown type on the floor, which costs one button; refusing the whole
     /// connection over it would cost every tab.
     NewTab,
-    /// Keeps the MV3 worker alive. bentopick drives it: the worker cannot be
+    /// Keeps the MV3 worker alive. bentolaunch drives it: the worker cannot be
     /// trusted to wake itself.
     Ping,
 }

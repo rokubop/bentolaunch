@@ -51,7 +51,7 @@ pub fn activate(item: &Item) {
 
 /// Hand the foreground right over and let the browser raise itself.
 ///
-/// bentopick cannot map a browser `windowId` onto an HWND. The browser can.
+/// bentolaunch cannot map a browser `windowId` onto an HWND. The browser can.
 fn switch_to_tab(connection: u64, tab_id: i64, window_id: i64, title: &str) {
     // Named browser pids, not ASFW_ANY: that would let anything steal
     // foreground for the same window.
@@ -92,7 +92,7 @@ fn new_tab(connection: u64) {
 ///
 /// `SetForegroundWindow` is normally restricted, but the process that received
 /// the last input event is allowed to call it — and `RegisterHotKey` delivers
-/// `WM_HOTKEY` as exactly that. So summoning bentopick by its hotkey grants the
+/// `WM_HOTKEY` as exactly that. So summoning bentolaunch by its hotkey grants the
 /// right that activation needs. See DESIGN.md "Focus model".
 /// `false` only when no window was left to focus, which is what lets a pin fall
 /// back to launching. A declined foreground change is still success: the window

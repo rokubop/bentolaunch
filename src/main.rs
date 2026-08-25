@@ -1,4 +1,4 @@
-//! bentopick — a hotkey-summoned grid of everything worth switching to.
+//! bentolaunch — a hotkey-summoned grid of everything worth switching to.
 //!
 //! Milestone 1 is a **dry run**: it enumerates and renders the real system, but
 //! every activation is a no-op that logs what it would have done. See DESIGN.md.
@@ -44,7 +44,7 @@ fn main() {
     let bridge = config.browser.clone();
     let favorites = config.favorites.clone();
     log_info!(
-        "bentopick starting — dry_run={}, hotkey={}",
+        "bentolaunch starting — dry_run={}, hotkey={}",
         config.dry_run,
         config.hotkey
     );
@@ -79,7 +79,7 @@ fn main() {
     tray::remove(hwnd);
     panel.hide(false);
     drop(panel);
-    log_info!("bentopick exited cleanly");
+    log_info!("bentolaunch exited cleanly");
 }
 
 fn pump() {

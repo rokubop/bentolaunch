@@ -67,7 +67,7 @@ jobs:
       # releases is exactly what the protocol version exists to catch.
       - name: Package the extension
         shell: pwsh
-        run: Compress-Archive -Path extension\* -DestinationPath bentopick-extension.zip
+        run: Compress-Archive -Path extension\* -DestinationPath bentolaunch-extension.zip
 
       - name: Publish
         shell: pwsh
@@ -81,14 +81,14 @@ jobs:
           $notes = @'
           Windows 11. Portable single exe, no installer, no admin.
 
-          Download `bentopick.exe`, put it somewhere permanent, run it, press
+          Download `bentolaunch.exe`, put it somewhere permanent, run it, press
           Alt+backtick. Windows will warn about an unrecognised app until this
           is code-signed.
 
-          Browser tabs are optional: `bentopick-extension.zip` is here too. Use
+          Browser tabs are optional: `bentolaunch-extension.zip` is here too. Use
           both halves from the same release.
 
-          [Install steps](https://github.com/rokubop/bentopick#install)
+          [Install steps](https://github.com/rokubop/bentolaunch#install)
           '@
 
           # A dispatch run is a rehearsal of the packaging, not a release, so
@@ -98,8 +98,8 @@ jobs:
 
           $arguments = @(
             "release", "create", $tag,
-            "target\release\bentopick.exe",
-            "bentopick-extension.zip",
+            "target\release\bentolaunch.exe",
+            "bentolaunch-extension.zip",
             "--title", $tag,
             "--notes", $notes
           )

@@ -1,4 +1,4 @@
-//! Adding a tile to `bentopick.toml` without flattening the file.
+//! Adding a tile to `bentolaunch.toml` without flattening the file.
 //!
 //! `toml_edit` rather than re-serialising through serde: the config is meant to
 //! be hand-edited, and round-tripping it through `Config` would silently discard
@@ -649,7 +649,7 @@ mod tests {
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("bentopick-pins-test-{name}.toml"));
+        let path = std::env::temp_dir().join(format!("bentolaunch-pins-test-{name}.toml"));
         let _ = std::fs::remove_file(&path);
         path
     }
@@ -815,7 +815,7 @@ source = \"taskbar\"
     #[test]
     fn hand_written_comments_and_keys_survive() {
         let path = scratch("comments");
-        let original = "# my bentopick config\nhotkey = \"ctrl+alt+q\"  # trailing note\n\n\
+        let original = "# my bentolaunch config\nhotkey = \"ctrl+alt+q\"  # trailing note\n\n\
              [[sections]]\ntitle = \"Windows\"\nsource = \"windows\"\n\n\
              # things I open a lot\n[[sections]]\ntitle = \"Places\"\nsource = \"manual\"\nitems = []\n";
         std::fs::write(&path, original).unwrap();
@@ -823,7 +823,7 @@ source = \"taskbar\"
         add_to(&path, None, "ms-settings:display").unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
 
-        assert!(text.contains("# my bentopick config"));
+        assert!(text.contains("# my bentolaunch config"));
         assert!(text.contains("# trailing note"));
         assert!(text.contains("# things I open a lot"));
         assert!(text.contains("ctrl+alt+q"));

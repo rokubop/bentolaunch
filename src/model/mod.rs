@@ -1,4 +1,4 @@
-//! What bentopick knows about, and how it stays current.
+//! What bentolaunch knows about, and how it stays current.
 
 pub mod store;
 pub mod taskbar;
@@ -97,14 +97,14 @@ impl Mode {
 /// `.lnk`, `shell:AppsFolder\<AppUserModelID>` for a Store app, and a URI like
 /// `ms-settings:display` are all parsing names, and all of them both launch
 /// through `ShellExecuteW` and produce an icon through `IShellItemImageFactory`.
-/// One string covers every non-window thing bentopick can show.
+/// One string covers every non-window thing bentolaunch can show.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Target {
     /// Focus this window.
     Window(Handle),
     /// Hand this to the shell.
     Shell(String),
-    /// The one thing bentopick cannot reach itself. Goes back over the socket.
+    /// The one thing bentolaunch cannot reach itself. Goes back over the socket.
     Tab { connection: u64, tab_id: i64, window_id: i64 },
     /// Move the targeted window. The only target that acts on another tile
     /// rather than on itself, and the only one that leaves the panel up.
@@ -214,7 +214,7 @@ pub struct Item {
 
 impl Item {
     /// The parsing name behind this tile. `None` for a live window, which is
-    /// the one thing bentopick shows that config cannot name.
+    /// the one thing bentolaunch shows that config cannot name.
     pub fn shell_target(&self) -> Option<&str> {
         match &self.target {
             Target::Shell(name) => Some(name),

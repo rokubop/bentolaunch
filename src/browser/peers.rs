@@ -1,10 +1,10 @@
-//! Who bentopick has agreed to talk to, one entry per browser.
+//! Who bentolaunch has agreed to talk to, one entry per browser.
 //!
 //! One token per peer rather than one for the machine: forgetting Chrome must
 //! not silently unpair Firefox, and a token that serves everybody can never be
 //! revoked in part.
 //!
-//! Stored in `%LOCALAPPDATA%\bentopick\peers.json`, not beside the exe. A
+//! Stored in `%LOCALAPPDATA%\bentolaunch\peers.json`, not beside the exe. A
 //! portable build can be dropped in `Program Files`, where a file next to it is
 //! readable by every account on the machine - and other accounts are the one
 //! case the token is actually meant to stop.
@@ -58,7 +58,7 @@ fn test_path() -> &'static std::sync::OnceLock<PathBuf> {
 
 #[cfg(test)]
 pub fn use_a_scratch_store() {
-    let path = std::env::temp_dir().join(format!("bentopick-test-peers-{}.json", std::process::id()));
+    let path = std::env::temp_dir().join(format!("bentolaunch-test-peers-{}.json", std::process::id()));
     let _ = std::fs::remove_file(&path);
     let _ = test_path().set(path);
 }
@@ -153,7 +153,7 @@ pub fn today() -> String {
 }
 
 /// Carry an older install's single shared token onto the origins it served, so
-/// updating bentopick does not make the user re-pair. The caller clears both
+/// updating bentolaunch does not make the user re-pair. The caller clears both
 /// legacy keys from the config afterwards.
 ///
 /// Returns how many peers were created.

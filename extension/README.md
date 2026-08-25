@@ -1,7 +1,7 @@
-# BentoPick bridge
+# BentoLaunch bridge
 
-Sends open tabs and the bookmarks bar to BentoPick. Switches to a tab when
-BentoPick asks.
+Sends open tabs and the bookmarks bar to BentoLaunch. Switches to a tab when
+BentoLaunch asks.
 
 Chromium only for now: Chrome, Edge, Brave, Vivaldi. Firefox needs a separate
 build.
@@ -29,12 +29,12 @@ Two clicks and six digits. Nothing is copied out of a config file, and no
 restart is involved.
 
 1. Load this folder: `chrome://extensions`, Developer mode on, Load unpacked.
-2. Right-click the BentoPick tray icon: **Browser > Pair a browser...**. It
+2. Right-click the BentoLaunch tray icon: **Browser > Pair a browser...**. It
    turns the bridge on if it was off and shows a six-digit code.
-3. Open this extension's options page, type the code, **Pair with BentoPick**.
+3. Open this extension's options page, type the code, **Pair with BentoLaunch**.
 
 The code is good for one attempt and lives only as long as that dialog is on
-screen. A wrong code closes the window at BentoPick's end, so a second try means
+screen. A wrong code closes the window at BentoLaunch's end, so a second try means
 asking it for a new code.
 
 ```
@@ -44,7 +44,7 @@ INFO  Chrome connected (connection 2)
 INFO  browser connection 2: 37 tab(s)
 ```
 
-Log lives at `%LOCALAPPDATA%\bentopick\bentopick.log`. An unpaired browser says
+Log lives at `%LOCALAPPDATA%\bentolaunch\bentolaunch.log`. An unpaired browser says
 so, and says where the button is:
 
 ```
@@ -53,7 +53,7 @@ INFO  to pair it, choose Browser > Pair a browser... from the tray icon
 ```
 
 **Unpairing** is **Browser > Forget** in the same menu. That drops the token at
-BentoPick's end, which is the end that matters; the button on the options page
+BentoLaunch's end, which is the end that matters; the button on the options page
 only clears this side.
 
 The exe and this extension are separate downloads, so they can drift. Each
@@ -89,11 +89,11 @@ Empty until the extension connects, and empty sections do not render.
 `tabs`: the title and URL of every open tab.
 `favicon`: site icons, from Chrome's own cache.
 
-Both go to BentoPick over loopback. Nothing leaves the machine. No host permissions,
+Both go to BentoLaunch over loopback. Nothing leaves the machine. No host permissions,
 no content scripts, no network access beyond `127.0.0.1` and `_favicon`.
 
-Favicons are decoded here, not in BentoPick: a service worker already has an image
-decoder, so BentoPick needs none. One bitmap per origin, sent once per connection.
+Favicons are decoded here, not in BentoLaunch: a service worker already has an image
+decoder, so BentoLaunch needs none. One bitmap per origin, sent once per connection.
 
 ## Security
 
@@ -108,17 +108,17 @@ Loopback only, and a caller gets nothing until two separate things hold.
   it is not in a URL, a devtools panel or a `chrome://net-export` capture.
 
 That proof runs in **both directions**, and the second direction is not about
-BentoPick's safety at all. Whatever holds port 8777 is what this extension would
-otherwise believe BentoPick to be. Something that grabbed the port first would
-be handed the token and every tab title and URL, continuously. So BentoPick
+BentoLaunch's safety at all. Whatever holds port 8777 is what this extension would
+otherwise believe BentoLaunch to be. Something that grabbed the port first would
+be handed the token and every tab title and URL, continuously. So BentoLaunch
 proves itself first on every reconnect, and this extension sends nothing at all
 until that checks out - see `proveTheServer` in `worker.js`.
 
 The same reasoning is why pairing is refused when the port is taken: if
-BentoPick is not the one listening, there is no safe way to hand out a code, so
+BentoLaunch is not the one listening, there is no safe way to hand out a code, so
 the tray says the port is in use instead.
 
-One token per browser, in `%LOCALAPPDATA%\bentopick\peers.json`, which Windows
+One token per browser, in `%LOCALAPPDATA%\bentolaunch\peers.json`, which Windows
 restricts to your account. Forgetting Chrome does not unpair Firefox. Anything
 running as you can read that file - it stops other accounts and blind attempts,
 not code running as you. The origin check is what stops the threat that actually

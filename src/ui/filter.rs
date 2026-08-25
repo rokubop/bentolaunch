@@ -52,7 +52,7 @@ fn term_score(term: &str, title: &str, detail: &str) -> Option<u32> {
 }
 
 /// A word is any run of alphanumerics. Window titles are punctuation-heavy:
-/// `DESIGN.md - bentopick - Code`, `R:\dev\bentopick`.
+/// `DESIGN.md - bentolaunch - Code`, `R:\dev\bentolaunch`.
 fn starts_a_word(text: &str, term: &str) -> bool {
     text.split(|c: char| !c.is_alphanumeric())
         .any(|word| word.starts_with(term))
@@ -85,20 +85,20 @@ mod tests {
 
     #[test]
     fn every_term_has_to_match() {
-        assert!(hit("design bentopick", "DESIGN.md - bentopick - Code"));
-        assert!(!hit("design zzz", "DESIGN.md - bentopick - Code"));
+        assert!(hit("design bentolaunch", "DESIGN.md - bentolaunch - Code"));
+        assert!(!hit("design zzz", "DESIGN.md - bentolaunch - Code"));
     }
 
     #[test]
     fn typing_more_only_ever_narrows() {
         let titles = [
             "Chrome",
-            "DESIGN.md - bentopick - Code",
-            "bentopick - File Explorer",
+            "DESIGN.md - bentolaunch - Code",
+            "bentolaunch - File Explorer",
             "Spotify",
         ];
         let mut previous = titles.len() + 1;
-        for query in ["", "b", "be", "bentopick", "bentopick code"] {
+        for query in ["", "b", "be", "bentolaunch", "bentolaunch code"] {
             let count = titles.iter().filter(|t| hit(query, t)).count();
             assert!(
                 count <= previous,
@@ -111,9 +111,9 @@ mod tests {
 
     #[test]
     fn a_word_inside_a_punctuated_title_is_reachable() {
-        assert!(hit("bentopick", "DESIGN.md - bentopick - Code"));
-        assert!(hit("bentopick", r"R:\dev\bentopick"));
-        assert!(hit("md", "DESIGN.md - bentopick - Code"));
+        assert!(hit("bentolaunch", "DESIGN.md - bentolaunch - Code"));
+        assert!(hit("bentolaunch", r"R:\dev\bentolaunch"));
+        assert!(hit("md", "DESIGN.md - bentolaunch - Code"));
     }
 
     #[test]
@@ -125,7 +125,7 @@ mod tests {
     #[test]
     fn a_title_prefix_outranks_everything_it_could_be_confused_with() {
         let prefix = score("code", "Code", "").unwrap();
-        let word = score("code", "bentopick - Code", "").unwrap();
+        let word = score("code", "bentolaunch - Code", "").unwrap();
         let substring = score("code", "encoder", "").unwrap();
         let detail = score("code", "Wikipedia", "code.exe").unwrap();
         assert!(prefix > word, "{prefix} !> {word}");
@@ -140,19 +140,19 @@ mod tests {
 
     #[test]
     fn more_matching_terms_score_higher_than_fewer() {
-        let one = score("design", "DESIGN.md - bentopick", "").unwrap();
-        let two = score("design bentopick", "DESIGN.md - bentopick", "").unwrap();
+        let one = score("design", "DESIGN.md - bentolaunch", "").unwrap();
+        let two = score("design bentolaunch", "DESIGN.md - bentolaunch", "").unwrap();
         assert!(two > one);
     }
 
     #[test]
     fn a_term_may_be_split_across_the_two_lines() {
-        assert!(score("bentopick chrome", "bentopick - the grid", "chrome.exe").is_some());
+        assert!(score("bentolaunch chrome", "bentolaunch - the grid", "chrome.exe").is_some());
     }
 
     #[test]
     fn punctuation_in_the_query_is_matched_literally() {
-        assert!(hit("design.md", "DESIGN.md - bentopick"));
-        assert!(hit(r"r:\dev", r"R:\dev\bentopick"));
+        assert!(hit("design.md", "DESIGN.md - bentolaunch"));
+        assert!(hit(r"r:\dev", r"R:\dev\bentolaunch"));
     }
 }

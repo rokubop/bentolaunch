@@ -1,6 +1,6 @@
 //! The failure mode that feels like a broken PC: an invisible topmost window
 //! sitting over the desktop swallowing every click. This module makes that
-//! recoverable without the user knowing bentopick exists.
+//! recoverable without the user knowing bentolaunch exists.
 //!
 //! The escape hatch is `SetWindowLongPtrW(GWL_EXSTYLE, ... | WS_EX_TRANSPARENT)`.
 //! That writes the window struct directly and does **not** require the owning
@@ -76,7 +76,7 @@ pub fn neutralize(reason: &str) {
     if NEUTRALIZED.swap(true, Ordering::SeqCst) {
         return;
     }
-    log_error!("neutralizing bentopick window: {reason}");
+    log_error!("neutralizing bentolaunch window: {reason}");
 
     // The ring first: it is the one with nothing under it worth keeping, and
     // hiding it is a single async call that cannot block on a wedged thread.
@@ -116,7 +116,7 @@ pub fn install_panic_hook() {
 /// an atomic unless the panel is actually up.
 pub fn start_watchdog() {
     std::thread::Builder::new()
-        .name("bentopick-watchdog".into())
+        .name("bentolaunch-watchdog".into())
         .spawn(|| {
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(1000));
