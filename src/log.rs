@@ -18,9 +18,8 @@ pub fn cache_dir() -> Option<PathBuf> {
     cache_dir_in(&PathBuf::from(std::env::var_os("LOCALAPPDATA")?))
 }
 
-/// Renamed from BentoPick. The move carries `peers.json` across, so a browser
-/// paired before the rename stays paired. A failed move keeps the old
-/// directory: it is the one with the pairing in it.
+/// Renamed from BentoPick. The move carries `peers.json`, so pairings survive.
+/// A failed move keeps the old directory: the pairing is in it.
 fn cache_dir_in(base: &Path) -> Option<PathBuf> {
     let dir = base.join("bentolaunch");
     if !dir.exists() {

@@ -603,16 +603,39 @@ impl Default for Config {
             // them on any real machine to fill the row a header costs, which is
             // what the other splits could not do.
             //
-            // Running things first: switching to what exists beats launching
-            // something new, so it gets the top of the panel.
-            //
             // Browsing down the whole right side, everything else down the
             // left. Two halves and one question each: what is open on the web,
             // and what is on this machine. A panel split that way is answered
             // by looking at one half of it, which no stack of full-width rows
             // ever manages - and it gives the centre block a half to sit in on
             // either side of it.
+            //
+            // Fixed boxes lead each lane. Launch and Bookmarks hold their
+            // tiles still. Active and Browsing are as long as whatever is open,
+            // and a box that changes height walks the rest of its lane down.
             sections: vec![
+                placed(
+                    "Launch",
+                    &[SourceSpec::Plain(Source::Taskbar), SourceSpec::Plain(Source::Manual)],
+                    "left",
+                ),
+                // Bookmarks are a box of their own, above the tabs rather than
+                // merged in with them. Three groups under one header told
+                // apart only by an alternating tile fill said "these belong
+                // together" about two lists that answer different questions:
+                // somewhere you go, and somewhere you already are. The row a
+                // second box used to cost is what kept them merged, and a
+                // title costs no row now.
+                //
+                // Capped: 32 bookmarks ran the right lane off the bottom of
+                // the screen on the first summon.
+                SectionConfig {
+                    max_items: 10,
+                    ..placed("Bookmarks", &[SourceSpec::Plain(Source::Bookmarks)], "right")
+                },
+                // Before Active, though it draws in the other lane: `claimed`
+                // in `model/store.rs` runs the list in order, so Active's
+                // catch-all would take the browser windows first.
                 placed(
                     "Browsing",
                     &[group(Source::Windows, BROWSERS), SourceSpec::Plain(Source::Tabs)],
@@ -624,23 +647,6 @@ impl Default for Config {
                         group(Source::Windows, &["explorer.exe"]),
                         SourceSpec::Plain(Source::Windows),
                     ],
-                    "left",
-                ),
-                // Bookmarks are a box of their own, above the tabs rather than
-                // merged in with them. Three groups under one header told
-                // apart only by an alternating tile fill said "these belong
-                // together" about two lists that answer different questions:
-                // somewhere you go, and somewhere you already are. The row a
-                // second box used to cost is what kept them merged, and a
-                // title costs no row now.
-                //
-                // Listed after the running sections so the panel still reads
-                // top to bottom as switch-to before launch. Where it lands is
-                // `at`'s business, not the list's.
-                placed("Bookmarks", &[SourceSpec::Plain(Source::Bookmarks)], "right"),
-                placed(
-                    "Launch",
-                    &[SourceSpec::Plain(Source::Taskbar), SourceSpec::Plain(Source::Manual)],
                     "left",
                 ),
                 // A `move` box, empty until move mode brings the six out. An
@@ -720,10 +726,8 @@ impl Config {
         Some(Self::path_in(std::env::current_exe().ok()?.parent()?))
     }
 
-    /// Renamed from BentoPick. A move, not a rewrite, so comments and ordering
-    /// survive it, and it only fires while the old name is the only one there.
-    /// A failed move keeps the old file: reading one name and writing the other
-    /// would drop every edit made since.
+    /// Renamed from BentoPick. A move, so comments and ordering survive. A
+    /// failed move keeps the old file: two names would drop edits.
     fn path_in(dir: &Path) -> PathBuf {
         let path = dir.join("bentolaunch.toml");
         if path.exists() {
@@ -1015,7 +1019,7 @@ mod tests {
         assert_eq!(back.hotkey, Config::default().hotkey);
         // Four of content, then the two bars along the bottom.
         assert_eq!(back.sections.len(), 6);
-        assert!(back.sections[0].source.contains(Source::Tabs));
+        assert!(back.sections[0].source.contains(Source::Taskbar));
         assert_eq!(back.favorites.rows, Config::default().favorites.rows);
         assert_eq!(back.favorites.columns, Config::default().favorites.columns);
         assert_eq!(back.favorites.contents, Config::default().favorites.contents);
@@ -1096,20 +1100,27 @@ contents = \"apps\"
         assert!(sections.iter().any(|s| s.source.contains(Source::Modes)));
     }
 
+    /// A lane led by a box that grows walks its other boxes down the panel.
     #[test]
-    fn running_things_are_listed_before_launchable_ones() {
-        let running = |s: &SectionConfig| {
+    fn each_lane_leads_with_the_box_that_holds_still() {
+        let volatile = |s: &SectionConfig| {
             s.source
                 .iter()
                 .all(|spec| matches!(spec.source(), Source::Windows | Source::Tabs))
         };
         let sections = Config::default().sections;
-        let last_running = sections.iter().rposition(running).unwrap();
-        let first_launch = sections.iter().position(|s| !running(s)).unwrap();
-        assert!(
-            last_running < first_launch,
-            "everything already open must come before the launchers"
-        );
+        for side in ["left", "right"] {
+            let lane: Vec<_> =
+                sections.iter().filter(|s| s.side.as_deref() == Some(side)).collect();
+            assert!(lane.len() > 1, "{side} lane should hold more than one box");
+            let first_volatile = lane.iter().position(|s| volatile(s)).unwrap();
+            let last_fixed = lane.iter().rposition(|s| !volatile(s)).unwrap();
+            assert!(
+                last_fixed < first_volatile,
+                "{side} lane: {} grows with what is open and must not lead it",
+                lane[first_volatile].title
+            );
+        }
     }
 
     #[test]
@@ -1167,21 +1178,31 @@ source = "taskbar"
         assert!(out.contains(r#"source = ["windows", "tabs"]"#), "{out}");
     }
 
-    /// The browsing section leads, and inside it the windows come before the
-    /// tabs. The catch-all sits behind both, or it would claim the browser
-    /// windows before the section above ever sees them.
+    /// `claimed` walks the list in order, so a catch-all above Browsing takes
+    /// the browser windows before Browsing sees them. Lane does not matter.
     #[test]
-    fn browsing_leads_and_the_catch_all_comes_after_it() {
+    fn the_catch_all_is_listed_after_the_filtered_browser_group() {
         let sections = Config::default().sections;
-        let browsing: Vec<_> = sections[0].source.iter().collect();
+        let at = |title: &str| {
+            sections
+                .iter()
+                .position(|s| s.title == title)
+                .unwrap_or_else(|| panic!("no {title} box in the defaults"))
+        };
 
+        let browsing: Vec<_> = sections[at("Browsing")].source.iter().collect();
         assert_eq!(browsing[0].source(), Source::Windows);
         assert!(browsing[0].matches().unwrap().iter().any(|m| m == "chrome.exe"));
         assert_eq!(browsing[1].source(), Source::Tabs);
 
-        let catch_all = sections[1].source.iter().last().unwrap();
+        let catch_all = sections[at("Active")].source.iter().last().unwrap();
         assert_eq!(catch_all.source(), Source::Windows);
         assert_eq!(catch_all.matches(), None);
+
+        assert!(
+            at("Browsing") < at("Active"),
+            "the catch-all would claim the browser windows first"
+        );
     }
 
     #[test]

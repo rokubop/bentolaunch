@@ -98,8 +98,8 @@ impl IconData {
 /// this, an extension one version behind fails as "not paired", which sends the
 /// user looking for a pairing problem they do not have.
 /// 3 is the BentoPick rename: the proof's domain separator carries the name, so
-/// both sides changed string at once. The version check runs before the proof,
-/// which is what turns a stale extension into "update it" instead of silence.
+/// both sides changed at once. Version is checked before the proof, so a stale
+/// extension gets "update it", not silence.
 pub const PROTOCOL: u32 = 3;
 
 /// Extension to bentolaunch.
