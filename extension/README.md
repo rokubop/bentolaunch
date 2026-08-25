@@ -52,6 +52,12 @@ WARN  browser connection refused: chrome-extension://abc... is not paired
 INFO  to pair it, choose Browser > Pair a browser... from the tray icon
 ```
 
+## Its ID is pinned
+
+`key` in `manifest.json` fixes the extension ID to
+`aipngbpljefmohidnhlbfeenmpjhmpbh`. Without it Chrome derives the ID from the
+folder path, so moving this folder unpairs every browser paired with it.
+
 **Unpairing** is **Browser > Forget** in the same menu. That drops the token at
 BentoLaunch's end, which is the end that matters; the button on the options page
 only clears this side.
@@ -63,7 +69,7 @@ like a pairing failure:
 
 ```
 WARN  browser connection 3: chrome-extension://abc... speaks bridge protocol 1,
-      this build speaks 2; the extension is out of date
+      this build speaks 3; the extension is out of date
 ```
 
 Both halves ship from the same GitHub release, so taking the exe and the

@@ -9,9 +9,16 @@
     "48": "icons/48.png",
     "128": "icons/128.png"
   },
-  "permissions": ["tabs", "bookmarks", "storage", "alarms", "favicon"],
+  "permissions": [
+    "tabs",
+    "bookmarks",
+    "storage",
+    "alarms",
+    "favicon"
+  ],
   "background": {
     "service_worker": "worker.js"
   },
-  "options_page": "options.html"
+  "options_page": "options.html",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA5xqWyeFS3S8P+rLYeeb0ojwiM3lury9CPT8sxC1WH+SlVviVDsVfNV8cPJcoNLnTni6ylijFoqWKOMgXh2C80pwv5zknv1p3N8MIqajA8gRfGH/XJwAfJYmQ3kU8J/1Esc6UBBbsP0BzC1ZcRuxwUKSQgpzAYYTrpJSLBnveBmEc1xNmXs4F6OVvjyBgcOgyBiljUsvG27ddls1v+9r0jlLWCj7o85sIMuA5A8C+gQRsAMx9/cZ5Gn6XVpBW36NOTbYiz9F2mOiEXOln3WcmdNhkgtHt78TKwnyOxCJWANB4jRr5UfjTQ253m94I3KSxdYSvgkKKZz6URxVdw50scwIDAQAB"
 }
