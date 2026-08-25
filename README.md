@@ -27,9 +27,10 @@ folder needs admin to write to. Anywhere permanent that you own is fine.
 Tray icon only, no window until you summon it. To update, copy a newer exe over
 the old one.
 
-### 2. Browser tabs (optional)
+### 2. Browser support
 
-Only if you want tabs in the grid. Chromium browsers for now.
+Required for anything from the browser: open tabs and bookmarks. Without it the
+grid still shows browser windows, but not what is in them. Chromium for now.
 
 1. Download `bentopick-extension.zip` from the
    [same release](https://github.com/rokubop/bentopick/releases/latest) and unzip it.
