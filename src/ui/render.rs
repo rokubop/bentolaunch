@@ -128,6 +128,10 @@ pub struct OptionPaint<'a> {
     /// The big mark. Ignored when there is an icon: they occupy the same band,
     /// and the glyph is what stands in until one arrives.
     pub glyph: &'a str,
+    /// Drawn in the glyph's place when the option is a picture of a shape.
+    /// No font has "the left half of a panel" in it, and the nearest
+    /// characters are a vertical bar either way up - which is the same bar.
+    pub mark: Option<Mark>,
     pub label: &'a str,
     pub colors: TextColors,
     pub icon: Option<&'a IconPixels>,
@@ -507,7 +511,7 @@ impl Renderer {
         surface: &CompositionDrawingSurface,
         paint: OptionPaint<'_>,
     ) -> Result<()> {
-        let OptionPaint { width, height, glyph, label, colors, icon } = paint;
+        let OptionPaint { width, height, glyph, mark, label, colors, icon } = paint;
         let glyph_format = text_format(
             &self.dwrite,
             DWRITE_FONT_WEIGHT_SEMI_BOLD,
@@ -565,13 +569,24 @@ impl Renderer {
                         None,
                     );
                 }
-                None => self.draw_text(
-                    &context,
-                    glyph,
-                    &glyph_format,
-                    D2D_RECT_F { left: 0.0, top, right: width, bottom: split },
-                    colors.title,
-                )?,
+                None => match mark {
+                    Some(mark) => {
+                        // Same band the glyph would have used, so a row of
+                        // options mixing the two still lines up.
+                        let (dx, dy) = (offset.x as f32, offset.y as f32);
+                        context.SetTransform(&Matrix3x2::translation(dx, dy + top));
+                        let drawn = self.draw_mark(&context, mark, width, band, colors);
+                        context.SetTransform(&Matrix3x2::translation(dx, dy));
+                        drawn?;
+                    }
+                    None => self.draw_text(
+                        &context,
+                        glyph,
+                        &glyph_format,
+                        D2D_RECT_F { left: 0.0, top, right: width, bottom: split },
+                        colors.title,
+                    )?,
+                },
             }
             self.draw_text(
                 &context,

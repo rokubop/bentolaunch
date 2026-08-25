@@ -379,7 +379,17 @@ pub struct SectionConfig {
     /// `"#RRGGBB"`. Unset takes the next colour off `theme.section_edges`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edge: Option<String>,
-    /// Where this box sits, as cuts from the whole panel inward.
+    /// Which band across the panel this box sits in: `"left"`, `"right"` or
+    /// `"full"`. Order in this file is order down the lane.
+    ///
+    /// A property of this box, not a relationship with another one. `at` said
+    /// "left" by cutting the panel in two and taking the near half, so it
+    /// stopped meaning left the moment nothing was on the right.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side: Option<String>,
+    /// Legacy, and read only when `side` is absent: the first cut is taken as
+    /// the lane and the rest is dropped, because order in this file is what
+    /// orders boxes now.
     ///
     /// `"left"` is the whole left side. `"right/top"` is the top of what is
     /// left after that cut. `"left@35"` pins it to 35% of the width. Sections
@@ -474,6 +484,9 @@ pub struct Grid {
     /// from its neighbour. The coloured ring is what does that.
     pub section_gap: f32,
     pub corner_radius: f32,
+    /// Share of the columns the left lane takes. One seam for the whole panel,
+    /// because there is only one line down the middle to argue about.
+    pub split: f32,
     /// Filter strip. Only appears while there is a query. 0 filters silently.
     /// Its text is sized from this, so raising it makes the query bigger.
     pub search_height: f32,
@@ -551,6 +564,7 @@ fn section(title: &str, sources: &[SourceSpec]) -> SectionConfig {
         matches: Vec::new(),
         color: None,
         edge: None,
+        side: None,
         at: None,
         columns: 0,
         max_items: 0,
@@ -559,8 +573,8 @@ fn section(title: &str, sources: &[SourceSpec]) -> SectionConfig {
     }
 }
 
-fn placed(title: &str, sources: &[SourceSpec], at: &str) -> SectionConfig {
-    SectionConfig { at: Some(at.into()), ..section(title, sources) }
+fn placed(title: &str, sources: &[SourceSpec], side: &str) -> SectionConfig {
+    SectionConfig { side: Some(side.into()), ..section(title, sources) }
 }
 
 fn group(source: Source, matches: &[&str]) -> SourceSpec {
@@ -598,14 +612,15 @@ impl Default for Config {
                 placed(
                     "Browsing",
                     &[group(Source::Windows, BROWSERS), SourceSpec::Plain(Source::Tabs)],
-                    "right/bottom",
+                    "right",
                 ),
-                section(
+                placed(
                     "Active",
                     &[
                         group(Source::Windows, &["explorer.exe"]),
                         SourceSpec::Plain(Source::Windows),
                     ],
+                    "left",
                 ),
                 // Bookmarks are a box of their own, above the tabs rather than
                 // merged in with them. Three groups under one header told
@@ -618,10 +633,11 @@ impl Default for Config {
                 // Listed after the running sections so the panel still reads
                 // top to bottom as switch-to before launch. Where it lands is
                 // `at`'s business, not the list's.
-                placed("Bookmarks", &[SourceSpec::Plain(Source::Bookmarks)], "right/top"),
-                section(
+                placed("Bookmarks", &[SourceSpec::Plain(Source::Bookmarks)], "right"),
+                placed(
                     "Launch",
                     &[SourceSpec::Plain(Source::Taskbar), SourceSpec::Plain(Source::Manual)],
+                    "left",
                 ),
                 // A `move` box, empty until move mode brings the six out. An
                 // empty section draws nothing, so this costs a row only while
@@ -632,10 +648,10 @@ impl Default for Config {
                 // that bar is the one row whose position never changes, and a
                 // box appearing under it would push it off the place it is
                 // aimed at.
-                placed("", &[SourceSpec::Plain(Source::Moves)], "bottom"),
+                placed("", &[SourceSpec::Plain(Source::Moves)], "full"),
                 // Untitled: four squares that each say what they are, under a
                 // header that would only say it again.
-                placed("", &[SourceSpec::Plain(Source::Modes)], "bottom"),
+                placed("", &[SourceSpec::Plain(Source::Modes)], "full"),
             ],
             grid: Grid::default(),
             favorites: Favorites::default(),
@@ -660,6 +676,7 @@ impl Default for Grid {
             header_gap: 14.0,
             section_gap: 0.0,
             corner_radius: 8.0,
+            split: 0.5,
             search_height: 72.0,
         }
     }
@@ -984,8 +1001,10 @@ mod tests {
         assert_eq!(back.favorites.columns, Config::default().favorites.columns);
         assert_eq!(back.favorites.contents, Config::default().favorites.contents);
         // The legacy key is not written, so a fresh config has nothing to fold.
-        // `contents = "split"` is the value, not the key it replaced.
-        assert!(!text.contains("split ="), "the default config still writes split");
+        // `contents = "split"` is the value, not the key it replaced. Asked of
+        // the parse rather than of the text: `[grid]` has a `split` of its own
+        // now, and it is a different question entirely.
+        assert!(back.favorites.split.is_none(), "the default config still writes favorites.split");
     }
 
     #[test]
@@ -1046,7 +1065,7 @@ contents = \"apps\"
         };
         assert!(bar(Source::Moves) < bar(Source::Modes));
         for source in [Source::Moves, Source::Modes] {
-            assert_eq!(sections[bar(source)].at.as_deref(), Some("bottom"));
+            assert_eq!(sections[bar(source)].side.as_deref(), Some("full"));
         }
     }
 

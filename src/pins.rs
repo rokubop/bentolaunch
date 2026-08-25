@@ -10,6 +10,7 @@ use std::path::Path;
 use toml_edit::{Array, ArrayOfTables, DocumentMut, Item as TomlItem, Table, Value, value};
 
 use crate::config::{Config, Contents};
+use crate::ui::grid::Lane;
 use crate::{log_info, log_warn};
 
 /// Section created when there is nowhere else to put a pin.
@@ -46,9 +47,9 @@ pub fn set_order(section: &str, names: &[String]) -> bool {
 /// a layout the user never asked for.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Placement {
-    /// `None` removes the key, putting the box back to filling whatever the
-    /// other boxes left over.
-    pub at: Option<String>,
+    /// Which band across the panel. `None` removes the key, putting the box
+    /// back to the default lane.
+    pub side: Option<String>,
     /// 0 removes the key: as many columns as the box's rectangle takes.
     pub columns: usize,
     /// 0 removes the key: no cap.
@@ -188,12 +189,23 @@ fn favorites_in(path: &Path, half: Half, edit: impl FnOnce(&mut Array) -> bool) 
     write(path, &doc)
 }
 
-/// Move a section `delta` places through `[[sections]]`.
+/// Move a section `delta` places down its own lane.
 ///
-/// Order in the file is the order boxes stack into whatever the claimed sides
-/// left over, so this is how that stack is rearranged.
+/// Order in the file is order down a lane, so this is how that order is
+/// changed. Past the boxes in other lanes, not through them: swapping with a
+/// box in the other column is a write that changes nothing on screen.
 pub fn move_section(section: &str, delta: isize) -> bool {
     Config::path().is_some_and(|path| move_section_in(&path, section, delta))
+}
+
+/// Which band across the panel a section's table asks for. `side` wins; `at`
+/// is read for its first cut only, and a section that says neither takes the
+/// default.
+fn lane_of(table: &Table) -> Lane {
+    if let Some(lane) = table.get("side").and_then(|v| v.as_str()).and_then(Lane::parse) {
+        return lane;
+    }
+    table.get("at").and_then(|v| v.as_str()).map(Lane::from_at).unwrap_or_default()
 }
 
 fn move_section_in(path: &Path, section: &str, delta: isize) -> bool {
@@ -206,7 +218,21 @@ fn move_section_in(path: &Path, section: &str, delta: isize) -> bool {
         log_warn!("no section titled \"{section}\"; not moved");
         return false;
     };
-    let to = from.saturating_add_signed(delta).min(sections.len() - 1);
+    // Its neighbours down its own lane. `from` is one of them, so this always
+    // finds it.
+    let lanes: Vec<Lane> = sections.iter().map(lane_of).collect();
+    let mine = lanes[from];
+    let lane: Vec<usize> = (0..lanes.len()).filter(|&index| lanes[index] == mine).collect();
+    let Some(place) = lane.iter().position(|&index| index == from) else {
+        return false;
+    };
+    let Some(to) = place
+        .checked_add_signed(delta)
+        .and_then(|next| lane.get(next))
+        .copied()
+    else {
+        return false;
+    };
     if to == from {
         return false;
     }
@@ -238,65 +264,6 @@ fn move_section_in(path: &Path, section: &str, delta: isize) -> bool {
     }
 }
 
-/// Give one section a whole side of the panel, and move anything else that was
-/// claiming that side out of the way.
-///
-/// One write, not one per section: "make this the left side" is a single
-/// intention, and doing it as several writes leaves the file briefly
-/// describing a panel with two boxes fighting over the same half.
-///
-/// The displaced sections lose their placement rather than being sent
-/// somewhere chosen for them. They then fill whatever is left over, which is
-/// the arrangement anybody asking for a full-height side is picturing.
-pub fn claim_side(section: &str, side: &str, share: f32) -> bool {
-    Config::path().is_some_and(|path| claim_side_in(&path, section, side, share))
-}
-
-fn claim_side_in(path: &Path, section: &str, side: &str, share: f32) -> bool {
-    let Some(mut doc) = read(path) else { return false };
-    let Some(sections) = sections_mut(&mut doc) else { return false };
-    if !sections.iter().any(|table| title_of(table) == section) {
-        log_warn!("no section titled \"{section}\"; side not claimed");
-        return false;
-    }
-
-    let spelled = if share > 0.0 {
-        format!("{side}@{:.0}", share * 100.0)
-    } else {
-        side.to_owned()
-    };
-
-    let mut displaced = Vec::new();
-    for table in sections.iter_mut() {
-        let title = title_of(table);
-        if title == section {
-            table["at"] = value(spelled.as_str());
-            continue;
-        }
-        // Anything whose path starts with the same cut is on the side being
-        // claimed, however deeply it was nested inside it.
-        let theirs = table.get("at").and_then(|at| at.as_str()).unwrap_or("");
-        let first = theirs.split(['/', '@']).next().unwrap_or("");
-        if !first.is_empty() && first.eq_ignore_ascii_case(side) {
-            table.remove("at");
-            displaced.push(title);
-        }
-    }
-
-    if !write(path, &doc) {
-        return false;
-    }
-    if displaced.is_empty() {
-        log_info!("section \"{section}\" now holds the {side}");
-    } else {
-        log_info!(
-            "section \"{section}\" now holds the {side}; moved off it: {}",
-            displaced.join(", ")
-        );
-    }
-    true
-}
-
 fn set_placement_in(path: &Path, section: &str, placement: Placement) -> bool {
     let Some(mut doc) = read(path) else { return false };
     let Some(sections) = sections_mut(&mut doc) else { return false };
@@ -310,12 +277,15 @@ fn set_placement_in(path: &Path, section: &str, placement: Placement) -> bool {
 
     // A default is written as an absent key, not as a zero. The config is meant
     // to be read by a person, and `columns = 0` says less than nothing there.
-    match &placement.at {
-        Some(at) => table["at"] = value(at.as_str()),
+    match &placement.side {
+        Some(side) => table["side"] = value(side.as_str()),
         None => {
-            table.remove("at");
+            table.remove("side");
         }
     }
+    // The old spelling never wins over the new one, so a box that has been
+    // edited once stops being described twice.
+    table.remove("at");
     for (key, number) in [("columns", placement.columns), ("max_items", placement.max_items)] {
         if number == 0 {
             table.remove(key);
@@ -558,6 +528,9 @@ pub enum Change {
     CenterSize { columns: usize, rows: usize },
     /// Which lists the block holds, and whether they are kept apart.
     CenterContents(Contents),
+    /// Share of the columns the left lane takes. One seam for the whole panel,
+    /// so this is one number rather than a width on every box.
+    Split(f32),
 }
 
 /// Apply one settings change. Returns whether the file changed.
@@ -580,6 +553,7 @@ fn set_in(path: &Path, change: Change) -> bool {
             set_key(&mut doc, "favorites", "columns", (columns as i64).into());
             set_key(&mut doc, "favorites", "rows", (rows as i64).into());
         }
+        Change::Split(share) => set_key(&mut doc, "grid", "split", f64::from(share).into()),
         Change::CenterContents(contents) => {
             set_key(&mut doc, "favorites", "contents", contents.key().into());
             // The key `contents` replaced. Left in, it would keep answering
@@ -779,13 +753,13 @@ source = \"taskbar\"
     #[test]
     fn a_placement_is_written_as_three_keys() {
         let path = three_sections("placement");
-        let placement = Placement { at: Some("left".into()), columns: 3, max_items: 12 };
+        let placement = Placement { side: Some("left".into()), columns: 3, max_items: 12 };
         assert!(set_placement_in(&path, "Browsing", placement));
 
         let text = std::fs::read_to_string(&path).unwrap();
         let parsed: Config = toml::from_str(&text).unwrap();
         let browsing = parsed.sections.iter().find(|s| s.title == "Browsing").unwrap();
-        assert_eq!(browsing.at.as_deref(), Some("left"));
+        assert_eq!(browsing.side.as_deref(), Some("left"));
         assert_eq!(browsing.columns, 3);
         assert_eq!(browsing.max_items, 12);
     }
@@ -795,17 +769,17 @@ source = \"taskbar\"
         // Not `columns = 0`. A config that is meant to be hand-edited should
         // not accumulate keys that say "unset".
         let path = three_sections("defaults");
-        set_placement_in(&path, "Active", Placement { at: Some("right/top".into()), columns: 4, max_items: 9 });
+        set_placement_in(&path, "Active", Placement { side: Some("right".into()), columns: 4, max_items: 9 });
         assert!(set_placement_in(&path, "Active", Placement::default()));
 
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(!text.contains("columns"), "{text}");
         assert!(!text.contains("max_items"), "{text}");
-        assert!(!text.contains("at ="), "{text}");
+        assert!(!text.contains("side ="), "{text}");
 
         let parsed: Config = toml::from_str(&text).unwrap();
         let active = parsed.sections.iter().find(|s| s.title == "Active").unwrap();
-        assert_eq!(active.at, None);
+        assert_eq!(active.side, None);
         assert_eq!(active.columns, 0);
         assert_eq!(active.max_items, 0);
     }
@@ -823,7 +797,7 @@ source = \"taskbar\"
         );
         std::fs::write(&path, original).unwrap();
 
-        set_placement_in(&path, "Places", Placement { at: Some("bottom".into()), columns: 5, max_items: 0 });
+        set_placement_in(&path, "Places", Placement { side: Some("full".into()), columns: 5, max_items: 0 });
         let text = std::fs::read_to_string(&path).unwrap();
 
         assert!(text.contains("# mine"), "{text}");

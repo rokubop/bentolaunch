@@ -45,7 +45,7 @@ use crate::safety;
 use crate::shell::{activate, arrange, icons, picker};
 use crate::ui::filter;
 use crate::ui::grid::{
-    At, Band, BoxState, Command, Control, Layout, Metrics, Rect as GridRect, SectionShape,
+    Band, BoxState, Command, Control, Lane, Layout, Metrics, Rect as GridRect, SectionShape,
     centred_grid, commands, controls, origin_run, reordered,
 };
 use crate::ui::menu;
@@ -295,6 +295,7 @@ impl Panel {
             section_gap: 0.0,
             header_gap: 0.0,
             search_h: 0.0,
+            split: 0.5,
         };
 
         let mut panel = Box::new(Panel {
@@ -412,6 +413,7 @@ impl Panel {
             header_gap: g.header_gap * scale,
             section_gap: g.section_gap * scale,
             search_h: if self.query.is_empty() { 0.0 } else { g.search_height * scale },
+            split: g.split,
         }
     }
 
@@ -429,7 +431,7 @@ impl Panel {
                     return SectionShape {
                         title: String::new(),
                         count: s.items.len(),
-                        at: None,
+                        lane: Lane::default(),
                         columns: s.columns,
                         center: s.center,
                     };
@@ -438,7 +440,7 @@ impl Panel {
                 SectionShape {
                     title: s.title.clone(),
                     count: s.items.len(),
-                    at: placed.and_then(|c| c.at.as_deref()).and_then(At::parse),
+                    lane: lane_of(placed),
                     columns: placed.map_or(0, |c| c.columns),
                     center: None,
                 }
@@ -1116,6 +1118,12 @@ impl Panel {
                     width: rect.w,
                     height: rect.h,
                     glyph,
+                    mark: control.span().map(|(left, right)| Mark::Half {
+                        left,
+                        top: 0.0,
+                        right,
+                        bottom: 1.0,
+                    }),
                     label,
                     colors,
                     icon: None,
@@ -1184,6 +1192,7 @@ impl Panel {
                         width: rect.w,
                         height: rect.h,
                         glyph,
+                        mark: None,
                         label,
                         colors: self.text_colors(),
                         icon: icon.as_deref(),
@@ -1263,6 +1272,7 @@ impl Panel {
                             width: rect.w,
                             height: rect.h,
                             glyph: command.glyph(),
+                            mark: None,
                             label: command.label(),
                             colors,
                             icon: None,
@@ -1361,6 +1371,7 @@ impl Panel {
                             width: rect.w,
                             height: rect.h,
                             glyph: setting.glyph(),
+                            mark: None,
                             label: setting.label(&self.config),
                             colors,
                             icon: None,
@@ -2129,6 +2140,7 @@ impl Panel {
                     width: rect.w,
                     height: rect.h,
                     glyph: "",
+                    mark: None,
                     label: "BentoPick",
                     colors,
                     icon: Some(&icon),
@@ -2479,11 +2491,6 @@ impl Panel {
             return;
         }
         let shown = self.edited_state().1;
-        let placed = self.edit_title().map(|title| self.placement_of(&title));
-        let at = placed
-            .as_ref()
-            .and_then(|placement| placement.at.as_deref())
-            .and_then(At::parse);
 
         match control {
             Control::Done => self.leave_mode(),
@@ -2493,30 +2500,13 @@ impl Panel {
             Control::More => {
                 self.edit_placement(|p| p.max_items = shown + 1);
             }
-            // Claiming a side takes the whole of it: anything else sitting
-            // there is moved off, so the button does what its label says. A
-            // box claiming the left becomes the full-height left of the panel.
-            Control::ClaimLeft
-            | Control::ClaimRight
-            | Control::ClaimTop
-            | Control::ClaimBottom => {
-                let (Some(side), Some(title)) = (control.side(), self.edit_title()) else {
-                    return;
-                };
-                // The lit square is the side the box already holds, so clicking
-                // it gives that side back. One button, both directions, and the
-                // state is visible instead of being something to remember.
-                let holds = self
-                    .edit_state()
-                    .is_some_and(|state| control.holds(&state));
-                if holds {
-                    self.edit_placement(|p| p.at = None);
-                } else {
-                    let keep = at.map_or(0.0, |at| at.share);
-                    if pins::claim_side(&title, side.word(), keep) {
-                        self.reload_config();
-                    }
-                }
+            // One write, and nothing else on the panel moves. A lane is a
+            // property of this box, so putting it in one says nothing about
+            // any other box - which is the whole of why these replaced the
+            // four claim buttons.
+            Control::Left | Control::Right | Control::FullWidth => {
+                let Some(lane) = control.lane() else { return };
+                self.edit_placement(|p| p.side = Some(lane.word().to_owned()));
             }
             Control::MoveUp | Control::MoveDown => {
                 let Some(title) = self.edit_title() else { return };
@@ -2532,17 +2522,15 @@ impl Panel {
                         .or(self.edit);
                 }
             }
-            Control::Grow | Control::Shrink => {
+            Control::Narrower | Control::Wider => {
                 // Worked out by the same rule that decided this button was
-                // available, so the two cannot disagree about where the edge
+                // available, so the two cannot disagree about where the seam
                 // is now.
-                let (Some(state), Some(mut at)) = (self.edit_state(), at) else {
-                    return;
-                };
-                let Some(share) = control.resized(&state) else { return };
-                at.share = share;
-                let spelled = at.spell();
-                self.edit_placement(|p| p.at = Some(spelled));
+                let Some(state) = self.edit_state() else { return };
+                let Some(split) = control.resized(&state) else { return };
+                if pins::set(pins::Change::Split(split)) {
+                    self.reload_config();
+                }
             }
         }
     }
@@ -2564,42 +2552,34 @@ impl Panel {
     fn edit_state(&self) -> Option<BoxState> {
         let section = self.edit?;
         let title = self.sections.get(section)?.title.clone();
-        // The boxes with no claimed side, in the order they stack into what is
-        // left over. Moving up and down walks this, not the whole list.
-        let stack: Vec<&str> = self
+        let lane = self.lane_named(&title);
+        // Its neighbours down its own lane, in the order they are listed. Up
+        // and down walk this, which every box is in - they used to walk only
+        // the boxes with no claimed side, so both arrows were dead on most of
+        // the panel.
+        let siblings: Vec<&str> = self
             .sections
             .iter()
-            .filter(|s| self.placement_of(&s.title).at.is_none())
+            .filter(|s| self.lane_named(&s.title) == lane)
             .map(|s| s.title.as_str())
             .collect();
-        let at_stack = stack.iter().position(|name| *name == title).unwrap_or(0);
-
-        let at = self.placement_of(&title).at.as_deref().and_then(At::parse);
+        let at_lane = siblings.iter().position(|name| *name == title).unwrap_or(0);
         let band = self
             .layout
             .bands()
             .iter()
             .find(|band| band.section == section);
-        let panel = self.layout.panel;
-        // The fraction it fills along whichever way its cut runs.
-        let share_now = band.map_or(0.5, |band| {
-            if at.as_ref().is_some_and(At::splits_width) {
-                band.rect.w / panel.w.max(1.0)
-            } else {
-                band.rect.h / self.layout.content_h.max(1.0)
-            }
-        });
 
         Some(BoxState {
             shown: self.sections.get(section).map_or(0, |s| s.items.len()),
             total: self.sections.get(section).map_or(0, |s| s.total),
-            at,
+            lane,
             boxes: self.layout.bands().len(),
-            at_stack,
-            stack: stack.len(),
+            at_lane,
+            lane_len: siblings.len(),
             cols: band.map_or(1, |band| band.cols),
             panel_cols: self.layout.cols,
-            share_now,
+            split: self.config.grid.split,
         })
     }
 
@@ -2864,10 +2844,15 @@ impl Panel {
             .iter()
             .find(|section| section.title == title)
             .map_or(pins::Placement::default(), |section| pins::Placement {
-                at: section.at.clone(),
+                side: section.side.clone(),
                 columns: section.columns,
                 max_items: section.max_items,
             })
+    }
+
+    /// Which band across the panel a section sits in.
+    fn lane_named(&self, title: &str) -> Lane {
+        lane_of(self.config.sections.iter().find(|s| s.title == title))
     }
 
     /// Change the selected box's placement and write it. The config watcher
@@ -2917,10 +2902,12 @@ impl Panel {
                 self.leave_mode();
                 true
             }
-            LEFT => self.click_control(Control::ClaimLeft),
-            RIGHT => self.click_control(Control::ClaimRight),
-            UP => self.click_control(Control::ClaimTop),
-            DOWN => self.click_control(Control::ClaimBottom),
+            // Left and right pick the lane, up and down move down it. The
+            // arrows say the same thing the squares do.
+            LEFT => self.click_control(Control::Left),
+            RIGHT => self.click_control(Control::Right),
+            UP => self.click_control(Control::MoveUp),
+            DOWN => self.click_control(Control::MoveDown),
             _ => false,
         }
     }
@@ -2940,9 +2927,9 @@ impl Panel {
             0 => String::from("all"),
             capped => format!("{capped}"),
         };
-        // The path exactly as the config spells it, so anyone wanting a shape
-        // the squares cannot reach can read off how to type it.
-        let sits = placement.at.as_deref().unwrap_or("fills the rest");
+        // The lane exactly as the config spells it, so what the squares do and
+        // what the file says are visibly the same thing.
+        let sits = self.lane_named(title).word();
 
         format!("{title}   {sits} \u{b7} {shown}")
     }
@@ -4020,6 +4007,17 @@ unsafe extern "system" fn wndproc(
 
     // SAFETY: standard fallback for every message we do not claim.
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+/// Which band across the panel a section asks for. `side` wins; the old `at`
+/// spelling is read for its first cut only, because order in the file is what
+/// orders boxes now.
+fn lane_of(section: Option<&crate::config::SectionConfig>) -> Lane {
+    let Some(section) = section else { return Lane::default() };
+    if let Some(lane) = section.side.as_deref().and_then(Lane::parse) {
+        return lane;
+    }
+    section.at.as_deref().map(Lane::from_at).unwrap_or_default()
 }
 
 /// The rectangle a set of rings needs to be drawn in, with room for the stroke

@@ -65,19 +65,6 @@ pub enum Side {
 }
 
 impl Side {
-    /// Which way the cut runs.
-    fn axis(self) -> Axis {
-        match self {
-            Side::Left | Side::Right => Axis::Across,
-            Side::Top | Side::Bottom => Axis::Down,
-        }
-    }
-
-    /// Whether this is the near half of its cut.
-    fn first(self) -> bool {
-        matches!(self, Side::Left | Side::Top)
-    }
-
     pub fn parse(word: &str) -> Option<Side> {
         match word.trim().to_ascii_lowercase().as_str() {
             "left" | "l" => Some(Side::Left),
@@ -85,15 +72,6 @@ impl Side {
             "top" | "t" | "up" => Some(Side::Top),
             "bottom" | "b" | "down" => Some(Side::Bottom),
             _ => None,
-        }
-    }
-
-    pub fn word(self) -> &'static str {
-        match self {
-            Side::Left => "left",
-            Side::Right => "right",
-            Side::Top => "top",
-            Side::Bottom => "bottom",
         }
     }
 }
@@ -106,60 +84,56 @@ enum Axis {
     Down,
 }
 
-/// Where a box sits, as a run of cuts from the whole panel inward.
+/// Which band across the panel a box sits in.
 ///
-/// `left` is the whole left half. `right/top` is the top of what is left over
-/// after that cut. A share pins one side to a fraction of its parent; without
-/// one the two halves are sized by what they hold.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct At {
-    pub cuts: Vec<Side>,
-    /// 0 to size by content. Applies to the last cut in `cuts`.
-    pub share: f32,
+/// The one decision about a box's x axis, and a property of that box rather
+/// than of its neighbours. The cut paths this replaced said "left" by cutting
+/// the panel in two and taking the near half, so "left" stopped meaning left
+/// the moment nothing was on the right: the cut collapsed and the box took the
+/// whole width. A box that changes shape because a browser disconnected is not
+/// a box anyone can learn the position of.
+///
+/// Height is not a choice - a box is as tall as what it holds - so the only
+/// other thing to say about a box is where it comes in its lane, which is the
+/// order it is listed in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Lane {
+    Left,
+    Right,
+    /// The whole width. These sit above or below the split, by whether they are
+    /// listed before or after the first box that claims a side.
+    #[default]
+    Full,
 }
 
-impl At {
-    /// `"right/top"`, or `"left@35"` to pin the left side to 35% of the width.
-    ///
-    /// Unreadable input is no placement rather than an error: a typo in a
-    /// hand-edited config should cost one section its position, not the panel.
-    pub fn parse(spec: &str) -> Option<At> {
-        let (path, share) = match spec.split_once('@') {
-            Some((path, percent)) => (path, percent.trim().parse::<f32>().ok()?.clamp(5.0, 95.0)),
-            None => (spec, 0.0),
-        };
-        let cuts: Option<Vec<Side>> = path
-            .split(['/', ' ', ','])
-            .filter(|word| !word.trim().is_empty())
-            .map(Side::parse)
-            .collect();
-        let cuts = cuts?;
-        (!cuts.is_empty()).then_some(At { cuts, share: share / 100.0 })
+impl Lane {
+    /// Unreadable input is the default rather than an error: a typo in a
+    /// hand-edited config should cost one section its place, not the panel.
+    pub fn parse(word: &str) -> Option<Lane> {
+        match word.trim().to_ascii_lowercase().as_str() {
+            "left" | "l" => Some(Lane::Left),
+            "right" | "r" => Some(Lane::Right),
+            "full" | "wide" | "all" | "both" => Some(Lane::Full),
+            _ => None,
+        }
     }
 
-    /// Whether the cut this sits on divides width rather than height.
-    ///
-    /// What "bigger" means depends on it: a box on a left/right cut grows
-    /// wider, one on a top/bottom cut grows taller. Saying "bigger" for both
-    /// is how a button ends up pointing the wrong way.
-    pub fn splits_width(&self) -> bool {
-        self.cuts
-            .last()
-            .is_some_and(|side| side.axis() == Axis::Across)
+    pub fn word(self) -> &'static str {
+        match self {
+            Lane::Left => "left",
+            Lane::Right => "right",
+            Lane::Full => "full",
+        }
     }
 
-    /// Back to the config spelling.
-    pub fn spell(&self) -> String {
-        let path = self
-            .cuts
-            .iter()
-            .map(|side| side.word())
-            .collect::<Vec<_>>()
-            .join("/");
-        if self.share > 0.0 {
-            format!("{path}@{:.0}", self.share * 100.0)
-        } else {
-            path
+    /// What an old `at` path meant, as a lane. Only the first cut ever said
+    /// anything about the x axis; the rest ordered boxes within it, which is
+    /// what the order in the file does now.
+    pub fn from_at(spec: &str) -> Lane {
+        match spec.split(['/', ' ', ',', '@']).find_map(Side::parse) {
+            Some(Side::Left) => Lane::Left,
+            Some(Side::Right) => Lane::Right,
+            _ => Lane::Full,
         }
     }
 }
@@ -187,6 +161,10 @@ pub struct Metrics {
     /// Filter strip above the grid, 0 when not filtering. Does not scroll: it
     /// is what explains why most of the grid is missing.
     pub search_h: f32,
+    /// Share of the columns the left lane takes. One seam for the whole panel,
+    /// not a width per box: there is only one line down the middle, so there is
+    /// only one number to argue about.
+    pub split: f32,
 }
 
 /// What the layout needs to know about a section: its label, how many tiles,
@@ -195,9 +173,8 @@ pub struct Metrics {
 pub struct SectionShape {
     pub title: String,
     pub count: usize,
-    /// Where the box sits. `None` stacks it under whatever came before, which
-    /// is what an unplaced section gets and what the plain default is made of.
-    pub at: Option<At>,
+    /// Which band across the panel the box sits in.
+    pub lane: Lane,
     /// Tile columns inside this box. 0 fits as many as its rectangle takes.
     pub columns: usize,
     /// This box is held in the middle of the panel instead of taking a place in
@@ -315,7 +292,7 @@ impl Layout {
         // the monitor is.
         let capped = if m.max_cols == 0 { fits } else { fits.min(m.max_cols) };
 
-        let tree = plan(sections);
+        let tree = plan(sections, m.split.clamp(0.15, 0.85));
         let middle = center_boxes(sections);
         // What the block wants, before the panel has a width to give it.
         let asking: usize = center_widths(sections, &middle, usize::MAX).iter().sum();
@@ -768,46 +745,57 @@ fn corners_only(ring: &[(usize, usize)]) -> Vec<(usize, usize)> {
 /// structure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Control {
-    ClaimLeft,
-    ClaimTop,
-    ClaimBottom,
-    ClaimRight,
-    /// Earlier or later in the stack that fills the leftover space.
+    /// The x axis, which is the only thing there is to decide about it.
+    Left,
+    Right,
+    FullWidth,
+    /// Earlier or later down this box's own lane.
     MoveUp,
     MoveDown,
-    /// More or less of the cut this box sits on.
-    Grow,
-    Shrink,
+    /// Where the seam down the middle of the panel sits.
+    Narrower,
+    Wider,
     Fewer,
     More,
     Done,
 }
 
 impl Control {
-    /// The side this option claims, if it is one of those.
-    pub fn side(self) -> Option<Side> {
+    /// The lane this option puts the box in, if it is one of those.
+    pub fn lane(self) -> Option<Lane> {
         match self {
-            Control::ClaimLeft => Some(Side::Left),
-            Control::ClaimRight => Some(Side::Right),
-            Control::ClaimTop => Some(Side::Top),
-            Control::ClaimBottom => Some(Side::Bottom),
+            Control::Left => Some(Lane::Left),
+            Control::Right => Some(Lane::Right),
+            Control::FullWidth => Some(Lane::Full),
             _ => None,
         }
     }
 
-    /// The big mark on the option tile.
+    /// The part of the panel this option would give the box, as a fraction of
+    /// its width. `None` for the options that are not about the x axis.
+    ///
+    /// Drawn as a picture rather than set in a glyph: the nearest characters
+    /// are a vertical bar for the left half and a vertical bar for the right,
+    /// and centred in a tile those are the same bar.
+    pub fn span(self) -> Option<(f32, f32)> {
+        match self {
+            Control::Left => Some((0.0, 0.5)),
+            Control::Right => Some((0.5, 1.0)),
+            Control::FullWidth => Some((0.0, 1.0)),
+            _ => None,
+        }
+    }
+
+    /// The big mark on the option tile, for the options that are not a picture.
     pub fn glyph(self) -> &'static str {
         match self {
-            Control::ClaimLeft => "\u{2590}",
-            Control::ClaimRight => "\u{258C}",
-            Control::ClaimTop => "\u{2584}",
-            Control::ClaimBottom => "\u{2580}",
+            Control::Left => "\u{258C}",
+            Control::Right => "\u{2590}",
+            Control::FullWidth => "\u{2588}",
             Control::MoveUp => "\u{2191}",
             Control::MoveDown => "\u{2193}",
-            // Replaced by `wording` whenever a box is selected: which way these
-            // move is a property of the cut, not of the button.
-            Control::Grow => "\u{2194}",
-            Control::Shrink => "\u{2192}\u{2190}",
+            Control::Narrower => "\u{2192}\u{2190}",
+            Control::Wider => "\u{2194}",
             Control::Fewer => "\u{2212}",
             Control::More => "+",
             Control::Done => "\u{2713}",
@@ -818,14 +806,13 @@ impl Control {
     /// to read one, and a glyph alone is a guess.
     pub fn label(self) -> &'static str {
         match self {
-            Control::ClaimLeft => "Full left",
-            Control::ClaimRight => "Full right",
-            Control::ClaimTop => "Full top",
-            Control::ClaimBottom => "Full bottom",
+            Control::Left => "Left side",
+            Control::Right => "Right side",
+            Control::FullWidth => "Full width",
             Control::MoveUp => "Move up",
             Control::MoveDown => "Move down",
-            Control::Grow => "Bigger",
-            Control::Shrink => "Smaller",
+            Control::Narrower => "Narrower",
+            Control::Wider => "Wider",
             Control::Fewer => "Fewer tiles",
             Control::More => "More tiles",
             Control::Done => "Done",
@@ -834,61 +821,44 @@ impl Control {
 }
 
 impl Control {
-    /// The share this option should write, given where the box is now.
+    /// The panel split this option should write, given where the box is now.
     ///
-    /// Across the panel it steps a whole column at a time, so every click moves
-    /// the edge somewhere visible. A 5% nudge often did not cross a column
-    /// boundary at all, and a button that sometimes does nothing reads as
-    /// broken.
+    /// A whole column at a time, so every click moves the seam somewhere
+    /// visible. A 5% nudge often did not cross a column boundary at all, and a
+    /// button that sometimes does nothing reads as broken.
+    ///
+    /// One seam for the whole panel, so "wider" on a box in the right lane
+    /// moves it the other way from "wider" on one in the left.
     pub fn resized(self, state: &BoxState) -> Option<f32> {
         let step = match self {
-            Control::Grow => 1.0,
-            Control::Shrink => -1.0,
+            Control::Wider => 1.0,
+            Control::Narrower => -1.0,
             _ => return None,
         };
-        let at = state.at.as_ref()?;
-
-        if at.splits_width() && state.panel_cols > 1 {
-            let cols = (state.cols as f32 + step).clamp(1.0, state.panel_cols as f32 - 1.0);
-            Some(cols / state.panel_cols as f32)
-        } else {
-            Some((state.share_now + step * 0.08).clamp(0.1, 0.9))
+        let toward = match state.lane {
+            Lane::Left => 1.0,
+            Lane::Right => -1.0,
+            Lane::Full => return None,
+        };
+        if state.panel_cols < 2 {
+            return None;
         }
+        let held = (state.split * state.panel_cols as f32).round() + step * toward;
+        Some(held.clamp(1.0, state.panel_cols as f32 - 1.0) / state.panel_cols as f32)
     }
 
-    /// Whether this is the side the box already holds. Drawn lit, and clicking
-    /// it gives the side back rather than claiming it again.
+    /// Whether this is the lane the box is already in. Drawn lit: it is where
+    /// the box is, and clicking it changes nothing.
     pub fn holds(self, state: &BoxState) -> bool {
-        self.side().is_some_and(|side| {
-            state.at.as_ref().map(|at| at.cuts.as_slice()) == Some(&[side])
-        })
+        self.lane() == Some(state.lane)
     }
 
     /// Glyph and label for this option against a particular box.
     ///
-    /// Only the two size options change: everything else means the same thing
-    /// wherever the box sits. "Bigger" on a box down the left means wider, and
-    /// on a box across the bottom means taller, so the button has to say which.
-    pub fn wording(self, state: &BoxState) -> (&'static str, &'static str) {
-        let across = state.at.as_ref().is_some_and(At::splits_width);
-        if self.holds(state) {
-            // Says what the click does, not where the box is. Where it is, the
-            // lit square already shows.
-            return match self {
-                Control::ClaimLeft => (self.glyph(), "Leave left"),
-                Control::ClaimRight => (self.glyph(), "Leave right"),
-                Control::ClaimTop => (self.glyph(), "Leave top"),
-                Control::ClaimBottom => (self.glyph(), "Leave bottom"),
-                _ => (self.glyph(), self.label()),
-            };
-        }
-        match self {
-            Control::Grow if across => ("\u{2194}", "Wider"),
-            Control::Grow => ("\u{2195}", "Taller"),
-            Control::Shrink if across => ("\u{2192}\u{2190}", "Narrower"),
-            Control::Shrink => ("\u{2193}\u{2191}", "Shorter"),
-            _ => (self.glyph(), self.label()),
-        }
+    /// Every option means the same thing wherever the box sits now, which is
+    /// the point of the lanes: "wider" used to mean taller on half the boxes.
+    pub fn wording(self, _state: &BoxState) -> (&'static str, &'static str) {
+        (self.glyph(), self.label())
     }
 }
 
@@ -899,24 +869,18 @@ pub struct BoxState {
     /// Tiles it shows, and tiles it could show.
     pub shown: usize,
     pub total: usize,
-    /// Where it sits now, if it has been placed at all.
-    pub at: Option<At>,
+    /// Which band across the panel it is in.
+    pub lane: Lane,
     /// Boxes on the panel. A lone box has nowhere to be sent.
     pub boxes: usize,
-    /// Position in the stack that fills the leftover space, and how many are
-    /// in it. Only meaningful when `at` is `None`.
-    pub at_stack: usize,
-    pub stack: usize,
+    /// Where it comes down its own lane, and how many are in that lane.
+    pub at_lane: usize,
+    pub lane_len: usize,
     /// Columns the box takes, and the panel's whole budget.
     pub cols: usize,
     pub panel_cols: usize,
-    /// The fraction of its cut the box currently fills, as laid out.
-    ///
-    /// Measured rather than read from `at`: a box sized by its contents has no
-    /// share written down, and asking the config produced 0.0 - which read as
-    /// "already at the bottom" and greyed out the button for every box that had
-    /// never been resized.
-    pub share_now: f32,
+    /// Where the seam down the panel sits now.
+    pub split: f32,
 }
 
 impl Control {
@@ -930,35 +894,23 @@ impl Control {
     pub fn allowed(self, state: &BoxState) -> bool {
         match self {
             Control::Done => true,
-            // Nothing to divide the panel with.
-            _ if state.boxes < 2 => false,
-            // Always available. The one matching the side the box already
-            // holds gives it back, which is why there is no separate button
-            // for that: the lit one shows where you are and clicking it
-            // undoes it.
-            Control::ClaimLeft
-            | Control::ClaimTop
-            | Control::ClaimBottom
-            | Control::ClaimRight => true,
-            // Moving is about the stack filling the leftover space. A box that
-            // holds a side of its own is not in that stack.
-            Control::MoveUp => state.at.is_none() && state.at_stack > 0,
-            Control::MoveDown => {
-                state.at.is_none() && state.at_stack + 1 < state.stack
-            }
-            // Sizing is a property of a cut, so it needs the box to sit on one.
-            // Along the across axis the limit is columns, because that is what
-            // actually changes; down the panel it is the share.
-            Control::Grow if !state.at.as_ref().is_some_and(At::splits_width) => {
-                state.at.is_some() && state.share_now < 0.9
-            }
-            Control::Shrink if !state.at.as_ref().is_some_and(At::splits_width) => {
-                state.at.is_some() && state.share_now > 0.1
-            }
-            Control::Grow => state.at.is_some() && state.cols + 1 < state.panel_cols,
-            Control::Shrink => state.at.is_some() && state.cols > 1,
             Control::Fewer => state.shown > 1,
             Control::More => state.shown < state.total,
+            // Nothing to divide the panel with.
+            _ if state.boxes < 2 => false,
+            // Always offered. A box is in exactly one lane and the lit square
+            // is which - clicking that one changes nothing, which is what
+            // being where you already are means.
+            Control::Left | Control::Right | Control::FullWidth => true,
+            // Up and down walk this box's own lane, and every box is in one.
+            // They used to be for the boxes with no claimed side only, which
+            // meant the two arrows were dead on most of the panel.
+            Control::MoveUp => state.at_lane > 0,
+            Control::MoveDown => state.at_lane + 1 < state.lane_len,
+            // The seam only exists between the two side lanes.
+            Control::Narrower | Control::Wider => {
+                state.lane != Lane::Full && self.resized(state) != Some(state.split)
+            }
         }
     }
 }
@@ -966,18 +918,17 @@ impl Control {
 /// Reading order, four to a row.
 /// Reading order, five to a row.
 /// Reading order, four to a row.
-pub const CONTROLS: [Control; 11] = [
-    // Claim a side.
-    Control::ClaimLeft,
-    Control::ClaimTop,
-    Control::ClaimBottom,
-    Control::ClaimRight,
-    // Arrange.
+pub const CONTROLS: [Control; 10] = [
+    // Which lane. One question, three answers, and the x axis is settled.
+    Control::Left,
+    Control::FullWidth,
+    Control::Right,
+    // Where in it.
     Control::MoveUp,
     Control::MoveDown,
-    Control::Grow,
-    // Size.
-    Control::Shrink,
+    // The panel's seam, and how much this box shows.
+    Control::Narrower,
+    Control::Wider,
     Control::Fewer,
     Control::More,
     Control::Done,
@@ -1111,17 +1062,14 @@ pub fn commands(panel: Rect, tile_w: f32, tile_h: f32, gap: f32) -> Vec<(Command
         .collect()
 }
 
-/// The panel as a rectangle cut in two, over and over.
-///
-/// This is the structure a tiling window manager uses, and it is here for the
-/// same reason: a flat list of rows can say "three boxes across" but never
-/// "one down the left, and the remainder split in half". That second shape is
-/// what a bento is, and no number of options on a flat list produces it.
-/// A cut was made here but nothing has filled this half yet.
-const EMPTY: usize = usize::MAX;
-
+/// The panel as a rectangle cut in two, over and over: the structure a tiling
+/// window manager uses, and the geometry every lane is built out of.
 #[derive(Debug, Clone, PartialEq)]
 enum Node {
+    /// A lane with nothing in it. It still holds its half of the width, which
+    /// is the whole point: a box that claims a side keeps that side whether or
+    /// not anything ever turns up on the other one.
+    Empty,
     Leaf(usize),
     Cut {
         axis: Axis,
@@ -1144,83 +1092,9 @@ struct Want {
 }
 
 impl Node {
-    /// Put a box somewhere, cutting the panel as the path asks.
-    ///
-    /// A cut that already exists on the right axis is reused, so two sections
-    /// naming `right/top` and `right/bottom` land either side of one cut rather
-    /// than each making their own.
-    fn insert(&mut self, at: &[Side], share: f32, leaf: usize) {
-        let Some((side, rest)) = at.split_first() else {
-            // Nothing left to say. Two boxes claiming one spot stack, so the
-            // second is visible rather than silently dropped.
-            let taken = std::mem::replace(self, Node::Leaf(leaf));
-            if !matches!(taken, Node::Leaf(EMPTY)) {
-                *self = Node::Cut {
-                    axis: Axis::Down,
-                    share: 0.0,
-                    near: Box::new(taken),
-                    far: Box::new(Node::Leaf(leaf)),
-                };
-            }
-            return;
-        };
-
-        let axis = side.axis();
-        // Not already cut this way: cut it, keeping whatever was here on the
-        // opposite side from the one being asked for.
-        if !matches!(self, Node::Cut { axis: existing, .. } if *existing == axis) {
-            let taken = std::mem::replace(self, Node::Leaf(EMPTY));
-            let empty = Box::new(Node::Leaf(EMPTY));
-            *self = if side.first() {
-                Node::Cut { axis, share: 0.0, near: empty, far: Box::new(taken) }
-            } else {
-                Node::Cut { axis, share: 0.0, near: Box::new(taken), far: empty }
-            };
-        }
-
-        let Node::Cut { share: existing, near, far, .. } = self else {
-            return;
-        };
-        // The share is written on the cut the box named, and the near half owns
-        // it: "left@35" and "right@65" describe the same panel.
-        if rest.is_empty() && share > 0.0 {
-            *existing = if side.first() { share } else { 1.0 - share };
-        }
-        let branch = if side.first() { near } else { far };
-        branch.insert(rest, share, leaf);
-    }
-
-    /// The first half a cut opened up and nothing filled.
-    fn hole(&mut self) -> Option<&mut Node> {
-        match self {
-            Node::Leaf(EMPTY) => Some(self),
-            Node::Leaf(_) => None,
-            Node::Cut { near, far, .. } => near.hole().or_else(|| far.hole()),
-        }
-    }
-
-    /// Drop the placeholders left where a path cut the panel but nothing filled
-    /// the other half.
-    fn prune(self) -> Option<Node> {
-        match self {
-            Node::Leaf(EMPTY) => None,
-            Node::Leaf(index) => Some(Node::Leaf(index)),
-            Node::Cut { axis, share, near, far } => match (near.prune(), far.prune()) {
-                (Some(near), Some(far)) => Some(Node::Cut {
-                    axis,
-                    share,
-                    near: Box::new(near),
-                    far: Box::new(far),
-                }),
-                // A cut with one side empty is not a cut.
-                (Some(only), None) | (None, Some(only)) => Some(only),
-                (None, None) => None,
-            },
-        }
-    }
-
     fn want(&self, sections: &[SectionShape], capped: usize) -> Want {
         match self {
+            Node::Empty => Want { cols: 0, rows: 0 },
             Node::Leaf(index) => {
                 let section = &sections[*index];
                 let cols = if section.columns > 0 {
@@ -1230,10 +1104,27 @@ impl Node {
                 };
                 Want { cols, rows: section.count.div_ceil(cols).max(1) }
             }
-            Node::Cut { axis, near, far, .. } => {
+            Node::Cut { axis, share, near, far } => {
                 let (a, b) = (near.want(sections, capped), far.want(sections, capped));
                 match axis {
-                    Axis::Across => Want { cols: a.cols + b.cols, rows: a.rows.max(b.rows) },
+                    Axis::Across => {
+                        // An empty lane still holds its share of the width, so
+                        // the panel has to be wide enough for the other lane to
+                        // get its own out of what is left.
+                        let held = match (a.cols, b.cols) {
+                            (0, 0) => 0.0,
+                            (0, _) => 1.0 - share,
+                            (_, 0) => *share,
+                            _ => 1.0,
+                        };
+                        let total = a.cols + b.cols;
+                        let cols = if held > 0.0 && held < 1.0 {
+                            ((total as f32 / held.max(0.05)).ceil() as usize).max(total)
+                        } else {
+                            total
+                        };
+                        Want { cols, rows: a.rows.max(b.rows) }
+                    }
                     Axis::Down => Want { cols: a.cols.max(b.cols), rows: a.rows + b.rows },
                 }
             }
@@ -1249,6 +1140,8 @@ impl Node {
     fn place(&self, sections: &[SectionShape], cut: Cut<'_>, out: &mut Placement) -> f32 {
         let Cut { m, capped, x, y, cols, holes } = cut;
         match self {
+            // Holds its half of the width and draws nothing in it.
+            Node::Empty => y,
             Node::Leaf(index) => {
                 place_box(sections, *index, Spot { m, x, y, cols, holes }, out)
             }
@@ -1579,57 +1472,63 @@ fn divide(budget: usize, near: usize, far: usize, share: f32) -> usize {
     split.clamp(1, budget - 1)
 }
 
-/// Build the tree from what each section says about where it sits.
+/// The panel as its lanes: full-width bands above, the left/right split, then
+/// full-width bands below.
 ///
-/// Sections naming a place are put there first, so the shape is theirs. The
-/// rest stack into whatever those cuts left over - which is why "left" alone is
-/// a complete instruction: one box down the left, everything else filling the
-/// right.
-fn plan(sections: &[SectionShape]) -> Option<Node> {
-    let mut tree = Node::Leaf(EMPTY);
-    let mut stacked: Option<Node> = None;
+/// Built outright rather than by cutting the panel over and over. A lane is a
+/// property of one box, so nothing another box does - emptying, being listed
+/// first, being deleted - can move this one. The cut paths this replaced were a
+/// relationship between boxes, and a relationship changes when the other end of
+/// it goes away.
+///
+/// Order in the file is order down the lane. That is the whole of the vertical
+/// question, because a box is as tall as what it holds.
+fn plan(sections: &[SectionShape], split: f32) -> Option<Node> {
+    // The centre is placed by hand afterwards. The tree is planned as if it
+    // were not there, which is exactly what makes the rest wrap around it
+    // instead of being cut by it.
+    let drawn = |index: usize| sections[index].count > 0 && sections[index].center.is_none();
+    let claimed = (0..sections.len()).find(|&i| drawn(i) && sections[i].lane != Lane::Full);
 
-    for (index, section) in sections.iter().enumerate() {
-        // The centre is placed by hand afterwards. The tree is planned as if it
-        // were not there, which is exactly what makes the rest wrap around it
-        // instead of being cut by it.
-        if section.count == 0 || section.center.is_some() {
-            continue;
-        }
-        match &section.at {
-            Some(at) => tree.insert(&at.cuts, at.share, index),
-            None => {
-                stacked = Some(match stacked {
-                    None => Node::Leaf(index),
-                    Some(above) => Node::Cut {
-                        axis: Axis::Down,
-                        share: 0.0,
-                        near: Box::new(above),
-                        far: Box::new(Node::Leaf(index)),
-                    },
-                });
-            }
+    let (mut above, mut below) = (Vec::new(), Vec::new());
+    let (mut left, mut right) = (Vec::new(), Vec::new());
+    for index in (0..sections.len()).filter(|&i| drawn(i)) {
+        match sections[index].lane {
+            Lane::Left => left.push(index),
+            Lane::Right => right.push(index),
+            // A full-width band goes above the split or below it, by where it
+            // is listed. Nothing else could tell them apart.
+            Lane::Full if claimed.is_some_and(|first| index > first) => below.push(index),
+            Lane::Full => above.push(index),
         }
     }
 
-    if let Some(rest) = stacked {
-        let bare = tree == Node::Leaf(EMPTY);
-        // The other half of a cut somebody made is exactly where the unplaced
-        // sections belong.
-        if let Some(hole) = tree.hole() {
-            *hole = rest;
-        } else if bare {
-            tree = rest;
-        } else {
-            tree = Node::Cut {
-                axis: Axis::Down,
-                share: 0.0,
-                near: Box::new(tree),
-                far: Box::new(rest),
-            };
-        }
-    }
-    tree.prune()
+    let middle = (!left.is_empty() || !right.is_empty()).then(|| Node::Cut {
+        axis: Axis::Across,
+        share: split,
+        near: Box::new(lane(&left)),
+        far: Box::new(lane(&right)),
+    });
+
+    let mut stripes: Vec<Node> = above.iter().map(|&i| Node::Leaf(i)).collect();
+    stripes.extend(middle);
+    stripes.extend(below.iter().map(|&i| Node::Leaf(i)));
+    stacked(stripes)
+}
+
+/// One lane's boxes, top to bottom. `Empty` when the lane holds nothing, which
+/// is what keeps the other lane down to its own half.
+fn lane(boxes: &[usize]) -> Node {
+    stacked(boxes.iter().map(|&i| Node::Leaf(i)).collect()).unwrap_or(Node::Empty)
+}
+
+fn stacked(nodes: Vec<Node>) -> Option<Node> {
+    nodes.into_iter().reduce(|above, below| Node::Cut {
+        axis: Axis::Down,
+        share: 0.0,
+        near: Box::new(above),
+        far: Box::new(below),
+    })
 }
 
 /// What `compute` fills in as it places boxes.
@@ -1792,9 +1691,22 @@ fn place_box(
 /// boxes that overlapped, which meant a click could belong to two of them.
 fn stretch(node: &Node, bands: &mut [Band], first: usize, rect: Rect) {
     match node {
+        Node::Empty => {}
         Node::Leaf(_) => bands[first].rect = rect,
         Node::Cut { axis, near, far, .. } => {
             let split = leaf_count(near);
+            // An empty lane holds its half of the grid but draws nothing there,
+            // so the other lane's boxes take the whole rectangle. Bands have to
+            // tile the panel with no gaps - a drop in the empty half has to
+            // mean something - and the ring is drawn off `cells`, not off this.
+            if split == 0 {
+                stretch(far, bands, first, rect);
+                return;
+            }
+            if leaf_count(far) == 0 {
+                stretch(near, bands, first, rect);
+                return;
+            }
             // Where the two halves actually ended up, before either is grown.
             let (a, b) = (
                 covering(&bands[first..first + split]),
@@ -1825,6 +1737,7 @@ fn stretch(node: &Node, bands: &mut [Band], first: usize, rect: Rect) {
 
 fn leaf_count(node: &Node) -> usize {
     match node {
+        Node::Empty => 0,
         Node::Leaf(_) => 1,
         Node::Cut { near, far, .. } => leaf_count(near) + leaf_count(far),
     }
@@ -1904,6 +1817,7 @@ mod tests {
             header_gap: 14.0,
             section_gap: 0.0,
             search_h: 0.0,
+            split: 0.5,
         }
     }
 
@@ -1920,6 +1834,7 @@ mod tests {
             header_gap: 0.0,
             section_gap: 14.0,
             search_h: 0.0,
+            split: 0.5,
         }
     }
 
@@ -1934,15 +1849,17 @@ mod tests {
 
     /// A section that says nothing about where it sits.
     fn shape(title: &str, count: usize) -> SectionShape {
-        SectionShape { title: title.into(), count, at: None, columns: 0, center: None }
+        SectionShape { title: title.into(), count, lane: Lane::Full, columns: 0, center: None }
     }
 
-    /// A section placed by path, spelled the way a config would spell it.
+    /// A section in a named lane, spelled the way a config would spell it.
+    /// The old cut paths still read, which is what a config written before
+    /// lanes gets.
     fn at(title: &str, count: usize, spec: &str) -> SectionShape {
         SectionShape {
             title: title.into(),
             count,
-            at: At::parse(spec),
+            lane: Lane::parse(spec).unwrap_or_else(|| Lane::from_at(spec)),
             columns: 0,
             center: None,
         }
@@ -1953,7 +1870,7 @@ mod tests {
         SectionShape {
             title: String::new(),
             count,
-            at: None,
+            lane: Lane::Full,
             columns,
             center: Some(half),
         }
@@ -2153,24 +2070,24 @@ mod tests {
 
     // --- which options apply ---
 
-    /// A box holding the left side, with room to move in every direction.
+    /// A box in the left lane, with a box above it and one below.
     fn placed() -> BoxState {
         BoxState {
             shown: 8,
             total: 32,
-            at: At::parse("left@50"),
+            lane: Lane::Left,
             boxes: 3,
-            at_stack: 0,
-            stack: 2,
+            at_lane: 1,
+            lane_len: 3,
             cols: 4,
             panel_cols: 9,
-            share_now: 0.5,
+            split: 4.0 / 9.0,
         }
     }
 
-    /// A box with no side of its own, sitting in the leftover stack.
+    /// A box across the whole width.
     fn loose() -> BoxState {
-        BoxState { at: None, at_stack: 1, stack: 3, ..placed() }
+        BoxState { lane: Lane::Full, ..placed() }
     }
 
     fn offered(state: &BoxState) -> Vec<Control> {
@@ -2178,23 +2095,23 @@ mod tests {
     }
 
     #[test]
-    fn the_side_a_box_holds_is_the_button_that_gives_it_back() {
-        // One button, both directions. There is no separate "un-claim": the
-        // lit square shows where the box is, and clicking it undoes that.
+    fn the_lane_a_box_is_in_is_the_lit_square() {
+        // Exactly one of the three, always. It is where the box is, not a
+        // toggle: clicking it writes the lane it already has.
         let state = placed();
-        assert!(Control::ClaimLeft.holds(&state), "the left square is the lit one");
-        assert!(Control::ClaimLeft.allowed(&state), "and it is still clickable");
-        assert_eq!(Control::ClaimLeft.wording(&state).1, "Leave left");
+        let lit: Vec<Control> = CONTROLS.iter().copied().filter(|c| c.holds(&state)).collect();
+        assert_eq!(lit, [Control::Left]);
 
-        assert!(!Control::ClaimRight.holds(&state));
-        assert_eq!(Control::ClaimRight.wording(&state).1, "Full right");
+        assert!(Control::Right.allowed(&state), "the other lanes stay clickable");
+        assert!(Control::FullWidth.allowed(&state));
     }
 
     #[test]
-    fn a_box_holding_no_side_lights_nothing() {
-        let state = loose();
-        for control in CONTROLS {
-            assert!(!control.holds(&state), "{control:?} is lit with no side held");
+    fn every_box_is_in_exactly_one_lane() {
+        for lane in [Lane::Left, Lane::Right, Lane::Full] {
+            let state = BoxState { lane, ..placed() };
+            let lit = CONTROLS.iter().filter(|c| c.holds(&state)).count();
+            assert_eq!(lit, 1, "{lane:?} lit {lit} squares");
         }
     }
 
@@ -2215,101 +2132,71 @@ mod tests {
     }
 
     #[test]
-    fn sizing_needs_a_cut_to_size() {
-        // "Bigger" is a bigger share of a cut. A box that holds no side is not
-        // sitting on one, so there is nothing to take more of.
-        let state = loose();
-        assert!(!Control::Grow.allowed(&state));
-        assert!(!Control::Shrink.allowed(&state));
-        assert!(Control::ClaimLeft.allowed(&state), "it can still claim a side");
+    fn the_seam_only_exists_between_the_two_side_lanes() {
+        // A full-width box has no seam to move: it spans both lanes.
+        let wide = loose();
+        assert!(!Control::Wider.allowed(&wide));
+        assert!(!Control::Narrower.allowed(&wide));
+        assert!(Control::Left.allowed(&wide), "it can still pick a lane");
+
+        assert!(Control::Wider.allowed(&placed()));
+        assert!(Control::Narrower.allowed(&placed()));
     }
 
     #[test]
-    fn a_box_that_was_never_resized_can_still_be_resized() {
-        // `at = "left"` with no share is a box sized by its contents. Reading
-        // the share off the config gave 0.0, which looked like "already as
-        // small as it goes" and greyed the button out for every box that had
-        // never been touched.
-        let untouched = BoxState {
-            at: At::parse("left"),
-            cols: 5,
-            panel_cols: 9,
-            share_now: 5.0 / 9.0,
-            ..placed()
-        };
-        assert_eq!(untouched.at.as_ref().unwrap().share, 0.0, "nothing written down");
-        assert!(Control::Shrink.allowed(&untouched), "it is 5 of 9 columns wide");
-        assert!(Control::Grow.allowed(&untouched));
-    }
-
-    #[test]
-    fn resizing_across_moves_by_a_whole_column() {
+    fn the_seam_moves_by_a_whole_column() {
         // A 5% nudge often did not cross a column boundary, so the click
         // appeared to do nothing at all.
-        let state = BoxState {
-            at: At::parse("left"),
-            cols: 5,
-            panel_cols: 9,
-            share_now: 5.0 / 9.0,
-            ..placed()
-        };
-        let narrower = Control::Shrink.resized(&state).unwrap();
-        let wider = Control::Grow.resized(&state).unwrap();
-        assert_eq!((narrower * 9.0).round() as usize, 4);
-        assert_eq!((wider * 9.0).round() as usize, 6);
+        let state = BoxState { split: 4.0 / 9.0, panel_cols: 9, ..placed() };
+        let narrower = Control::Narrower.resized(&state).unwrap();
+        let wider = Control::Wider.resized(&state).unwrap();
+        assert_eq!((narrower * 9.0).round() as usize, 3);
+        assert_eq!((wider * 9.0).round() as usize, 5);
     }
 
     #[test]
-    fn a_box_cannot_be_narrowed_out_of_existence_or_take_the_whole_panel() {
-        let thin = BoxState { at: At::parse("left"), cols: 1, panel_cols: 9, ..placed() };
-        assert!(!Control::Shrink.allowed(&thin));
-        assert!(Control::Grow.allowed(&thin));
+    fn wider_means_wider_whichever_lane_the_box_is_in() {
+        // One seam for the panel, so the right lane grows by moving it the
+        // other way. A button that made the box smaller would be the bug.
+        let split = 4.0 / 9.0;
+        let left = BoxState { lane: Lane::Left, split, panel_cols: 9, ..placed() };
+        let right = BoxState { lane: Lane::Right, split, panel_cols: 9, ..placed() };
 
-        let fat = BoxState { at: At::parse("left"), cols: 8, panel_cols: 9, ..placed() };
-        assert!(!Control::Grow.allowed(&fat), "the other half is owed a column");
-        assert!(Control::Shrink.allowed(&fat));
+        assert!(Control::Wider.resized(&left).unwrap() > split, "left lane grows right");
+        assert!(Control::Wider.resized(&right).unwrap() < split, "right lane grows left");
+        assert!(Control::Narrower.resized(&left).unwrap() < split);
+        assert!(Control::Narrower.resized(&right).unwrap() > split);
     }
 
     #[test]
-    fn resizing_down_the_panel_steps_by_share() {
-        // Heights are not counted in columns, so a top or bottom box moves by
-        // a fraction instead.
-        let state = BoxState {
-            at: At::parse("bottom"),
-            cols: 9,
-            panel_cols: 9,
-            share_now: 0.5,
-            ..placed()
-        };
-        let taller = Control::Grow.resized(&state).unwrap();
-        let shorter = Control::Shrink.resized(&state).unwrap();
-        assert!(taller > 0.5 && taller <= 0.9);
-        assert!((0.1..0.5).contains(&shorter));
+    fn the_seam_cannot_be_pushed_off_either_end() {
+        let thin = BoxState { lane: Lane::Left, split: 1.0 / 9.0, panel_cols: 9, ..placed() };
+        assert!(!Control::Narrower.allowed(&thin), "the left lane is owed a column");
+        assert!(Control::Wider.allowed(&thin));
 
-        let squat = BoxState { share_now: 0.05, ..state };
-        assert!(!Control::Shrink.allowed(&squat));
-        assert!(Control::Grow.allowed(&squat));
+        let fat = BoxState { lane: Lane::Left, split: 8.0 / 9.0, panel_cols: 9, ..placed() };
+        assert!(!Control::Wider.allowed(&fat), "the right lane is owed a column");
+        assert!(Control::Narrower.allowed(&fat));
     }
 
     #[test]
-    fn the_button_and_the_action_agree_about_the_edge() {
-        // Whenever the rule says a size option applies, it also has a share to
+    fn the_button_and_the_action_agree_about_the_seam() {
+        // Whenever the rule says a size option applies, it also has a split to
         // write. A button that is offered and then does nothing is the bug
         // this pairing prevents.
-        for at in ["left", "left@50", "bottom", "bottom@30", "right/top"] {
+        for lane in [Lane::Left, Lane::Right, Lane::Full] {
             for cols in [1usize, 3, 8] {
                 let state = BoxState {
-                    at: At::parse(at),
-                    cols,
+                    lane,
+                    split: cols as f32 / 9.0,
                     panel_cols: 9,
-                    share_now: cols as f32 / 9.0,
                     ..placed()
                 };
-                for control in [Control::Grow, Control::Shrink] {
+                for control in [Control::Wider, Control::Narrower] {
                     if control.allowed(&state) {
                         assert!(
                             control.resized(&state).is_some(),
-                            "{control:?} offered for {at} at {cols} cols but writes nothing"
+                            "{control:?} offered for {lane:?} at {cols} cols but writes nothing"
                         );
                     }
                 }
@@ -2318,30 +2205,34 @@ mod tests {
     }
 
     #[test]
-    fn moving_walks_the_leftover_stack_not_the_whole_list() {
-        // A box holding a side is not in the stack, so it has nowhere to move.
-        assert!(!Control::MoveUp.allowed(&placed()));
-        assert!(!Control::MoveDown.allowed(&placed()));
-
-        let middle = loose();
+    fn moving_walks_the_box_own_lane() {
+        // Every box is in a lane, so both arrows work everywhere except at the
+        // two ends of one. They used to be for the boxes with no claimed side
+        // only, which left them dead on most of the panel.
+        let middle = placed();
         assert!(Control::MoveUp.allowed(&middle));
         assert!(Control::MoveDown.allowed(&middle));
 
-        let first = BoxState { at_stack: 0, ..loose() };
+        let first = BoxState { at_lane: 0, ..placed() };
         assert!(!Control::MoveUp.allowed(&first));
         assert!(Control::MoveDown.allowed(&first));
 
-        let last = BoxState { at_stack: 2, stack: 3, ..loose() };
+        let last = BoxState { at_lane: 2, lane_len: 3, ..placed() };
         assert!(Control::MoveUp.allowed(&last));
         assert!(!Control::MoveDown.allowed(&last));
+
+        let alone = BoxState { at_lane: 0, lane_len: 1, ..placed() };
+        assert!(!Control::MoveUp.allowed(&alone));
+        assert!(!Control::MoveDown.allowed(&alone));
     }
 
     #[test]
     fn a_lone_box_has_nowhere_to_be_sent() {
         // Nothing to divide the panel with, so every arrangement is the same
-        // arrangement.
+        // arrangement. How much of its list it shows is a different question
+        // and still has an answer.
         let alone = BoxState { boxes: 1, ..placed() };
-        assert_eq!(offered(&alone), [Control::Done]);
+        assert_eq!(offered(&alone), [Control::Fewer, Control::More, Control::Done]);
     }
 
     #[test]
@@ -2350,80 +2241,137 @@ mod tests {
         let stuck = BoxState {
             shown: 1,
             total: 1,
-            at: None,
+            lane: Lane::Full,
             boxes: 1,
-            at_stack: 0,
-            stack: 1,
+            at_lane: 0,
+            lane_len: 1,
             cols: 1,
             panel_cols: 1,
-            share_now: 1.0,
+            split: 0.5,
         };
         assert_eq!(offered(&stuck), [Control::Done]);
     }
 
     #[test]
-    fn bigger_says_which_way_it_will_go() {
-        // The complaint this fixes: one button reading "Bigger" for a box that
-        // grows wider and a box that grows taller.
-        let across = BoxState { at: At::parse("left@50"), ..placed() };
-        assert_eq!(Control::Grow.wording(&across).1, "Wider");
-        assert_eq!(Control::Shrink.wording(&across).1, "Narrower");
-
-        let down = BoxState { at: At::parse("bottom@50"), ..placed() };
-        assert_eq!(Control::Grow.wording(&down).1, "Taller");
-        assert_eq!(Control::Shrink.wording(&down).1, "Shorter");
-
-        // And the glyphs go with them.
-        assert_ne!(
-            Control::Grow.wording(&across).0,
-            Control::Grow.wording(&down).0
-        );
-    }
-
-    #[test]
-    fn only_the_size_options_and_the_held_side_change_their_wording() {
-        // Everything else means the same thing wherever the box sits, so it
-        // reads the same. A square whose words move around is one you have to
-        // re-read every time.
-        let state = placed();
-        for control in CONTROLS {
-            let changes = matches!(control, Control::Grow | Control::Shrink)
-                || control.holds(&state);
-            if changes {
-                continue;
+    fn every_option_means_one_thing_wherever_the_box_is() {
+        // The complaint this fixes: one button reading "Bigger" that meant
+        // wider on some boxes and taller on others. There is no height to
+        // choose now - a box is as tall as what it holds - so every label is
+        // the same in every lane.
+        for lane in [Lane::Left, Lane::Right, Lane::Full] {
+            let state = BoxState { lane, ..placed() };
+            for control in CONTROLS {
+                assert_eq!(
+                    control.wording(&state),
+                    (control.glyph(), control.label()),
+                    "{control:?} says something different in {lane:?}"
+                );
             }
-            assert_eq!(control.wording(&state), (control.glyph(), control.label()));
         }
     }
 
     // --- the tree ---
 
     #[test]
-    fn a_path_parses_and_spells_back() {
-        let parsed = At::parse("right/top").unwrap();
-        assert_eq!(parsed.cuts, [Side::Right, Side::Top]);
-        assert_eq!(parsed.share, 0.0);
-        assert_eq!(parsed.spell(), "right/top");
-
-        let pinned = At::parse("left@35").unwrap();
-        assert_eq!(pinned.cuts, [Side::Left]);
-        assert!((pinned.share - 0.35).abs() < 0.001);
-        assert_eq!(pinned.spell(), "left@35");
+    fn a_lane_parses_and_spells_back() {
+        for lane in [Lane::Left, Lane::Right, Lane::Full] {
+            assert_eq!(Lane::parse(lane.word()), Some(lane));
+        }
+        assert_eq!(Lane::parse("  RIGHT "), Some(Lane::Right));
     }
 
     #[test]
-    fn nonsense_in_a_path_costs_one_section_its_place_not_the_panel() {
-        assert!(At::parse("sideways").is_none());
-        assert!(At::parse("").is_none());
-        // The section still shows up; it just fills the rest.
+    fn an_old_cut_path_reads_as_the_lane_it_meant() {
+        // Only the first cut ever said anything about the x axis. The rest
+        // ordered boxes within it, which the order in the file does now.
+        assert_eq!(Lane::from_at("left"), Lane::Left);
+        assert_eq!(Lane::from_at("left@35"), Lane::Left);
+        assert_eq!(Lane::from_at("right/top"), Lane::Right);
+        assert_eq!(Lane::from_at("right/bottom"), Lane::Right);
+        assert_eq!(Lane::from_at("bottom"), Lane::Full);
+        assert_eq!(Lane::from_at("top"), Lane::Full);
+    }
+
+    #[test]
+    fn nonsense_in_a_lane_costs_one_section_its_place_not_the_panel() {
+        assert!(Lane::parse("sideways").is_none());
+        assert!(Lane::parse("").is_none());
+        assert_eq!(Lane::from_at("sideways"), Lane::Full);
+        // The section still shows up; it just takes the default lane.
         let l = Layout::compute(&[shape("A", 4), shape("B", 4)], metrics(), WORK);
         assert_eq!(l.bands().len(), 2);
     }
 
     #[test]
+    fn a_claimed_lane_survives_an_empty_neighbour() {
+        // The bug this model replaced: `at = "left"` cut the panel in two and
+        // took the near half, so the cut collapsed the moment the right half
+        // held nothing - and the box quietly took the whole width. A browser
+        // disconnecting changed the shape of the apps box.
+        let m = metrics();
+        let both = Layout::compute(&[at("Apps", 8, "left"), at("Web", 8, "right")], m, WORK);
+        let alone = Layout::compute(&[at("Apps", 8, "left"), at("Web", 0, "right")], m, WORK);
+
+        assert_eq!(alone.bands()[0].cells.cols, both.bands()[0].cells.cols);
+        assert_eq!(alone.tile_rect(0, 0.0), both.tile_rect(0, 0.0));
+        assert!(
+            alone.bands()[0].cells.cols * 2 <= alone.cols + 1,
+            "the left lane took more than its half: {} of {}",
+            alone.bands()[0].cells.cols,
+            alone.cols
+        );
+    }
+
+    #[test]
+    fn the_lanes_stack_in_the_order_they_are_listed() {
+        let m = metrics();
+        let l = Layout::compute(
+            &[
+                at("Top", 4, "right"),
+                at("Bottom", 4, "right"),
+                at("Side", 4, "left"),
+            ],
+            m,
+            WORK,
+        );
+        let y = |section: usize| {
+            let band = l.bands().iter().find(|b| b.section == section).unwrap();
+            l.tile_rect(band.first, 0.0).y
+        };
+        assert!(y(0) < y(1), "listed first should sit above");
+        // And the left lane starts at the top of the panel, not under them.
+        assert_eq!(y(2), y(0));
+    }
+
+    #[test]
+    fn full_width_bands_go_above_or_below_by_where_they_are_listed() {
+        let m = metrics();
+        let l = Layout::compute(
+            &[
+                shape("Header", 4),
+                at("Side", 4, "left"),
+                shape("Footer", 4),
+            ],
+            m,
+            WORK,
+        );
+        let y = |section: usize| {
+            let band = l.bands().iter().find(|b| b.section == section).unwrap();
+            l.tile_rect(band.first, 0.0).y
+        };
+        assert!(y(0) < y(1), "a full band listed first goes above the split");
+        assert!(y(1) < y(2), "one listed last goes below it");
+
+        // And a full band takes the whole width, split or no split.
+        let header = l.bands().iter().find(|b| b.section == 0).unwrap();
+        assert_eq!(header.cells.cols, l.cols);
+    }
+
+    #[test]
     fn one_box_down_the_left_and_the_rest_beside_it() {
-        // The shape a flat list of rows cannot say, and the reason for the tree.
-        let sections = [at("Side", 6, "left"), shape("Top", 4), shape("Bottom", 4)];
+        // The shape this layout exists for, said in lanes: one box left, the
+        // rest right and stacked in the order they are listed.
+        let sections = [at("Side", 6, "left"), at("Top", 4, "right"), at("Bottom", 4, "right")];
         let l = Layout::compute(&sections, metrics(), WORK);
         let (side, top, bottom) = (&l.bands()[0], &l.bands()[1], &l.bands()[2]);
 
@@ -2439,7 +2387,7 @@ mod tests {
         // that claims a side first however far down the list it is configured.
         // While tiles were appended as they were placed, the two orders came
         // apart and every box drew somebody else's items under its own title.
-        let sections = [shape("First", 3), at("Placed", 2, "right@30"), shape("Last", 4)];
+        let sections = [at("First", 3, "left"), at("Placed", 2, "right"), shape("Last", 4)];
         let l = Layout::compute(&sections, metrics(), WORK);
 
         let mut flat = 0;
@@ -2482,7 +2430,7 @@ mod tests {
     #[test]
     fn the_side_runs_the_whole_height() {
         // What makes it the side of the panel rather than a box in a corner.
-        let sections = [at("Side", 2, "left"), shape("Top", 8), shape("Bottom", 8)];
+        let sections = [at("Side", 2, "left"), at("Top", 8, "right"), at("Bottom", 8, "right")];
         let l = Layout::compute(&sections, metrics(), WORK);
         let side = &l.bands()[0];
         assert!(
@@ -2495,7 +2443,8 @@ mod tests {
 
     #[test]
     fn the_remainder_can_be_cut_again() {
-        // "One vertical all the way, then the remainder split in half."
+        // "One vertical all the way, then the remainder split in half." The
+        // shape the cut paths were kept for, and lanes say it in three words.
         let sections = [
             at("Side", 6, "left"),
             at("Top", 4, "right/top"),
@@ -2510,51 +2459,30 @@ mod tests {
     }
 
     #[test]
-    fn a_share_pins_a_side_to_its_fraction() {
-        let wide = Layout::compute(
-            &[at("Side", 6, "left@70"), shape("Rest", 6)],
-            metrics(),
-            WORK,
-        );
-        let narrow = Layout::compute(
-            &[at("Side", 6, "left@20"), shape("Rest", 6)],
-            metrics(),
-            WORK,
-        );
+    fn the_split_moves_the_seam_for_the_whole_panel() {
+        // One number, not a width on every box. There is one line down the
+        // middle, so there is one thing to argue about.
+        let wide = Metrics { split: 0.7, ..metrics() };
+        let narrow = Metrics { split: 0.2, ..metrics() };
+        let laid = |m| Layout::compute(&[at("Side", 6, "left"), at("Rest", 6, "right")], m, WORK);
+
         assert!(
-            wide.bands()[0].cols > narrow.bands()[0].cols,
+            laid(wide).bands()[0].cols > laid(narrow).bands()[0].cols,
             "70% ({}) should beat 20% ({})",
-            wide.bands()[0].cols,
-            narrow.bands()[0].cols
+            laid(wide).bands()[0].cols,
+            laid(narrow).bands()[0].cols
         );
+        // And what one lane gains the other gives up.
+        assert!(laid(wide).bands()[1].cols < laid(narrow).bands()[1].cols);
     }
 
     #[test]
-    fn naming_either_side_of_a_cut_describes_the_same_panel() {
-        // "left@30" and "right@70" are one 30/70 cut said two ways. The box
-        // lands on opposite sides of it, but the panel is the same panel.
-        let from_left = Layout::compute(&[at("A", 6, "left@30"), shape("B", 6)], metrics(), WORK);
-        let from_right = Layout::compute(&[shape("B", 6), at("A", 6, "right@70")], metrics(), WORK);
-
-        let widths = |l: &Layout| {
-            let mut cols: Vec<usize> = l.bands().iter().map(|band| band.cols).collect();
-            cols.sort_unstable();
-            cols
-        };
-        assert_eq!(widths(&from_left), widths(&from_right));
-
-        // And the box that named a share is the one that got it.
-        let a_left = from_left.bands().iter().find(|b| b.section == 0).unwrap();
-        let a_right = from_right.bands().iter().find(|b| b.section == 1).unwrap();
-        assert!(a_left.cols < a_right.cols, "30% should be narrower than 70%");
-    }
-
-    #[test]
-    fn neither_half_of_a_cut_is_ever_squeezed_out() {
-        for spec in ["left@5", "left@95"] {
-            let l = Layout::compute(&[at("A", 9, spec), shape("B", 9)], metrics(), WORK);
+    fn neither_lane_is_ever_squeezed_out() {
+        for split in [0.01, 0.05, 0.95, 0.99] {
+            let m = Metrics { split, ..metrics() };
+            let l = Layout::compute(&[at("A", 9, "left"), at("B", 9, "right")], m, WORK);
             for band in l.bands() {
-                assert!(band.cols >= 1, "{spec} squeezed a box out");
+                assert!(band.cols >= 1, "a split of {split} squeezed a lane out");
             }
         }
     }
