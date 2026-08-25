@@ -85,8 +85,8 @@ jobs:
           Alt+backtick. Windows will warn about an unrecognised app until this
           is code-signed.
 
-          Browser tabs are optional: `bentolaunch-extension.zip` is here too. Use
-          both halves from the same release.
+          `bentolaunch-extension.zip` is here too - required if you want tabs
+          and bookmarks. Use both halves from the same release.
 
           [Install steps](https://github.com/rokubop/bentolaunch#install)
           '@
