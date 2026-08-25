@@ -25,6 +25,10 @@ pub const CMD_ADD_FOLDER: usize = 204;
 pub const CMD_ADD_FILE: usize = 205;
 pub const CMD_SETTINGS: usize = 207;
 pub const CMD_EDIT_LAYOUT: usize = 208;
+/// Into and out of the centre block. The mode is the way this is meant to be
+/// reached; these are the second path, the same way "Unpin" is.
+pub const CMD_FAVORITE: usize = 209;
+pub const CMD_UNFAVORITE: usize = 210;
 
 pub struct Entry {
     pub id: usize,

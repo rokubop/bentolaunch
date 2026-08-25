@@ -108,6 +108,118 @@ Filtering hides tiles, it never reorders them. Tile positions are what make the
 grid learnable, and the panel keeps its width while you type so it cannot slide
 sideways under you.
 
+## The center
+
+A block held in the middle of the screen, holding whatever you put there.
+
+Everything else on the panel comes and goes with what is running. This does not.
+It is the same tiles in the same squares every summon, in the one place you never
+have to look for — which is why it is worth reserving, and why what goes in it is
+chosen by hand.
+
+Two halves: **apps on the left, sites on the right.** Starting something and
+opening a page are different questions, and keeping them apart is what lets you
+hit the right square without reading it. Nine squares a half out of the box,
+which is what **Center** in Settings starts on.
+
+Empty squares are drawn, not left out. A block that shrank as it emptied would
+be a set of moving targets, which is the one thing a gaze pointer cannot use.
+Click an empty one and favorites mode opens.
+
+| Do | Get |
+|---|---|
+| Click **Favorites**, then a tile | It moves into the center |
+| Click **Favorites**, then a center tile | It comes back out |
+| Drag inside a half | Reorder it |
+| Right-click a tile | **Add to center**, **Remove from center** |
+
+While the mode is on, everything the center is already holding wears a **⊖** in
+its corner: the warm fill says this one is in, and the badge says which way the
+next click goes.
+
+Anything in the center is left out of the list it came from. One thing in two
+places costs a fixed slot the only property that makes it worth having.
+
+Windows are not: favoriting Chrome says where to start one and says nothing
+about the four Chrome windows already open.
+
+**The bento does not know it is there.** Every cut in the layout tree runs edge
+to edge, so a box in the middle would drag its lines across the whole panel.
+Instead the center claims its rectangle first and the boxes are laid out as if
+it were not there — they **wrap** around it, left of it and right of it, in
+reading order, one box and not two.
+
+**It lands on whole cells of the grid.** Not a rectangle dropped on top of the
+panel: the middle few squares *of* it, framed. Off the grid it costs every row
+it grazes — a row overlapping it by ten pixels loses its middle columns exactly
+as a row sitting squarely behind it does — and the panel fills with space that
+is not holding anything.
+
+So the grid still reads as one grid, and the block is what is drawn in front of
+it: a frame around the whole block, and a seam down the middle saying which half
+is which. The frame is the one line on the panel that crosses a box edge instead
+of stopping at it, which is the whole of how it says it is on top.
+
+A box that fits on one row is a bar, and a bar wrapped around the middle is
+unreadable. Bars slide past the block instead. Wrapping is for a box big enough
+that going round saves it a row.
+
+The block is centred on the **screen**, not on the panel: wrapping is a step
+function — nudge the hole down half a tile and a whole row comes free, which
+shortens the panel, which moves the hole back up — so the two would trade places
+forever. The panel moves instead. It is only what happens to be drawn on the
+screen, and it is free to sit wherever it has to.
+
+`[favorites]` in the config is the whole of it:
+
+```toml
+[favorites]
+rows     = 3        # tiles down, per half. 0 turns the block off
+columns  = 3        # tiles across, per half. Four each way is the ceiling
+contents = "split"  # "split", "one", "apps", "sites"
+```
+
+`split` is apps and sites side by side; `one` is both lists in a single block,
+apps first; `apps` and `sites` are one list alone. The other list is still kept
+and still comes back when the setting does. While it is not being shown it stays
+in the box it came from, rather than vanishing off the panel entirely.
+
+Two squares in Settings say the same thing: **Center** steps the shape, `off`
+included, and **Center · apps + sites** steps what it holds. `split = true` is
+the old spelling of `contents`; it is still read, and the next thing that writes
+the setting takes it out.
+
+## Modes
+
+Four squares in a row that never moves. Each turns on a mode. Clicking it
+again, another mode's square, the corner button, or Escape turns it off, and
+clicking off the panel dismisses it, in a mode exactly as out of one. A mode
+square is never greyed and never swallows its own click: a mode with one way out
+is a mode you can be stuck in.
+
+| Square | While it is on |
+|---|---|
+| **Move window** | The six moves appear, and clicking a tile picks the window to move |
+| **Favorites** | Clicking fills and empties the center |
+| **Close apps** | Clicking closes the window behind a tile |
+| **Edit layout** | Clicking picks a box and the options rearrange the bento |
+
+Modes rather than modifiers. Nothing that points with gaze can hold a key down,
+so anything that changes what a click means has to be a square you aim at once
+and a square you aim at to leave. The corner button reads **Done** in every one
+of them, so there is never a mode with no visible way out.
+
+**Move window** is why the six moves stopped being a row of their own. Six
+squares that only ever apply to one window at a time cannot hold a row all the
+time; the mode brings them out on the click that needs them and puts them away
+after. Add `source = "modes"` to a section to get the bar, and keep a
+`source = "move"` box for the six to appear in. Listed without a `modes` box
+anywhere, `move` is the old always-on bar and stays on.
+
+Closing is `WM_CLOSE`, the same polite ask the taskbar's "Close window" makes:
+the app gets to prompt about unsaved work, and gets to refuse. Nothing here ever
+terminates a process.
+
 ## Arranging
 
 Tiles arrange without a mode. Same as the taskbar or the bookmarks bar:
@@ -128,19 +240,28 @@ Only pinned tiles move. Running windows stay in most-recent order.
 ### Editing the layout
 
 Click the **BentoPick** button in the bottom-right corner. It is always there,
-always in the same place, and it opens a menu of big squares: **Edit layout**,
-**Add app**, **Add folder**, **Add file**, **Settings**. Right-click still works
-as a second path.
+always in the same place, and it opens a menu of big squares: the four modes,
+then **Add app**, **Add folder**, **Add file**, **Settings**. The modes bar in
+the grid is the first way to reach them; this is the second, and right-click is
+the third.
 
-**Settings** opens six more squares. Each one is a value and each click steps
+**Settings** opens eight more squares. Each one is a value and each click steps
 it to the next: tile size, whether tiles show a second line, how many columns,
-and whether the browser bridge listens. They write straight into
-`bentopick.toml` and your comments survive. **Open the file** is one of the six,
-for the hotkey, the theme and the sections, which need typing.
+whether the browser bridge listens, the center block's shape and what it holds.
+They write straight into `bentopick.toml` and your comments survive.
+**Open the file** is one of the eight, for the hotkey, the theme and the
+sections, which need typing.
+
+A square that would do nothing where the config stands is greyed rather than
+removed — **Center · apps + sites** with no center block, for instance — so the
+squares never reshuffle under the pointer.
 
 In **Edit layout**, boxes light up as you move across them. Click one and its
 options appear as tile-sized squares over the middle of the panel. The button in
 the corner becomes **Stop editing**, so there is always a way out.
+
+The center block is not one of the boxes. It is not in the tree, so none of the
+options has anything to say about it; the box behind it answers a click instead.
 
 The options are three separate ideas, kept apart:
 
@@ -206,10 +327,16 @@ dry_run = false      # true: log what a click would do, do nothing
 
 Order here is order on screen. Empty sections do not render.
 
-Running things are listed before launchable ones, because switching to something
-that exists beats starting something new. Out of the box that is three headers:
-`Browsing` (browser windows and tabs), `Active` (every other window), and
-`Apps` (taskbar pins and anything you pin yourself).
+Out of the box the panel is split down the middle: **`Browsing` down the whole
+right side, everything else down the left**, with the modes bar across the
+bottom. Two halves and one question each — what is open on the web, and what is
+on this machine — and a panel split that way is answered by looking at one half
+of it, which no stack of full-width rows manages. It also gives the center block
+a half to sit in on either side of it.
+
+The left half is `Active` (every window) over `Apps` (taskbar pins and anything
+you pin yourself). Running things above launchable ones, because switching to
+something that exists beats starting something new.
 
 `Apps` mirrors your taskbar:
 
@@ -228,6 +355,7 @@ different question.
 title  = "Browsing"
 source = "windows"
 match  = ["chrome.exe", "msedge.exe", "firefox.exe"]
+at     = "right@50"  # the whole right side; everything else fills the left
 
 [[sections]]
 title  = "Files"
@@ -252,6 +380,18 @@ items = [
     { title = "Display", target = "ms-settings:display" },
     { title = "Wikipedia", target = "https://wikipedia.org" },
 ]
+
+# Empty until move mode brings the six out, so it costs a row only while it is
+# being used. Listed above the modes bar, which is the one row that never moves.
+[[sections]]
+title  = ""
+source = "move"
+at     = "bottom"
+
+[[sections]]
+title  = ""
+source = "modes"
+at     = "bottom"
 ```
 
 Two keys place a section's box. Both optional, both set by **Edit layout**:
@@ -349,6 +489,55 @@ bridge on for you if it was off. **Browser > Forget** undoes it.
 Tabs sit under the same header as your browser windows, right behind them,
 since both answer the same question.
 
+### The center block
+
+Its own table, not a section: nothing `at` can say puts a box in the middle
+without cutting the panel in half to get there.
+
+```toml
+[favorites]
+rows     = 3       # 0 turns the block off
+columns  = 3       # tiles across in each half; rows * columns is a half's slots
+contents = "split" # "split", "one", "apps", "sites" - see The center
+color    = "#38FFC24B"
+apps  = [
+    'C:\Program Files\Some\App.exe',
+    { title = "Dev", target = 'R:\dev' },
+]
+sites = [
+    "https://wikipedia.org",
+    { title = "Docs", target = "https://docs.example" },
+]
+```
+
+Both lists take the same entries a manual section's `items` does: a path, a
+`.lnk`, `shell:AppsFolder\<AppUserModelID>`, or a URI. Favorites mode writes
+them; hand-editing works the same as everywhere else here.
+
+A site wears its own favicon when a paired browser has sent one for that site,
+and the shell's icon for the URL otherwise — which is the default browser's
+logo, the same for every site. Four identical logos in the middle of the screen
+is the block failing at the only thing it is for, so the favicon is asked for
+every time the grid is built: connect a browser and they arrive on the next
+summon.
+
+`rows = 0` is how the block is turned off. How much center you want and whether
+you want any are the same question, so one settings square answers it.
+
+Turning `split` off gives one box, `columns` wide, holding the apps and then the
+sites. It is narrower, not the same block merged — the width is what `columns`
+says either way.
+
+`rows` and `columns` are capped at four each. The block is held in the middle
+and everything wraps around it, so one bigger than the panel would leave the
+grid nowhere to wrap to.
+
+The block wins over `max_columns`: that cap is a preference about how long a row
+stays scannable, and a block hanging off the edge of the panel is a click that
+lands on nothing. It still yields to what fits the screen. The panel may also
+come out one column wider than it needed, to keep the spare columns even so the
+block lands exactly on centre.
+
 ### Bookmarks
 
 Same extension, same switch, no extra setup. Add a `bookmarks` source:
@@ -430,7 +619,14 @@ text = "#FFE8E8EC"
 header = "#FF9A9AA8"
 tile_drag = "#FF4A4460"    # a tile being dragged
 tile_selected = "#FF4C5A78"  # the tile Enter would take
+box_edge = "#14FFFFFF"       # the seams between boxes; "#00000000" turns them off
+center_edge = "#66FFC24B"    # the frame round the center, and the seam in it
 ```
+
+Boxes tile the panel with no gaps, so `box_edge` lines meet and read as the
+seams of the bento rather than as a border round each box. `center_edge` is
+distinctly stronger, because the block is the one thing on the panel that is in
+front of the layout rather than part of it.
 
 ```toml
 [grid]

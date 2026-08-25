@@ -66,6 +66,33 @@ pub enum Mark {
     Latch { on: bool },
     /// One more of the thing this box is full of.
     Plus,
+    /// An empty slot in the centre block: an outline with a plus in it.
+    ///
+    /// An outline rather than nothing, because the block's worth is that it is
+    /// the same shape in the same place every summon. A slot has to look like
+    /// somewhere a tile goes, not like a gap.
+    Slot,
+    /// A rectangle cut into a tall box and two stacked ones: the app's own
+    /// shape, and a picture of what editing the layout does.
+    Bento,
+    /// A cross. What close mode does, drawn rather than spelled.
+    Cross,
+    /// A bar in a ring. One fewer of the thing this box is full of, and the
+    /// opposite of `Plus` on purpose: taking a favorite back out is the same
+    /// gesture as putting one in, so it is the same figure the other way up.
+    Minus,
+}
+
+/// A small mark in the corner of a tile, saying what clicking it does *now*.
+///
+/// Separate from `mark`, which stands in for an icon: this one is drawn over
+/// whatever the tile already shows, because the tiles it lands on are the ones
+/// that have icons. Only a mode ever sets it - out of a mode a click means the
+/// one thing every tile means, and a badge saying so on every tile is noise.
+#[derive(Clone, Copy)]
+pub struct Badge {
+    pub mark: Mark,
+    pub color: D2D1_COLOR_F,
 }
 
 /// Everything one tile needs painted. Grouped so callers pass a value rather
@@ -84,6 +111,8 @@ pub struct TilePaint<'a> {
     /// Underline colour for a pin whose app is open, `None` otherwise. A colour
     /// not a flag: the accent lives in config, which this file never reads.
     pub running: Option<D2D1_COLOR_F>,
+    /// What a click would do to this tile while a mode is on.
+    pub badge: Option<Badge>,
     pub colors: TextColors,
 }
 
@@ -211,8 +240,18 @@ impl Renderer {
         offset: POINT,
         paint: TilePaint<'_>,
     ) -> Result<()> {
-        let TilePaint { width, height, label_height, title, detail, icon, mark, running, colors } =
-            paint;
+        let TilePaint {
+            width,
+            height,
+            label_height,
+            title,
+            detail,
+            icon,
+            mark,
+            running,
+            badge,
+            colors,
+        } = paint;
         // The surface may live inside a shared atlas, so everything is drawn
         // relative to the offset BeginDraw reported.
         let dx = offset.x as f32;
@@ -273,6 +312,13 @@ impl Renderer {
                     },
                     &brush,
                 );
+            }
+
+            // Over the icon, in the corner the icon does not reach: it is about
+            // the click, not about the thing, so it must not be mistaken for
+            // part of the picture.
+            if let Some(badge) = badge {
+                self.draw_badge(context, badge, width, icon_area_h)?;
             }
 
             let pad = 8.0;
@@ -537,6 +583,59 @@ impl Renderer {
     }
 
 
+    /// The corner badge: a figure in a ring, top right of the icon block.
+    ///
+    /// A ring rather than a filled disc, and the accent rather than a second
+    /// hue, so it reads as this app marking one of its own tiles instead of a
+    /// notification pasted onto it. The icon is centred and never more than
+    /// three fifths of the block, so this corner is empty on every tile.
+    unsafe fn draw_badge(
+        &self,
+        context: &ID2D1DeviceContext,
+        badge: Badge,
+        width: f32,
+        icon_area_h: f32,
+    ) -> Result<()> {
+        let radius = (icon_area_h * 0.16).clamp(7.0, 14.0);
+        let inset = radius + MARK_STROKE;
+        let centre = Vector2 { X: width - inset - 2.0, Y: inset + 2.0 };
+        let arm = radius * 0.45;
+        let bar = MARK_STROKE * 1.4;
+
+        // SAFETY: the caller holds a live device context, and the brush
+        // outlives every draw below.
+        unsafe {
+            let ink = context.CreateSolidColorBrush(&badge.color, None)?;
+            let ring = D2D1_ELLIPSE { point: centre, radiusX: radius, radiusY: radius };
+            context.DrawEllipse(&ring, &ink, MARK_STROKE, None);
+            match badge.mark {
+                Mark::Cross => {
+                    for (dx, dy) in [(-arm, -arm), (-arm, arm)] {
+                        context.DrawLine(
+                            Vector2 { X: centre.X + dx, Y: centre.Y + dy },
+                            Vector2 { X: centre.X - dx, Y: centre.Y - dy },
+                            &ink,
+                            bar,
+                            None,
+                        );
+                    }
+                }
+                // Everything else is a bar: a ring with a line through it is
+                // "take this one out" wherever it turns up.
+                _ => context.FillRectangle(
+                    &D2D_RECT_F {
+                        left: centre.X - arm * 1.4,
+                        top: centre.Y - bar / 2.0,
+                        right: centre.X + arm * 1.4,
+                        bottom: centre.Y + bar / 2.0,
+                    },
+                    &ink,
+                ),
+            }
+        }
+        Ok(())
+    }
+
     /// Sized off the same numbers the icon block uses, so a bar of these lines
     /// up with a row of app tiles.
     unsafe fn draw_mark(
@@ -553,8 +652,10 @@ impl Renderer {
             // A plus has no long axis, so it gets a square to sit in. The latch
             // keeps the screen box every other mark uses: sized off its own
             // shape it came out bigger than the marks it sits beside.
-            Mark::Plus => (side, side),
-            Mark::Half { .. } | Mark::Latch { .. } => (side, side * SCREEN_ASPECT),
+            Mark::Plus | Mark::Slot | Mark::Cross | Mark::Minus => (side, side),
+            Mark::Half { .. } | Mark::Latch { .. } | Mark::Bento => {
+                (side, side * SCREEN_ASPECT)
+            }
         };
         let left = (width - w) / 2.0;
         let top = (icon_area_h - h) / 2.0;
@@ -598,6 +699,38 @@ impl Renderer {
                         );
                     }
                 }
+                // The outline says "a tile goes here"; the plus inside says how
+                // it gets there. Drawn in the line colour throughout, so an
+                // empty slot reads as quieter than the filled ones beside it.
+                Mark::Slot => {
+                    context.DrawRoundedRectangle(
+                        &outline(left, top, w, h),
+                        &line,
+                        MARK_STROKE,
+                        None,
+                    );
+                    let arm = w * 0.22;
+                    let mid = (left + w / 2.0, top + h / 2.0);
+                    let bar = MARK_STROKE;
+                    context.FillRectangle(
+                        &D2D_RECT_F {
+                            left: mid.0 - arm,
+                            top: mid.1 - bar / 2.0,
+                            right: mid.0 + arm,
+                            bottom: mid.1 + bar / 2.0,
+                        },
+                        &line,
+                    );
+                    context.FillRectangle(
+                        &D2D_RECT_F {
+                            left: mid.0 - bar / 2.0,
+                            top: mid.1 - arm,
+                            right: mid.0 + bar / 2.0,
+                            bottom: mid.1 + arm,
+                        },
+                        &line,
+                    );
+                }
                 Mark::Plus => {
                     let arm = w * 0.42;
                     let mid = (left + w / 2.0, top + h / 2.0);
@@ -620,6 +753,55 @@ impl Renderer {
                         },
                         &fill,
                     );
+                }
+                // One down the left, two stacked beside it. The shape the
+                // README calls a bento, and the shape on the app's own button.
+                Mark::Bento => {
+                    let split = w * 0.42;
+                    let gutter = MARK_STROKE * 1.5;
+                    let half = (h - gutter) / 2.0;
+                    context.FillRoundedRectangle(&outline(left, top, split - gutter, h), &fill);
+                    for row in 0..2 {
+                        context.DrawRoundedRectangle(
+                            &outline(
+                                left + split,
+                                top + row as f32 * (half + gutter),
+                                w - split,
+                                half,
+                            ),
+                            &line,
+                            MARK_STROKE,
+                            None,
+                        );
+                    }
+                }
+                Mark::Minus => {
+                    let arm = w * 0.42;
+                    let mid = (left + w / 2.0, top + h / 2.0);
+                    let bar = MARK_STROKE * 1.4;
+                    context.FillRectangle(
+                        &D2D_RECT_F {
+                            left: mid.0 - arm,
+                            top: mid.1 - bar / 2.0,
+                            right: mid.0 + arm,
+                            bottom: mid.1 + bar / 2.0,
+                        },
+                        &fill,
+                    );
+                }
+                Mark::Cross => {
+                    let arm = w * 0.36;
+                    let mid = Vector2 { X: left + w / 2.0, Y: top + h / 2.0 };
+                    let bar = MARK_STROKE * 1.4;
+                    for (dx, dy) in [(-arm, -arm), (-arm, arm)] {
+                        context.DrawLine(
+                            Vector2 { X: mid.X + dx, Y: mid.Y + dy },
+                            Vector2 { X: mid.X - dx, Y: mid.Y - dy },
+                            &fill,
+                            bar,
+                            None,
+                        );
+                    }
                 }
                 Mark::Latch { on } => {
                     let radius = h / 2.0;

@@ -18,12 +18,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
     OBJID_WINDOW, PostMessageW, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP,
 };
 
-use crate::config::{ManualItem, SectionConfig, Source, Sources};
+use crate::config::{Contents, Favorites, ManualItem, SectionConfig, Source, Sources};
 // Imported by name rather than as a module: `windows` would otherwise shadow the
 // `windows` crate throughout this file.
 use crate::model::taskbar;
 use crate::model::windows::{WindowInfo, enumerate, refresh_title, still_switchable};
-use crate::model::{Handle, Item, ItemId, Kind, Section, Target};
+use crate::model::{Handle, Item, ItemId, Kind, Mode, Section, Target};
 use crate::{log_info, log_warn};
 
 /// Posted to the panel when the item list changed. Only acted on while visible.
@@ -70,9 +70,56 @@ fn claims(matches: &[String], window: &WindowInfo) -> bool {
     matches.contains(&exe.to_string_lossy().to_lowercase())
 }
 
+/// The centre block, with its entries resolved.
+///
+/// Resolved up front for the same reason manual entries are: working out what a
+/// parsing name is takes the disk, and show time is meant to be a read.
+struct Center {
+    shape: Favorites,
+    /// Apps then sites. Two lists even when the block is not split, because
+    /// they are still two lists; the block just draws them end to end.
+    halves: [Vec<Item>; 2],
+}
+
+impl Center {
+    /// Everything the block holds, as the strings that identify the same thing
+    /// elsewhere on the panel.
+    ///
+    /// What it *shows*, not what it stores. A half the block is not drawing -
+    /// sites, while it is set to apps only - is still written down and still
+    /// comes back when the setting does, but taking those out of the lists they
+    /// came from would be a tile disappearing off the panel entirely.
+    fn held(&self) -> (Vec<String>, Vec<String>) {
+        let mut targets = Vec::new();
+        let mut apps = Vec::new();
+        let shown = self
+            .halves
+            .iter()
+            .enumerate()
+            .filter(|(half, _)| self.shape.contents.shows(*half))
+            .flat_map(|(_, items)| items);
+        for item in shown {
+            if let Some(name) = item.shell_target() {
+                targets.push(name.to_lowercase());
+            }
+            if let Some(app) = &item.app {
+                apps.push(app.to_lowercase());
+            }
+        }
+        (targets, apps)
+    }
+}
+
 struct Store {
     windows: Vec<WindowInfo>,
     groups: Vec<Group>,
+    /// A `modes` box is configured somewhere.
+    ///
+    /// What decides whether the six moves are a bar that is always there or a
+    /// bar that move mode brings out. Without a `modes` box there would be
+    /// nothing left to turn the mode on with, so the old bar stays.
+    has_modes: bool,
+    center: Center,
     /// bentopick's own panel, which must never appear in its own grid.
     exclude: Handle,
 }
@@ -86,6 +133,8 @@ fn store() -> &'static Mutex<Store> {
         Mutex::new(Store {
             windows: Vec::new(),
             groups: Vec::new(),
+            has_modes: false,
+            center: build_center(&Favorites::default()),
             exclude: Handle::new(HWND(std::ptr::null_mut())),
         })
     })
@@ -125,25 +174,54 @@ fn build_groups(sections: &[SectionConfig]) -> Vec<Group> {
                     }
                     Source::Windows | Source::Extra | Source::Running | Source::Tabs
                     | Source::Bookmarks
-                    | Source::Moves => None,
+                    | Source::Moves
+                    | Source::Modes
+                    // Not fixed per section: the centre resolves them once and
+                    // every list of them comes off that.
+                    | Source::Favorites => None,
                 })
                 .collect(),
         })
         .collect()
 }
 
+/// Resolve the centre block's two lists, the same way manual entries are
+/// resolved: once, because both touch the disk.
+fn build_center(favorites: &Favorites) -> Center {
+    let resolve = |list: &[ManualItem]| -> Vec<Item> {
+        list.iter()
+            .filter_map(manual_item)
+            .map(|item| Item { origin: Source::Favorites, ..item })
+            .collect()
+    };
+    Center {
+        halves: [resolve(&favorites.apps), resolve(&favorites.sites)],
+        shape: favorites.clone(),
+    }
+}
+
 /// Rebuild sections after a config edit. Windows are left alone: the hooks have
 /// been keeping that list current and it does not depend on config.
-pub fn reconfigure(sections: &[SectionConfig]) {
+pub fn reconfigure(sections: &[SectionConfig], favorites: &Favorites) {
     let groups = build_groups(sections);
+    let center = build_center(favorites);
+    let has_modes = groups
+        .iter()
+        .any(|group| group.sources.iter().any(|spec| spec.source() == Source::Modes));
     if let Ok(mut s) = store().lock() {
         s.groups = groups;
+        s.has_modes = has_modes;
+        s.center = center;
     }
 }
 
 /// First and only full enumeration. Everything after this is incremental.
-pub fn init(exclude: HWND, sections: &[SectionConfig]) {
+pub fn init(exclude: HWND, sections: &[SectionConfig], favorites: &Favorites) {
     let groups = build_groups(sections);
+    let center = build_center(favorites);
+    let has_modes = groups
+        .iter()
+        .any(|group| group.sources.iter().any(|spec| spec.source() == Source::Modes));
     let found = enumerate(exclude);
     log_info!("initial scan: {} windows", found.len());
     for (n, w) in found.iter().enumerate() {
@@ -176,10 +254,20 @@ pub fn init(exclude: HWND, sections: &[SectionConfig]) {
         );
     }
 
+    log_info!(
+        "centre block: {} app(s), {} site(s), {}x{} slots a side",
+        center.halves[0].len(),
+        center.halves[1].len(),
+        center.shape.columns,
+        center.shape.rows
+    );
+
     if let Ok(mut s) = store().lock() {
         s.exclude = Handle::new(exclude);
         s.windows = found;
         s.groups = groups;
+        s.has_modes = has_modes;
+        s.center = center;
     }
 }
 
@@ -208,6 +296,7 @@ fn manual_item(entry: &ManualItem) -> Option<Item> {
         app: crate::shell::link::app_stem(target),
         icon_source: Some(target.to_owned()),
         origin: Source::Manual,
+        link: None,
         running: None,
         group: 0,
     })
@@ -318,6 +407,7 @@ fn new_tab_item() -> Option<Item> {
         icon_source: None,
         app: None,
         origin: Source::Tabs,
+        link: None,
         running: None,
         group: 0,
     })
@@ -356,6 +446,7 @@ fn tab_items() -> Vec<Item> {
                 .map(|key| format!("{}{key}", crate::shell::icons::FAVICON)),
             app: None,
             origin: Source::Tabs,
+            link: Some(owned.tab.url.clone()),
             running: None,
             group: 0,
         }),
@@ -384,6 +475,35 @@ fn bookmark_items() -> Vec<Item> {
                 .map(|key| format!("{}{key}", crate::shell::icons::FAVICON)),
             app: None,
             origin: Source::Bookmarks,
+            link: Some(bookmark.url.clone()),
+            running: None,
+            group: 0,
+        })
+        .collect()
+}
+
+/// The modes, one tile each.
+///
+/// A fixed set in a fixed order, so the four squares are in the same four
+/// places every summon. `Move` leads because it is the one that used to be
+/// seven tiles of its own.
+pub const MODES: [Mode; 4] = [Mode::Move, Mode::Favorites, Mode::Close, Mode::Layout];
+
+fn mode_items() -> Vec<Item> {
+    MODES
+        .iter()
+        .map(|mode| Item {
+            id: ItemId::Action(mode.label()),
+            kind: Kind::Action,
+            title: mode.label().to_owned(),
+            detail: String::new(),
+            target: Target::Mode(*mode),
+            // Drawn, not fetched: the mark on these is a picture of what the
+            // mode does to the panel.
+            icon_source: None,
+            app: None,
+            origin: Source::Modes,
+            link: None,
             running: None,
             group: 0,
         })
@@ -403,6 +523,7 @@ fn move_items() -> Vec<Item> {
         icon_source: None,
         app: None,
         origin: Source::Moves,
+        link: None,
         running: None,
         group: 0,
     };
@@ -417,10 +538,151 @@ fn move_items() -> Vec<Item> {
         .collect()
 }
 
-pub fn sections() -> Vec<Section> {
+/// One empty slot in the centre block.
+///
+/// Drawn rather than left out. The block earns its place by being the same
+/// shape in the same spot every summon, and a block that shrank as it emptied
+/// would be a set of moving targets - which is the one thing a gaze pointer
+/// cannot use.
+fn empty_slot(n: usize) -> Item {
+    Item {
+        id: ItemId::Slot(n),
+        kind: Kind::Action,
+        // No words. Filtering searches the title, and an empty square that
+        // survived a query would be a match that means nothing.
+        title: String::new(),
+        detail: String::new(),
+        target: Target::Slot,
+        icon_source: None,
+        app: None,
+        origin: Source::Favorites,
+        link: None,
+        running: None,
+        // A group of its own, which is what stops a drag inside the block from
+        // running off the end of what is filled and into the empties. It also
+        // gives the empty squares the alternating fill, so they read as places
+        // rather than as tiles.
+        group: 1,
+    }
+}
+
+/// The centre block, as sections.
+///
+/// Last in the list on purpose. Every other box works out where its tiles are
+/// from what is configured ahead of it, and the centre is not configured as a
+/// section at all, so it goes on the end where it disturbs nothing.
+///
+/// Untitled, because the block never draws a header: it is the most valuable
+/// space on the panel and a title would spend a row of it saying what eight
+/// icons already say.
+/// The origin of a URL, spelled the way the extension spells it: scheme, `://`,
+/// host and port, lowercased. That string is the key every favicon is filed
+/// under, because one bitmap serves every page on a site.
+fn origin_of(url: &str) -> Option<String> {
+    let (scheme, rest) = url.split_once("://")?;
+    let scheme = scheme.to_lowercase();
+    if !matches!(scheme.as_str(), "http" | "https") {
+        return None;
+    }
+    let host = rest.split(['/', '?', '#']).next()?;
+    if host.is_empty() {
+        return None;
+    }
+    Some(format!("{scheme}://{}", host.to_lowercase()))
+}
+
+/// Give a site favorite the browser's own favicon when there is one to give.
+///
+/// Without this every site in the block comes back wearing the default
+/// browser's logo, because that is genuinely what the shell knows about a URL -
+/// and four identical logos in the middle of the screen is the block failing at
+/// the only thing it is for. Asked afresh every time the grid is built, so a
+/// favicon that turns up after a browser connects is picked up on the next
+/// summon rather than waiting for a config edit.
+fn wearing_favicon(item: &Item) -> Item {
+    let Some(origin) = item.shell_target().and_then(origin_of) else {
+        return item.clone();
+    };
+    if !crate::shell::icons::has_favicon(&origin) {
+        return item.clone();
+    }
+    Item {
+        icon_source: Some(format!("{}{origin}", crate::shell::icons::FAVICON)),
+        ..item.clone()
+    }
+}
+
+fn center_sections(center: &Center) -> Vec<Section> {
+    if !center.shape.on() {
+        return Vec::new();
+    }
+    let slots = center.shape.slots();
+    let halves: Vec<Vec<Item>> = match center.shape.contents {
+        Contents::Split => center.halves.to_vec(),
+        // One block: the two lists end to end, in the same order they would
+        // have sat side by side.
+        Contents::One => vec![center.halves.iter().flatten().cloned().collect()],
+        // One list only. The other is still written and still read; it just has
+        // nowhere to be drawn, which is what "apps only" means.
+        Contents::Apps => vec![center.halves[0].clone()],
+        Contents::Sites => vec![center.halves[1].clone()],
+    };
+
+    halves
+        .into_iter()
+        .enumerate()
+        .map(|(half, held)| {
+            let total = held.len();
+            let mut items: Vec<Item> =
+                held.iter().take(slots).map(wearing_favicon).collect();
+            // Numbered across the whole block, so two empty slots in different
+            // halves are still two different tiles to hover.
+            for n in items.len()..slots {
+                items.push(empty_slot(half * slots + n));
+            }
+            Section {
+                title: String::new(),
+                items,
+                color: center.shape.color.clone(),
+                total,
+                center: Some(half),
+                columns: center.shape.columns,
+            }
+        })
+        .collect()
+}
+
+/// The grid, as the panel should show it right now.
+///
+/// `mode` is the only thing here that is not a fact about the machine: the six
+/// moves are a box that fills only while move mode is on. An empty section
+/// draws nothing, so a `move` box that has nothing to say costs no row - which
+/// is what lets a `modes` bar of four squares stand in for a bar of seven.
+pub fn sections(mode: Mode) -> Vec<Section> {
     let Ok(s) = store().lock() else {
         log_warn!("item store is poisoned; showing an empty grid");
         return Vec::new();
+    };
+
+    // Anything the centre is holding is left out of the list it came from. One
+    // thing appearing twice on one panel costs its slot the only property that
+    // makes a fixed position worth having.
+    // Launchable tiles only. A window is a different question from the app it
+    // belongs to: favoriting Chrome says where to start one, and says nothing
+    // about the four Chrome windows already open.
+    let (held_targets, held_apps) = s.center.held();
+    let doubled = |item: &Item| match item.origin {
+        Source::Taskbar | Source::Manual | Source::Running | Source::Bookmarks => {
+            item.shell_target()
+                .is_some_and(|name| held_targets.contains(&name.to_lowercase()))
+                || item
+                    .app
+                    .as_ref()
+                    .is_some_and(|app| held_apps.contains(&app.to_lowercase()))
+        }
+        Source::Windows | Source::Extra | Source::Tabs | Source::Moves | Source::Modes
+        // The list itself, wherever it is shown.
+        | Source::Favorites => false,
     };
 
     let mut claimed = vec![false; s.windows.len()];
@@ -485,6 +747,7 @@ pub fn sections() -> Vec<Section> {
                             icon_source: Some(name),
                             app: Some(app.clone()),
                             origin: Source::Running,
+                            link: None,
                             running: Some(window.handle),
                             group: 0,
                         });
@@ -495,7 +758,19 @@ pub fn sections() -> Vec<Section> {
                 // as the browser does.
                 Source::Tabs => items.extend(tab_items()),
                 Source::Bookmarks => items.extend(bookmark_items()),
-                Source::Moves => items.extend(move_items()),
+                // Only while they apply. A `move` box listed alongside no
+                // `modes` box anywhere is the old always-on bar and stays on.
+                Source::Moves => {
+                    if mode == Mode::Move || !s.has_modes {
+                        items.extend(move_items());
+                    }
+                }
+                Source::Modes => items.extend(mode_items()),
+                // The centre's own lists, for anyone who would rather have
+                // them as an ordinary box than in the middle of the panel.
+                Source::Favorites => {
+                    items.extend(s.center.halves.iter().flatten().cloned())
+                }
                 Source::Taskbar | Source::Manual => {
                     if let Some((_, fixed)) = group.fixed.iter().find(|(n, _)| *n == index) {
                         items.extend(fixed.iter().cloned());
@@ -507,20 +782,9 @@ pub fn sections() -> Vec<Section> {
             }
         }
 
-        // Mark the pin rather than grow a second tile, as the taskbar does.
-        // Pins only: a window tile is already the window. `windows` is MRU
-        // first, so the first match is the one to switch to.
-        for item in &mut items {
-            if item.shell_target().is_none() {
-                continue;
-            }
-            let Some(app) = item.app.clone() else { continue };
-            item.running = s
-                .windows
-                .iter()
-                .find(|window| window.app().as_deref() == Some(app.as_str()))
-                .map(|window| window.handle);
-        }
+        items.retain(|item| !doubled(item));
+
+        mark_running(&mut items, &s.windows);
 
         let total = items.len();
         if group.max_items > 0 {
@@ -533,10 +797,35 @@ pub fn sections() -> Vec<Section> {
                 color: group.color.clone(),
                 items,
                 total,
+                center: None,
+                columns: 0,
             });
         }
     }
+
+    // The centre last, so the flat run of every other box is where it was.
+    for mut section in center_sections(&s.center) {
+        mark_running(&mut section.items, &s.windows);
+        out.push(section);
+    }
     out
+}
+
+/// Mark the pin rather than grow a second tile, as the taskbar does.
+///
+/// Pins only: a window tile is already the window. `windows` is MRU first, so
+/// the first match is the one to switch to.
+fn mark_running(items: &mut [Item], windows: &[WindowInfo]) {
+    for item in items {
+        if item.shell_target().is_none() {
+            continue;
+        }
+        let Some(app) = item.app.clone() else { continue };
+        item.running = windows
+            .iter()
+            .find(|window| window.app().as_deref() == Some(app.as_str()))
+            .map(|window| window.handle);
+    }
 }
 
 /// Character-aware truncation; window titles are full of non-ASCII.
@@ -797,5 +1086,163 @@ mod tests {
         let detail = shorten_detail(&long);
         assert!(detail.chars().count() <= 40);
         assert!(detail.ends_with("thing.exe"));
+    }
+
+    // --- the centre block ---
+
+    /// A two-by-two block, whatever the default happens to be. The shape is
+    /// what most of these are about, so it is stated rather than inherited:
+    /// changing what a new install starts with must not rewrite the arithmetic
+    /// these tests are checking.
+    fn favorites(apps: &[&str], sites: &[&str]) -> Favorites {
+        Favorites {
+            rows: 2,
+            columns: 2,
+            apps: apps.iter().map(|s| ManualItem::Plain((*s).into())).collect(),
+            sites: sites.iter().map(|s| ManualItem::Plain((*s).into())).collect(),
+            ..Favorites::default()
+        }
+    }
+
+    #[test]
+    fn a_half_is_padded_out_to_its_slots_so_the_block_keeps_its_shape() {
+        let center = build_center(&favorites(&["ms-settings:display"], &[]));
+        let out = center_sections(&center);
+        assert_eq!(out.len(), 2, "split means two halves");
+        // Two rows of two: four slots, one filled and three waiting.
+        assert_eq!(out[0].items.len(), 4);
+        assert_eq!(out[1].items.len(), 4);
+        assert_eq!(
+            out[0].items.iter().filter(|i| i.target == Target::Slot).count(),
+            3
+        );
+        assert!(out[1].items.iter().all(|i| i.target == Target::Slot));
+    }
+
+    #[test]
+    fn the_halves_are_numbered_left_to_right() {
+        let out = center_sections(&build_center(&favorites(&[], &[])));
+        assert_eq!(out[0].center, Some(0));
+        assert_eq!(out[1].center, Some(1));
+    }
+
+    #[test]
+    fn an_unsplit_block_is_one_box_holding_both_lists_in_turn() {
+        let center = build_center(&Favorites {
+            contents: Contents::One,
+            ..favorites(&["ms-settings:display"], &["https://example.com"])
+        });
+        let out = center_sections(&center);
+        assert_eq!(out.len(), 1);
+        let filled: Vec<&str> = out[0]
+            .items
+            .iter()
+            .filter_map(|item| item.shell_target())
+            .collect();
+        assert_eq!(filled, vec!["ms-settings:display", "https://example.com"]);
+    }
+
+    #[test]
+    fn one_list_only_is_one_box_holding_that_list() {
+        for (contents, held) in
+            [(Contents::Apps, "ms-settings:display"), (Contents::Sites, "https://example.com")]
+        {
+            let center = build_center(&Favorites {
+                contents,
+                ..favorites(&["ms-settings:display"], &["https://example.com"])
+            });
+            let out = center_sections(&center);
+            assert_eq!(out.len(), 1, "{contents:?} drew more than one box");
+            let filled: Vec<&str> =
+                out[0].items.iter().filter_map(|item| item.shell_target()).collect();
+            assert_eq!(filled, vec![held], "{contents:?} holds the wrong list");
+        }
+    }
+
+    #[test]
+    fn a_list_the_block_is_not_showing_stays_in_the_list_it_came_from() {
+        // Set to apps only, the sites are still written down and still come
+        // back when the setting does. Taking them out of `Browsing` as well
+        // would be a tile that is on no part of the panel at all.
+        let center = build_center(&Favorites {
+            contents: Contents::Apps,
+            ..favorites(&["ms-settings:display"], &["https://example.com"])
+        });
+        let (targets, _) = center.held();
+        assert!(targets.contains(&"ms-settings:display".to_owned()));
+        assert!(!targets.contains(&"https://example.com".to_owned()));
+    }
+
+    #[test]
+    fn a_block_turned_off_is_no_sections_at_all() {
+        let center = build_center(&Favorites { rows: 0, ..favorites(&["x"], &["y"]) });
+        assert!(center_sections(&center).is_empty());
+    }
+
+    #[test]
+    fn more_favorites_than_slots_are_cut_rather_than_growing_the_block() {
+        let many: Vec<&str> = vec!["a:1", "b:2", "c:3", "d:4", "e:5", "f:6"];
+        let center = build_center(&favorites(&many, &[]));
+        let out = center_sections(&center);
+        assert_eq!(out[0].items.len(), 4);
+        // And the section still says how many there really were, which is what
+        // "more tiles" in edit mode has to stop at.
+        assert_eq!(out[0].total, 6);
+    }
+
+    #[test]
+    fn what_the_block_holds_is_named_by_target_and_by_app() {
+        let center = build_center(&favorites(&["ms-settings:display"], &["https://example.com"]));
+        let (targets, _) = center.held();
+        assert!(targets.contains(&"ms-settings:display".to_owned()));
+        assert!(targets.contains(&"https://example.com".to_owned()));
+    }
+
+    #[test]
+    fn an_empty_slot_is_its_own_group_so_a_drag_cannot_run_into_one() {
+        let out = center_sections(&build_center(&favorites(&["ms-settings:display"], &[])));
+        let filled = &out[0].items[0];
+        let empty = &out[0].items[1];
+        assert_ne!(filled.group, empty.group);
+    }
+
+    #[test]
+    fn a_urls_origin_is_spelled_the_way_the_extension_spells_it() {
+        // The favicon key. One bitmap serves every page on a site, so a site
+        // favorite and the tab it came from have to land on the same string.
+        assert_eq!(
+            origin_of("https://Docs.RS/serde/latest?x=1#frag").as_deref(),
+            Some("https://docs.rs")
+        );
+        assert_eq!(
+            origin_of("http://localhost:3000/").as_deref(),
+            Some("http://localhost:3000")
+        );
+        // Not a page, so there is no favicon to look for.
+        assert_eq!(origin_of("ms-settings:display"), None);
+        assert_eq!(origin_of(r"C:\Windows\notepad.exe"), None);
+        assert_eq!(origin_of("file:///R:/dev"), None);
+        assert_eq!(origin_of("https://"), None);
+    }
+
+    #[test]
+    fn a_site_favorite_keeps_the_shell_icon_until_a_favicon_turns_up() {
+        // Nothing paired in a test, so this is the no-browser case: the URL
+        // itself, which the shell answers with the default browser's logo.
+        let center = build_center(&favorites(&[], &["https://example.com"]));
+        let out = center_sections(&center);
+        assert_eq!(out[1].items[0].icon_source.as_deref(), Some("https://example.com"));
+    }
+
+    #[test]
+    fn every_mode_gets_a_tile_that_says_what_it_is() {
+        let tiles = mode_items();
+        assert_eq!(tiles.len(), MODES.len());
+        for (tile, mode) in tiles.iter().zip(MODES) {
+            assert_eq!(tile.target, Target::Mode(mode));
+            assert!(!tile.title.is_empty(), "{mode:?} has no words");
+        }
+        // Move leads: it is the one that used to be seven tiles of its own.
+        assert_eq!(MODES[0], Mode::Move);
     }
 }

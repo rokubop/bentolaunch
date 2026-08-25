@@ -44,8 +44,8 @@ pub fn activate(item: &Item) {
         }
         Target::NewTab { connection } => new_tab(*connection),
         // Handled by the panel: these act on it, or on another tile's window,
-        // and neither leaves the panel the way everything here does.
-        Target::Arrange(_) | Target::Stay => {}
+        // and none of them leaves the panel the way everything here does.
+        Target::Arrange(_) | Target::Stay | Target::Slot | Target::Mode(_) => {}
     }
 }
 

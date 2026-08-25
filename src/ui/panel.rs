@@ -40,7 +40,7 @@ use crate::browser::{gate, server};
 use crate::config::{self, Config, Source};
 use crate::instance;
 use crate::model::store;
-use crate::model::{Handle, Item, Kind, Section, Target};
+use crate::model::{Handle, Item, Kind, Mode, Section, Target};
 use crate::safety;
 use crate::shell::{activate, arrange, icons, picker};
 use crate::ui::filter;
@@ -50,7 +50,7 @@ use crate::ui::grid::{
 };
 use crate::ui::menu;
 use crate::ui::settings::{SETTINGS, Setting};
-use crate::ui::render::{Mark, OptionPaint, Renderer, TextColors, TilePaint, d2d_color};
+use crate::ui::render::{Badge, Mark, OptionPaint, Renderer, TextColors, TilePaint, d2d_color};
 use crate::ui::spotlight::Spotlight;
 use crate::ui::tray;
 use crate::{pins, watch};
@@ -60,6 +60,11 @@ const HOTKEY_ID: i32 = 1;
 /// Drives the watchdog heartbeat while the panel is up.
 const HEARTBEAT_TIMER: usize = 1;
 const HEARTBEAT_MS: u32 = 250;
+/// Asks, a moment after a mode lost focus, whether it really lost it.
+const DEACTIVATED_TIMER: usize = 2;
+/// Long enough for a write or a `WM_CLOSE` to hand focus back, short enough
+/// that a click on another window has visibly dismissed the panel.
+const DEACTIVATED_MS: u32 = 120;
 /// Thick enough to read past a tile's own fill without eating into the icon.
 const TARGET_STROKE: f32 = 3.0;
 /// A press that never travels this far is a click, not a drag.
@@ -170,12 +175,13 @@ pub struct Panel {
     /// rule that dismisses the panel.
     handled_down: bool,
 
-    /// Layout edit mode is on. Holds the panel open, and takes the clicks the
-    /// grid would otherwise treat as launches.
+    /// What a click on a tile means right now.
     ///
-    /// A mode, unlike everything else here, because it changes the shape of the
-    /// panel rather than one tile's place in it.
-    editing: bool,
+    /// Modes, unlike everything else here, because each of these changes what
+    /// clicking does rather than what one tile is. All of them hold the panel
+    /// open and all of them are left by the same button in the corner, so there
+    /// is never one with no visible way out.
+    mode: Mode,
     /// Which box has been picked, as an index into `sections`. `None` means the
     /// mode is on but nothing is chosen yet, which is where it starts: the
     /// options belong to a box, so there is nothing to show until one is.
@@ -326,7 +332,7 @@ impl Panel {
             query: String::new(),
             frozen_cols: 0,
             menu_open: false,
-            editing: false,
+            mode: Mode::Grid,
             edit: None,
             hover_box: None,
             box_faces: Vec::new(),
@@ -416,12 +422,25 @@ impl Panel {
         self.sections
             .iter()
             .map(|s| {
+                // The centre is not in `[[sections]]` and must never be matched
+                // against it by title: a user's own section called the same
+                // thing would hand the centre a placement it cannot use.
+                if s.center.is_some() {
+                    return SectionShape {
+                        title: String::new(),
+                        count: s.items.len(),
+                        at: None,
+                        columns: s.columns,
+                        center: s.center,
+                    };
+                }
                 let placed = self.config.sections.iter().find(|c| c.title == s.title);
                 SectionShape {
                     title: s.title.clone(),
                     count: s.items.len(),
                     at: placed.and_then(|c| c.at.as_deref()).and_then(At::parse),
                     columns: placed.map_or(0, |c| c.columns),
+                    center: None,
                 }
             })
             .collect()
@@ -429,7 +448,7 @@ impl Panel {
 
     /// Pull the model, apply the query, recompute geometry.
     fn reload(&mut self) {
-        let all = store::sections();
+        let all = store::sections(self.mode);
         self.total = all.iter().map(|s| s.items.len()).sum();
         let (sections, best) = self.filtered(all);
         self.sections = sections;
@@ -561,8 +580,8 @@ impl Panel {
         if !self.visible {
             return;
         }
-        if self.editing {
-            log_info!("hide while editing (restore_caller={restore_caller})");
+        if self.in_mode() {
+            log_info!("hide in {:?} mode (restore_caller={restore_caller})", self.mode);
         }
         self.visible = false;
         self.tracking_mouse = false;
@@ -570,7 +589,7 @@ impl Panel {
         self.query.clear();
         self.frozen_cols = 0;
         self.selected = None;
-        self.editing = false;
+        self.mode = Mode::Grid;
         self.edit = None;
         self.hover_box = None;
         self.hover_option = None;
@@ -596,6 +615,9 @@ impl Panel {
         // SAFETY: our own window, on our own thread.
         unsafe {
             let _ = KillTimer(Some(self.hwnd), HEARTBEAT_TIMER);
+            // A pending "did it really lose focus?" has been answered by the
+            // panel going away.
+            let _ = KillTimer(Some(self.hwnd), DEACTIVATED_TIMER);
             let _ = ShowWindow(self.hwnd, SW_HIDE);
         }
 
@@ -646,7 +668,7 @@ impl Panel {
             // Edit mode says what each box is set to, and marks the one the
             // keys will land on. The grid underneath is left alone: the point
             // is to watch the real layout change as it is edited.
-            let editing = self.editing;
+            let editing = self.editing();
             let selected_color = d2d_color(&self.config.theme.tile_selected);
             let labels: Vec<String> = if editing {
                 self.layout
@@ -737,6 +759,7 @@ impl Panel {
                             running: item
                                 .running
                                 .map(|_| d2d_color(&self.config.theme.tile_target)),
+                            badge: self.badge(item),
                             colors,
                         };
                         if let Err(e) = renderer.draw_tile(&drawn, paint) {
@@ -767,6 +790,9 @@ impl Panel {
         }
 
         self.tiles = built;
+        // Over the tiles: a seam runs between the tiles it separates, and the
+        // centre's frame has to read as being in front of the layout.
+        self.build_edges(radius)?;
         // Over the tiles, which are no longer the thing being pointed at.
         self.build_box_scrims(radius)?;
         // After the tiles, so the grid scrolls underneath them.
@@ -777,6 +803,83 @@ impl Panel {
         self.build_menu(radius)?;
         self.build_settings(radius)?;
         self.build_home(radius)?;
+        Ok(())
+    }
+
+    /// The lines that say where one box ends and the next begins, and the frame
+    /// around the centre block.
+    ///
+    /// Over the tiles, under everything a mode puts up. The seams have to be
+    /// visible across the tiles they run between - drawn underneath, a box's
+    /// own edge would be hidden by the very tiles it is separating - and the
+    /// centre's frame has to read as being in front of the layout, because that
+    /// is exactly what the block is.
+    fn build_edges(&mut self, radius: f32) -> Result<()> {
+        let children = self.content.Children()?;
+        let scale = self.scale();
+        let hairline = (1.0 * scale).max(1.0);
+
+        let seam = color_of(&self.config.theme.box_edge);
+        if seam.A > 0 {
+            // Boxes only. The centre gets its own frame below, at its own
+            // weight, and two lines round it would be one too many.
+            let boxes: Vec<GridRect> = self
+                .layout
+                .bands()
+                .iter()
+                .filter(|band| !band.center)
+                .map(|band| band.rect.shifted_by(self.scroll))
+                .collect();
+            for rect in boxes {
+                if rect.w < 1.0 || rect.h < 1.0 {
+                    continue;
+                }
+                let ring =
+                    self.outline(Vector2 { X: rect.w, Y: rect.h }, radius, seam, hairline)?;
+                ring.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 })?;
+                children.InsertAtTop(&ring)?;
+            }
+        }
+
+        let Some((block, seams)) = self.layout.center_frame() else {
+            return Ok(());
+        };
+        let edge = color_of(&self.config.theme.center_edge);
+        if edge.A == 0 {
+            return Ok(());
+        }
+        let block = block.shifted_by(self.scroll);
+        // Out into the gutter the tiles already leave, so the frame surrounds
+        // the block rather than cropping it.
+        let out = (self.config.grid.gap * scale) / 2.0;
+        let frame = GridRect {
+            x: block.x - out,
+            y: block.y - out,
+            w: block.w + 2.0 * out,
+            h: block.h + 2.0 * out,
+        };
+        let ring = self.outline(
+            Vector2 { X: frame.w, Y: frame.h },
+            radius * 1.5,
+            edge,
+            (2.0 * scale).max(1.0),
+        )?;
+        ring.SetOffset(Vector3 { X: frame.x, Y: frame.y, Z: 0.0 })?;
+        children.InsertAtTop(&ring)?;
+
+        // One container with a line down it, not two containers side by side.
+        // Which half is which is the block's only rule, and a seam is what says
+        // it while both halves are still empty.
+        for x in seams {
+            let (line, _) =
+                self.rounded_rect(Vector2 { X: hairline, Y: block.h }, 0.0, edge)?;
+            line.SetOffset(Vector3 {
+                X: (x - hairline / 2.0).round(),
+                Y: block.y,
+                Z: 0.0,
+            })?;
+            children.InsertAtTop(&line)?;
+        }
         Ok(())
     }
 
@@ -820,7 +923,7 @@ impl Panel {
     /// what the box is set to, and dimming it would hide the thing being read.
     fn build_box_scrims(&mut self, radius: f32) -> Result<()> {
         self.box_faces.clear();
-        if !self.editing {
+        if !self.editing() {
             return Ok(());
         }
 
@@ -975,17 +1078,16 @@ impl Panel {
             return Ok(());
         }
 
-        let (label, glyph) = if self.editing {
-            ("Stop editing", "\u{2713}")
-        } else {
-            ("BentoPick", "\u{25A6}")
+        let (label, glyph) = match self.mode.done() {
+            Some(done) => (done, "\u{2713}"),
+            None => ("BentoPick", "\u{25A6}"),
         };
 
         // Our own logo on our own button, off the same cache the tiles use.
         // `None` on a cold summon - it is queued like any other icon - so the
         // glyph stands in and `fill_home_icon` paints the logo over it.
-        // Editing borrows the button for "Stop editing", which is not us.
-        let icon = (!self.editing).then(|| app_icon(self.icon_size())).flatten();
+        // A mode borrows the button to say "Done", which is not us.
+        let icon = (!self.in_mode()).then(|| app_icon(self.icon_size())).flatten();
 
         let children = self.content.Children()?;
         let root = self.compositor.CreateContainerVisual()?;
@@ -1024,7 +1126,7 @@ impl Panel {
 
         children.InsertAtTop(&root)?;
         self.home = Some((rect, brush));
-        self.home_awaiting_icon = icon.is_none() && !self.editing && painted.is_some();
+        self.home_awaiting_icon = icon.is_none() && !self.in_mode() && painted.is_some();
         self.home_surface = painted;
         Ok(())
     }
@@ -1165,8 +1267,15 @@ impl Panel {
             root.SetSize(Vector2 { X: rect.w, Y: rect.h })?;
             root.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 })?;
 
+            // Greyed from the start, not only once the pointer has been near
+            // it: a square that looks live until you hover it is one you have
+            // already aimed at for nothing.
+            let fill = match setting.applies(&self.config) {
+                true => idle,
+                false => veil(idle, 0.35),
+            };
             let (face, brush) =
-                self.rounded_rect(Vector2 { X: rect.w, Y: rect.h }, radius, idle)?;
+                self.rounded_rect(Vector2 { X: rect.w, Y: rect.h }, radius, fill)?;
             root.Children()?.InsertAtTop(&face)?;
 
             if let Some(renderer) = &self.renderer
@@ -1200,8 +1309,15 @@ impl Panel {
     fn refresh_settings(&self) {
         let idle = color_of(&self.config.theme.tile_alt);
         let hot = color_of(&self.config.theme.tile_hover);
-        for (index, (_, _, brush)) in self.settings_items.iter().enumerate() {
-            let _ = brush.SetColor(if self.hover_setting == Some(index) { hot } else { idle });
+        for (index, (setting, _, brush)) in self.settings_items.iter().enumerate() {
+            let color = if !setting.applies(&self.config) {
+                veil(idle, 0.35)
+            } else if self.hover_setting == Some(index) {
+                hot
+            } else {
+                idle
+            };
+            let _ = brush.SetColor(color);
         }
     }
 
@@ -1225,6 +1341,11 @@ impl Panel {
             }
             _ => {}
         }
+        // A square that does not apply is not applied either. The surface greys
+        // it out; this is the half that makes that true.
+        if !setting.applies(&self.config) {
+            return;
+        }
 
         let Some(change) = setting.next(&self.config) else { return };
         if !pins::set(change) {
@@ -1244,11 +1365,13 @@ impl Panel {
     /// are things you do twice in a row.
     fn run_command(&mut self, command: Command) {
         self.menu_open_big = false;
+        if let Some(mode) = command.mode() {
+            self.enter_mode(mode);
+            return;
+        }
         match command {
-            Command::EditLayout => {
-                self.enter_edit();
-                return;
-            }
+            // Handled above; every mode square leaves through `Command::mode`.
+            Command::EditLayout | Command::Favorites | Command::CloseApps => return,
             Command::AddApp => {
                 let picked = picker::pick_app(self.hwnd);
                 self.pin(picked);
@@ -1272,11 +1395,11 @@ impl Panel {
         let _ = self.rebuild_visuals();
     }
 
-    /// The app's own button was clicked: stop editing, or open and close the
-    /// big menu.
+    /// The app's own button was clicked: leave whatever mode is on, or open and
+    /// close the big menu.
     fn press_home(&mut self) {
-        if self.editing {
-            self.leave_edit();
+        if self.in_mode() {
+            self.leave_mode();
             return;
         }
         // Backs out one surface at a time, the same order Escape unwinds in.
@@ -1409,19 +1532,32 @@ impl Panel {
     /// A ring, not a filled rect: it goes over a tile that already has a fill
     /// from hover or selection and must not replace it.
     fn rounded_ring(&self, size: Vector2, radius: f32, color: Color) -> Result<ShapeVisual> {
+        self.outline(size, radius, color, TARGET_STROKE)
+    }
+
+    /// The same, at whatever weight the caller wants. A box seam is a hairline
+    /// and the ring round the window being moved is three pixels, and the
+    /// difference between them is the whole of what they say.
+    fn outline(
+        &self,
+        size: Vector2,
+        radius: f32,
+        color: Color,
+        stroke: f32,
+    ) -> Result<ShapeVisual> {
         let geometry = self.compositor.CreateRoundedRectangleGeometry()?;
         geometry.SetSize(Vector2 {
-            X: (size.X - TARGET_STROKE).max(0.0),
-            Y: (size.Y - TARGET_STROKE).max(0.0),
+            X: (size.X - stroke).max(0.0),
+            Y: (size.Y - stroke).max(0.0),
         })?;
         geometry.SetCornerRadius(Vector2 { X: radius, Y: radius })?;
 
         let shape: CompositionSpriteShape =
             self.compositor.CreateSpriteShapeWithGeometry(&geometry)?;
         shape.SetStrokeBrush(&self.compositor.CreateColorBrushWithColor(color)?)?;
-        shape.SetStrokeThickness(TARGET_STROKE)?;
+        shape.SetStrokeThickness(stroke)?;
         // The stroke is centred on the path, so half of it would fall outside.
-        shape.SetOffset(Vector2 { X: TARGET_STROKE / 2.0, Y: TARGET_STROKE / 2.0 })?;
+        shape.SetOffset(Vector2 { X: stroke / 2.0, Y: stroke / 2.0 })?;
 
         let visual = self.compositor.CreateShapeVisual()?;
         visual.SetSize(size)?;
@@ -1461,9 +1597,19 @@ impl Panel {
     /// holding the panel open. One fill for both: they are the same statement,
     /// that this tile is what the bar is pointed at.
     fn lit(&self, index: usize) -> bool {
-        self.items
-            .get(index)
-            .is_some_and(|item| item.target == Target::Stay && self.stay)
+        let Some(item) = self.items.get(index) else { return false };
+        // The mode tile for the mode that is on. Same statement as the latch:
+        // this is switched on, and clicking it switches it off.
+        if let Target::Mode(mode) = item.target {
+            return self.mode == mode;
+        }
+        // Favorites mode: what the centre is already holding. The warm fill
+        // already means "this is switched on", and a tile that is a favorite is
+        // exactly that - one more click takes it back out.
+        if self.mode == Mode::Favorites && item.origin == Source::Favorites {
+            return !matches!(item.target, Target::Slot);
+        }
+        item.target == Target::Stay && self.stay
     }
 
     /// The tile the move bar acts on, ringed so it is answerable at a glance.
@@ -1547,6 +1693,22 @@ impl Panel {
 
         // The action tiles work the panel rather than leaving it.
         match item.target {
+            // An empty square says what it is for by doing it: taking one is
+            // how favorites mode is found without knowing the menu exists.
+            Target::Slot => {
+                self.enter_mode(Mode::Favorites);
+                return;
+            }
+            // The same square turns the mode on and off, so a mode tile is
+            // never a one-way door.
+            Target::Mode(mode) => {
+                if self.mode == mode {
+                    self.leave_mode();
+                } else {
+                    self.enter_mode(mode);
+                }
+                return;
+            }
             Target::Stay => {
                 self.toggle_stay();
                 return;
@@ -1699,11 +1861,23 @@ impl Panel {
         arrange::movable(handle).then_some(handle)
     }
 
-    /// A move tile with nothing to act on. Drawn dim rather than taken away:
-    /// these tiles are found by aiming at where they were last time, so the bar
+    /// A tile the current mode cannot act on. Drawn dim rather than taken away:
+    /// tiles are found by aiming at where they were last time, so the grid
     /// keeps its shape and says it is unavailable instead.
     fn inert(&self, item: &Item) -> bool {
-        matches!(item.target, Target::Arrange(_)) && self.moving().is_none()
+        // The way out of the mode is never dim. Every mode is left by a square,
+        // and a square drawn as unavailable is one nobody aims at.
+        if matches!(item.target, Target::Mode(_)) {
+            return false;
+        }
+        match self.mode {
+            Mode::Favorites => self.favorite_would(item).is_none(),
+            // Nothing open behind it, so there is nothing to close.
+            Mode::Close => self.window_for(item).is_none(),
+            Mode::Grid | Mode::Layout | Mode::Move => {
+                matches!(item.target, Target::Arrange(_)) && self.moving().is_none()
+            }
+        }
     }
 
     /// The window the move tiles act on, and what to call it in the log.
@@ -1717,12 +1891,47 @@ impl Panel {
         Some((handle, title))
     }
 
+    /// The corner mark saying what a click does to this tile *right now*.
+    ///
+    /// Only where a click destroys something. Favorites mode is one gesture
+    /// both ways - the same click that put a tile in the block takes it back
+    /// out - and a fill that says "this one is switched on" does not say which
+    /// way the next click goes. The badge is the half the fill cannot say.
+    fn badge(&self, item: &Item) -> Option<Badge> {
+        if self.mode != Mode::Favorites || item.origin != Source::Favorites {
+            return None;
+        }
+        // An empty slot has nothing to take out.
+        if matches!(item.target, Target::Slot) {
+            return None;
+        }
+        Some(Badge {
+            mark: Mark::Minus,
+            color: d2d_color(&self.config.theme.tile_target),
+        })
+    }
+
     /// The figure on an action tile, and what to call it now. `None` twice
     /// over for an ordinary tile, which has an icon and a fixed name.
     fn action_face(&self, item: &Item) -> (Option<Mark>, Option<String>) {
         match item.target {
             Target::Arrange(mv) => (Some(mark_of(mv)), None),
             Target::NewTab { .. } => (Some(Mark::Plus), None),
+            Target::Slot => (Some(Mark::Slot), None),
+            // A picture of what the mode does to the panel, not an ornament.
+            // Move shows a window taking a side; favorites shows the middle of
+            // the screen held; layout shows the bento being cut.
+            Target::Mode(mode) => {
+                let mark = match mode {
+                    Mode::Move => Mark::Half { left: 0.0, top: 0.0, right: 0.5, bottom: 1.0 },
+                    Mode::Favorites => {
+                        Mark::Half { left: 0.28, top: 0.24, right: 0.72, bottom: 0.76 }
+                    }
+                    Mode::Close => Mark::Cross,
+                    Mode::Layout | Mode::Grid => Mark::Bento,
+                };
+                (Some(mark), None)
+            }
             Target::Stay => {
                 let name = self.stay.then(|| {
                     self.target
@@ -1751,6 +1960,9 @@ impl Panel {
         let show_detail = self.config.grid.show_detail;
         let text = d2d_color(&self.config.theme.text);
         let colors = TextColors { title: text, detail: dim(text) };
+        // One rule for what a click destroys, read here rather than restated:
+        // the loop below cannot call back into `&self`.
+        let badges: Vec<Option<Badge>> = self.items.iter().map(|item| self.badge(item)).collect();
 
         let mut filled = 0;
         for (index, tile) in self.tiles.iter_mut().enumerate() {
@@ -1782,6 +1994,7 @@ impl Panel {
                 running: item
                     .running
                     .map(|_| d2d_color(&self.config.theme.tile_target)),
+                badge: badges.get(index).copied().flatten(),
                 colors,
             };
             if renderer.draw_tile(surface, paint).is_ok() {
@@ -1930,7 +2143,7 @@ impl Panel {
     fn on_char(&mut self, code: u32) {
         // Edit mode owns the keyboard. Its keys are all virtual-key ones, so
         // anything reaching here would only start a filter the mode then hides.
-        if self.editing {
+        if self.editing() {
             return;
         }
 
@@ -1960,8 +2173,15 @@ impl Panel {
     /// `false` hands the key back to `DefWindowProcW`. Arrows and Enter work
     /// on the whole grid, filtered or not.
     fn on_key(&mut self, vk: u16, repeat: bool) -> bool {
-        if self.editing {
+        if self.editing() {
             return self.edit_key(vk);
+        }
+        // The two picking modes leave the grid alone, so the keys still work as
+        // they always did. Escape is the exception: it has to back out of the
+        // mode before it starts closing the panel.
+        if self.in_mode() && vk == VK_ESCAPE.0 {
+            self.leave_mode();
+            return true;
         }
 
         const CTRL: u16 = VK_CONTROL.0;
@@ -2026,18 +2246,40 @@ impl Panel {
     /// Entered from the panel's own right-click menu. Never while a filter is
     /// live: the shape being edited is the unfiltered one, and half the boxes
     /// are missing from the other.
-    fn enter_edit(&mut self) {
+    /// Whether the bento is being rearranged. The one mode that changes the
+    /// shape of the panel rather than what a click on a tile does.
+    fn editing(&self) -> bool {
+        self.mode == Mode::Layout
+    }
+
+    /// Any mode at all. What holds the panel open, what puts "Done" on the
+    /// corner button, and what Escape backs out of.
+    fn in_mode(&self) -> bool {
+        self.mode != Mode::Grid
+    }
+
+    fn enter_mode(&mut self, mode: Mode) {
+        // A query and a mode are two different things to be in the middle of,
+        // and the layout options would be laid out over a grid that is mostly
+        // hidden. Filtering wins: it is the thing being typed right now.
         if !self.query.is_empty() || self.sections.is_empty() {
             return;
         }
-        self.editing = true;
+        // Move mode is the stay latch plus the six squares it exists for.
+        // Turning it on here rather than making the user click "Stay open"
+        // first is the whole of what one button buys over seven.
+        if mode == Mode::Move {
+            self.stay = true;
+            self.frame_target();
+        }
+        self.mode = mode;
         // Nothing picked yet. The options belong to a box, so they wait for one
         // to be clicked rather than guessing at the first.
         self.edit = None;
         self.set_hover(None);
         self.set_selected(None);
         self.reload();
-        log_info!("edit layout: on, {} box(es); click one", self.layout.bands().len());
+        log_info!("{mode:?} mode: on, {} box(es)", self.layout.bands().len());
         let _ = self.rebuild_visuals();
         self.reposition();
     }
@@ -2054,15 +2296,53 @@ impl Panel {
         }
     }
 
-    /// Leaves the panel up. Arranging the boxes is something you do on the way
-    /// to using them, so finishing should hand back a working panel rather
+    /// A mode lost focus. Ask once more, shortly, whether it is still lost.
+    ///
+    /// Every mode that takes clicks hands focus away as part of doing its job -
+    /// a config write, a `WM_CLOSE`, a shell dialog - and takes it straight
+    /// back with `keep_focus`. That is indistinguishable, at the moment it
+    /// happens, from a click on another window. One question a beat later tells
+    /// them apart: by then the panel is either foreground again or it is not.
+    fn ask_again_about_focus(&self) {
+        // SAFETY: our own window, on its owning thread. A second SetTimer on
+        // the same id replaces the pending one rather than stacking.
+        unsafe {
+            SetTimer(Some(self.hwnd), DEACTIVATED_TIMER, DEACTIVATED_MS, None);
+        }
+    }
+
+    /// The answer to that question.
+    fn settle_focus(&mut self) {
+        // SAFETY: our own window, on its owning thread.
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), DEACTIVATED_TIMER);
+        }
+        if !self.visible || self.menu_open || self.arranging {
+            return;
+        }
+        // SAFETY: a plain read of the foreground window.
+        let front = unsafe { GetForegroundWindow() };
+        if front == self.hwnd {
+            return;
+        }
+        log_info!("{:?} mode: focus went elsewhere; dismissing", self.mode);
+        self.hide(false);
+    }
+
+    /// Leaves the panel up. Every one of these is something you do on the way
+    /// to using the panel, so finishing should hand back a working panel rather
     /// than dismissing it.
-    fn leave_edit(&mut self) {
-        self.editing = false;
+    fn leave_mode(&mut self) {
+        log_info!("{:?} mode: off", self.mode);
+        // The latch came on with the mode, so it goes off with it. Leaving it
+        // on would be a panel that quietly no longer switches to what you click.
+        if self.mode == Mode::Move && self.stay {
+            self.toggle_stay();
+        }
+        self.mode = Mode::Grid;
         self.edit = None;
         self.hover_box = None;
         self.reload();
-        log_info!("edit layout: off");
         let _ = self.rebuild_visuals();
         self.reposition();
 
@@ -2080,7 +2360,12 @@ impl Panel {
     /// to it, but the layout skips it. Edit mode moves between boxes, so it
     /// walks this rather than counting section indices.
     fn boxes(&self) -> Vec<usize> {
-        self.layout.bands().iter().map(|band| band.section).collect()
+        self.layout
+            .bands()
+            .iter()
+            .filter(|band| !band.center)
+            .map(|band| band.section)
+            .collect()
     }
 
     /// The option tiles for the selected box. One place, so the drawn rect and
@@ -2115,7 +2400,7 @@ impl Panel {
             .and_then(At::parse);
 
         match control {
-            Control::Done => self.leave_edit(),
+            Control::Done => self.leave_mode(),
             Control::Fewer => {
                 self.edit_placement(|p| p.max_items = shown.saturating_sub(1).max(1));
             }
@@ -2237,6 +2522,148 @@ impl Panel {
             .is_some_and(|state| control.allowed(&state))
     }
 
+    /// A click on the grid while a mode is on. Every one of these leaves the
+    /// panel up: they are all things you do several of in a row.
+    ///
+    /// Except the two that are the way out. The squares that turn modes on are
+    /// the squares that turn them off - a mode that swallowed its own tile
+    /// would be a one-way door with Escape as the only key - and a click on the
+    /// panel's own padding dismisses in a mode exactly as it does out of one.
+    /// Both are what stops a mode reading as a panel that will not go away.
+    fn mode_click(&mut self, x: f32, y: f32) {
+        // Under the edit options' plate, which answers for its whole rectangle:
+        // a mode square behind it is not a mode square you can see.
+        let covered = self.options_plate.is_some_and(|plate| plate.contains(x, y));
+        if !covered
+            && let Some(tile) = self.layout.hit_test(x, y, self.scroll)
+            && self
+                .items
+                .get(tile)
+                .is_some_and(|item| matches!(item.target, Target::Mode(_)))
+        {
+            self.activate(tile);
+            self.keep_focus();
+            return;
+        }
+        match self.mode {
+            // Move mode leaves the grid alone: clicking is how you pick the
+            // window, and clicking is how you move it.
+            Mode::Grid | Mode::Move => {}
+            Mode::Layout => self.edit_click(x, y),
+            Mode::Favorites => {
+                match self.layout.hit_test(x, y, self.scroll) {
+                    Some(tile) => self.toggle_favorite(tile),
+                    None => return self.hide(true),
+                }
+                self.keep_focus();
+            }
+            Mode::Close => {
+                match self.layout.hit_test(x, y, self.scroll) {
+                    Some(tile) => self.close_tile(tile),
+                    None => return self.hide(true),
+                }
+                self.keep_focus();
+            }
+        }
+    }
+
+    /// What favoriting this tile would write down.
+    ///
+    /// A string the shell or the browser can be handed later, never a handle:
+    /// a favorite outlives the window, the tab and the browser it came from,
+    /// and a config file has nowhere to put an HWND.
+    fn favorite_target(&self, item: &Item) -> Option<String> {
+        if matches!(item.target, Target::Slot) {
+            return None;
+        }
+        item.link
+            .clone()
+            .or_else(|| item.shell_target().map(str::to_owned))
+            // A window stands for its app, exactly as "Pin this app" reads it.
+            .or_else(|| {
+                matches!(item.target, Target::Window(_))
+                    .then(|| item.icon_source.clone())
+                    .flatten()
+            })
+    }
+
+    /// What favoriting this tile would write down, and which half it lands in.
+    ///
+    /// `None` when the block would not show it. A block set to apps only still
+    /// keeps its site list, but writing to a list that is not on the panel is a
+    /// click with no visible result - which reads as the panel ignoring you.
+    fn favorite_would(&self, item: &Item) -> Option<(pins::Half, String)> {
+        let half = pins::Half::of(item.kind);
+        // Already in the block, so it is on screen and has to be removable
+        // however the block is set. Only what would be *added* to a half that
+        // is not drawn is refused.
+        if item.origin != Source::Favorites
+            && !self.config.favorites.contents.shows(half.index())
+        {
+            return None;
+        }
+        Some((half, self.favorite_target(item)?))
+    }
+
+    /// Put a tile into the centre block, or take it back out.
+    ///
+    /// One gesture both ways. The block lights up what it is already holding,
+    /// so the same click that added something is the click that removes it -
+    /// which is the whole of "manage favorites" without a second surface.
+    fn toggle_favorite(&mut self, tile: usize) {
+        let Some(item) = self.items.get(tile).cloned() else { return };
+        let Some((half, target)) = self.favorite_would(&item) else {
+            log_info!("favorites: nothing to write down for \"{}\"", item.title);
+            return;
+        };
+
+        let changed = if item.origin == Source::Favorites {
+            log_info!("favorites: removing {target}");
+            pins::forget_favorite(&target)
+        } else {
+            log_info!("favorites: adding {target} to {}", half.key());
+            pins::add_favorite(half, &target)
+        };
+        if !changed {
+            return;
+        }
+        // Read straight back rather than waiting on the watcher, so the block
+        // has changed by the time the finger is off the button.
+        self.reload_config();
+        let _ = self.rebuild_visuals();
+    }
+
+    /// Close the window behind a tile.
+    ///
+    /// `WM_CLOSE`, which is the same polite ask the taskbar's "Close window"
+    /// makes: the app gets to prompt about unsaved work and gets to refuse.
+    /// Nothing here ever terminates a process.
+    fn close_tile(&mut self, tile: usize) {
+        let Some(item) = self.items.get(tile).cloned() else { return };
+        let Some(handle) = self.window_for(&item) else {
+            log_info!("close: nothing open behind \"{}\"", item.title);
+            return;
+        };
+        if handle.hwnd() == self.hwnd {
+            log_warn!("close: refusing to close bentopick's own window");
+            return;
+        }
+        if self.config.dry_run {
+            log_dry!("would close \"{}\" ({:#x})", item.title, handle.raw());
+            return;
+        }
+        log_info!("close: \"{}\" ({:#x})", item.title, handle.raw());
+        // Posted, not sent: a window that puts up a "save your work?" dialog
+        // would otherwise block this thread until it is answered, and this
+        // thread is the one drawing the panel the dialog is in front of.
+        //
+        // SAFETY: a plain post to another window. The hooks bring the grid up
+        // to date when the window actually goes.
+        unsafe {
+            let _ = PostMessageW(Some(handle.hwnd()), WM_CLOSE, WPARAM(0), LPARAM(0));
+        }
+    }
+
     /// A click while editing: a button if it hit one, otherwise the box under it.
     fn edit_click(&mut self, x: f32, y: f32) {
         // The overlay is on top, so it answers first - and it answers for its
@@ -2290,29 +2717,32 @@ impl Panel {
     }
 
     fn set_hover_box(&mut self, x: f32, y: f32) {
-        let content_y = y + self.scroll;
-        let next = self
-            .layout
-            .bands()
-            .iter()
-            .find(|band| band.rect.contains(x, content_y))
-            .map(|band| band.section);
+        let next = self.box_at(x, y).map(|band| band.section);
         if next != self.hover_box {
             self.hover_box = next;
             self.refresh_boxes();
         }
     }
 
+    /// Which box a panel-local point falls in, for editing.
+    ///
+    /// The centre is not one of them. It is not in the tree, so none of the
+    /// options - claim a side, move up the stack, take more of a cut - has
+    /// anything to say about it, and picking it would light up a box whose
+    /// every button then did nothing. The tree band underneath answers instead,
+    /// which is the box the click is actually over.
+    fn box_at(&self, x: f32, y: f32) -> Option<&Band> {
+        let content_y = y + self.scroll;
+        self.layout
+            .bands()
+            .iter()
+            .find(|band| !band.center && band.rect.contains(x, content_y))
+    }
+
     /// Point edit mode at whichever box covers a panel-local point. Bands tile
     /// the panel, so anywhere inside it answers.
     fn pick_box(&mut self, x: f32, y: f32) {
-        let content_y = y + self.scroll;
-        let Some(band) = self
-            .layout
-            .bands()
-            .iter()
-            .find(|band| band.rect.contains(x, content_y))
-        else {
+        let Some(band) = self.box_at(x, y) else {
             return;
         };
         // Clicking the picked box again puts the options away. The overlay sits
@@ -2387,7 +2817,7 @@ impl Panel {
             // without the mouse at all.
             return match vk {
                 ESCAPE | ENTER => {
-                    self.leave_edit();
+                    self.leave_mode();
                     true
                 }
                 LEFT => self.edit_step(-1),
@@ -2398,7 +2828,7 @@ impl Panel {
 
         match vk {
             ESCAPE | ENTER => {
-                self.leave_edit();
+                self.leave_mode();
                 true
             }
             LEFT => self.click_control(Control::ClaimLeft),
@@ -2513,10 +2943,12 @@ impl Panel {
     /// pin the query hid.
     fn draggable(&self, tile: usize) -> bool {
         self.query.is_empty()
-            && self
-                .items
-                .get(tile)
-                .is_some_and(|i| matches!(i.origin, Source::Manual | Source::Taskbar))
+            && self.items.get(tile).is_some_and(|i| {
+                matches!(i.origin, Source::Manual | Source::Taskbar | Source::Favorites)
+                    // An empty slot is a place, not a tile. There is nothing to
+                    // pick up and nothing to write down.
+                    && !matches!(i.target, Target::Slot)
+            })
     }
 
     /// The tiles a drag may move within. See `grid::origin_run`.
@@ -2664,7 +3096,7 @@ impl Panel {
         // What identifies an entry in config: manual sections list parsing
         // names, taskbar sections list pin names.
         let key = |item: &Item| match origin {
-            Source::Manual => item.shell_target().map(str::to_owned),
+            Source::Manual | Source::Favorites => item.shell_target().map(str::to_owned),
             _ => Some(item.title.clone()),
         };
         let Some(keys) = slots
@@ -2681,11 +3113,17 @@ impl Panel {
         let saved = match origin {
             Source::Manual => pins::reorder(&title, &keys),
             Source::Taskbar => pins::set_order(&title, &keys),
+            // Which half is being dragged in, so a drag inside the centre
+            // rewrites that list and only that one.
+            Source::Favorites => match section.center {
+                Some(1) => pins::order_favorites(pins::Half::Sites, &keys),
+                _ => pins::order_favorites(pins::Half::Apps, &keys),
+            },
             // Ordered by the foreground hook and the browser, not by bentopick.
             Source::Windows | Source::Extra | Source::Running | Source::Tabs
             | Source::Bookmarks => false,
             // A fixed set in a fixed order. Nowhere to write one down.
-            Source::Moves => false,
+            Source::Moves | Source::Modes => false,
         };
         if saved {
             self.reload_config();
@@ -2714,6 +3152,11 @@ impl Panel {
         match chosen {
             Some(menu::CMD_PIN_APP) => self.pin_app_of(tile),
             Some(menu::CMD_UNPIN) => self.unpin(tile),
+            Some(menu::CMD_FAVORITE | menu::CMD_UNFAVORITE) => {
+                if let Some(tile) = tile {
+                    self.toggle_favorite(tile);
+                }
+            }
             Some(menu::CMD_OPEN_LOCATION) => self.open_location(tile),
             Some(menu::CMD_ADD_APP) => {
                 let picked = picker::pick_app(self.hwnd);
@@ -2727,7 +3170,7 @@ impl Panel {
                 let picked = picker::pick_file(self.hwnd);
                 self.pin(picked);
             }
-            Some(menu::CMD_EDIT_LAYOUT) => self.enter_edit(),
+            Some(menu::CMD_EDIT_LAYOUT) => self.enter_mode(Mode::Layout),
             Some(menu::CMD_SETTINGS) => open_config(),
             _ => {}
         }
@@ -2757,7 +3200,18 @@ impl Panel {
                 // Bookmarking a tab arrives with the rest of Milestone 4.
                 Target::Tab { .. } => {}
                 // Fixed tiles. Nothing to pin, unpin or locate.
-                Target::Arrange(_) | Target::Stay | Target::NewTab { .. } => {}
+                Target::Arrange(_) | Target::Stay | Target::NewTab { .. } | Target::Slot
+                | Target::Mode(_) => {}
+            }
+            // The centre block, as a second path to the mode. Same rule as
+            // "Unpin": the gesture is a mode, and this is here for anyone who
+            // reaches for a right-click first.
+            if self.config.favorites.on() && self.favorite_target(item).is_some() {
+                entries.push(Some(if item.origin == Source::Favorites {
+                    menu::Entry::new(menu::CMD_UNFAVORITE, "Remove from center")
+                } else {
+                    menu::Entry::new(menu::CMD_FAVORITE, "Add to center")
+                }));
             }
             if self.locatable(index) {
                 entries.push(Some(menu::Entry::new(
@@ -2956,7 +3410,7 @@ impl Panel {
             self.bind_hotkey();
         }
 
-        store::reconfigure(&self.config.sections);
+        store::reconfigure(&self.config.sections, &self.config.favorites);
         log_info!("config reloaded");
 
         if self.visible {
@@ -2978,6 +3432,10 @@ impl Panel {
             // A second copy was launched. Same intent as the hotkey.
             instance::WM_SUMMON => {
                 self.toggle();
+                Some(LRESULT(0))
+            }
+            WM_TIMER if wparam.0 == DEACTIVATED_TIMER => {
+                self.settle_focus();
                 Some(LRESULT(0))
             }
             WM_TIMER => {
@@ -3054,7 +3512,9 @@ impl Panel {
                     let next = self
                         .settings_items
                         .iter()
-                        .position(|(_, rect, _)| rect.contains(hx, hy));
+                        .position(|(setting, rect, _)| {
+                            rect.contains(hx, hy) && setting.applies(&self.config)
+                        });
                     if next != self.hover_setting {
                         self.hover_setting = next;
                         self.refresh_settings();
@@ -3073,7 +3533,7 @@ impl Panel {
                     return Some(LRESULT(0));
                 }
                 // Editing points at boxes and at the options over them.
-                if self.editing {
+                if self.editing() {
                     if !self.set_hover_option(hx, hy) {
                         self.set_hover_box(hx, hy);
                     }
@@ -3086,7 +3546,7 @@ impl Panel {
                 self.set_hover(self.cursor_index(lparam));
                 Some(LRESULT(0))
             }
-            WM_MOUSELEAVE if self.editing => {
+            WM_MOUSELEAVE if self.editing() => {
                 self.tracking_mouse = false;
                 if self.hover_box.take().is_some() {
                     self.refresh_boxes();
@@ -3143,11 +3603,12 @@ impl Panel {
                     }
                     return Some(LRESULT(0));
                 }
-                // While editing, a click picks a box or an option. Launching
-                // from a layout editor would be a click nobody meant.
-                if self.editing {
+                // A mode takes the click. Launching something from a layout
+                // editor, or while picking favorites, would be a click nobody
+                // meant.
+                if self.mode.takes_clicks() {
                     self.handled_down = true;
-                    self.edit_click(x, y);
+                    self.mode_click(x, y);
                     return Some(LRESULT(0));
                 }
                 if let Some(index) = self.layout.hit_test(x, y, self.scroll) {
@@ -3180,7 +3641,7 @@ impl Panel {
                 // checks are for a release with no press of ours behind it -
                 // a capture lost mid-click, a panel summoned under a held
                 // button - where there is no flag to read.
-                if handled || self.editing || self.menu_open_big || self.settings_open {
+                if handled || self.in_mode() || self.menu_open_big || self.settings_open {
                     return Some(LRESULT(0));
                 }
                 let (x, y) = point_of(lparam);
@@ -3228,15 +3689,28 @@ impl Panel {
             }
             // Clicking away, or anything else stealing focus, dismisses — unless
             // a menu of ours is up.
-            // Editing holds the panel open: the layout is being changed while
-            // it is looked at, and a config write must not dismiss it.
-            WM_ACTIVATE
-                if (wparam.0 & 0xFFFF) as u32 == WA_INACTIVE
-                    && !self.menu_open
-                    && !self.editing
-                    && !self.arranging =>
-            {
-                self.hide(false);
+            //
+            // The three modes that take clicks off the grid do not dismiss on
+            // the spot: each of them writes the config or closes a window, and
+            // both of those hand focus somewhere else for a moment. A panel
+            // that vanished on its own write would be one click of work per
+            // summon. They ask again a moment later instead - see
+            // `settle_focus` - because a mode that will not go away when you
+            // click off it is the thing that reads as a frozen PC, and holding
+            // the panel open through *every* loss was doing exactly that.
+            //
+            // Move mode is deliberately not among them. Nothing it does needs
+            // the panel to survive losing focus - `arranging` already covers the
+            // window it raises.
+            WM_ACTIVATE if (wparam.0 & 0xFFFF) as u32 == WA_INACTIVE && !self.menu_open => {
+                if self.arranging {
+                    return Some(LRESULT(0));
+                }
+                if self.mode.takes_clicks() {
+                    self.ask_again_about_focus();
+                } else {
+                    self.hide(false);
+                }
                 Some(LRESULT(0))
             }
             WM_DISPLAYCHANGE | WM_DPICHANGED if self.visible => {

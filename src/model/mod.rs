@@ -29,6 +29,67 @@ impl Handle {
     }
 }
 
+/// What the panel is doing with a click on a tile.
+///
+/// Modes rather than modifiers. Nothing that points with gaze can hold a key
+/// down, so anything that changes what a click means has to be a square you aim
+/// at once and a square you aim at to leave. Every mode holds the panel open,
+/// because all of them are things you do several of in a row.
+///
+/// Two ways in, both of them squares: a row of mode tiles in the grid itself
+/// (`Source::Modes`), and the app's own button in the corner. That button ends
+/// every one of them, so there is never a mode with no visible way out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Mode {
+    /// Clicking a tile takes it. The whole app, most of the time.
+    #[default]
+    Grid,
+    /// Clicking picks a box and the options rearrange the bento.
+    Layout,
+    /// Clicking adds a tile to the centre block, or takes one out of it.
+    Favorites,
+    /// Clicking closes the window behind a tile.
+    Close,
+    /// Arranging windows. Holds the panel open, points it at the window you
+    /// click, and brings out the six moves - which is the only reason they
+    /// ever needed a row of their own.
+    ///
+    /// The one mode that does not take clicks off the grid. Clicking is how you
+    /// pick the window to move, and clicking is how you move it.
+    Move,
+}
+
+impl Mode {
+    /// What the corner button says while this mode is on. `None` for the mode
+    /// that is not one: there the button is the app's own name.
+    pub fn done(self) -> Option<&'static str> {
+        match self {
+            Mode::Grid => None,
+            Mode::Layout => Some("Stop editing"),
+            Mode::Favorites => Some("Done \u{00B7} favorites"),
+            Mode::Close => Some("Done \u{00B7} closing"),
+            Mode::Move => Some("Done \u{00B7} moving"),
+        }
+    }
+
+    /// Whether this mode takes the clicks the grid would otherwise treat as
+    /// launches.
+    pub fn takes_clicks(self) -> bool {
+        matches!(self, Mode::Layout | Mode::Favorites | Mode::Close)
+    }
+
+    /// The name on the tile that turns this mode on, and the tile's id.
+    pub fn label(self) -> &'static str {
+        match self {
+            Mode::Grid => "Done",
+            Mode::Layout => "Edit layout",
+            Mode::Favorites => "Favorites",
+            Mode::Close => "Close apps",
+            Mode::Move => "Move window",
+        }
+    }
+}
+
 /// What activating a tile does.
 ///
 /// Everything that is not a live window collapses to a **shell parsing name** —
@@ -54,6 +115,18 @@ pub enum Target {
     /// Ask a browser for a new tab. Goes back over the socket for the same
     /// reason focusing one does: only the browser can do it.
     NewTab { connection: u64 },
+    /// An empty slot in the centre block.
+    ///
+    /// Drawn rather than left out, because the block's whole worth is that it
+    /// is the same shape in the same place every summon. Taking it opens
+    /// favorites mode, so the empty square says what it is for by doing it.
+    Slot,
+    /// Turn a mode on, or off if it is the one already on.
+    ///
+    /// A tile in the grid, so a mode is reachable by aiming at a square in a
+    /// place that does not move - which the corner menu is not, since it has to
+    /// be opened first.
+    Mode(Mode),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -93,6 +166,9 @@ pub enum ItemId {
     Tab(u64, i64),
     /// The action tiles. Their names are fixed, so the id is the name.
     Action(&'static str),
+    /// An empty slot in the centre block, by its place in it. Numbered because
+    /// several are on screen at once and hover has to tell them apart.
+    Slot(usize),
 }
 
 #[derive(Debug, Clone)]
@@ -122,6 +198,13 @@ pub struct Item {
     /// more than one, and what may be dragged, removed and written back to
     /// config is a property of the tile, not of the header above it.
     pub origin: crate::config::Source,
+    /// The URL behind this tile, when there is one that outlives the tile.
+    ///
+    /// A tab is reached over the socket and its id means nothing once the
+    /// browser has closed, so `target` cannot be written down. This can: it is
+    /// what favoriting an open tab stores, and it is the same string a bookmark
+    /// of the same page would store.
+    pub link: Option<String>,
     /// Which group inside the section produced it: the index into that
     /// section's source list. Two groups can share a source — browser windows
     /// and everything else — so this, not `origin`, is what the tint and the
@@ -139,7 +222,9 @@ impl Item {
             | Target::Tab { .. }
             | Target::Arrange(_)
             | Target::Stay
-            | Target::NewTab { .. } => None,
+            | Target::NewTab { .. }
+            | Target::Slot
+            | Target::Mode(_) => None,
         }
     }
 
@@ -161,6 +246,8 @@ impl Item {
             Target::Arrange(mv) => format!("move the target window {}", mv.key()),
             Target::Stay => "hold the panel open".to_owned(),
             Target::NewTab { .. } => "open a new tab".to_owned(),
+            Target::Slot => "fill an empty favorite".to_owned(),
+            Target::Mode(mode) => format!("turn on {} mode", mode.label()),
         }
     }
 }
@@ -176,4 +263,10 @@ pub struct Section {
     /// How many items the section had before `max_items` cut it down. Edit
     /// mode needs it: "more tiles" has to stop at the number that exist.
     pub total: usize,
+    /// Which half of the centre block this is, left to right. `None` for every
+    /// ordinary section, which takes its place from the bento tree instead.
+    pub center: Option<usize>,
+    /// Tiles across. Only the centre sets it: an ordinary section's column
+    /// count is in config, which the panel reads for itself.
+    pub columns: usize,
 }

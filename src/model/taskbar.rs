@@ -129,6 +129,7 @@ fn item_for(path: &std::path::Path) -> Option<Item> {
         icon_source: Some(name),
         origin: crate::config::Source::Taskbar,
         group: 0,
+        link: None,
         running: None,
     })
 }

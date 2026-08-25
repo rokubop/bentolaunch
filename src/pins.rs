@@ -9,7 +9,7 @@ use std::path::Path;
 
 use toml_edit::{Array, ArrayOfTables, DocumentMut, Item as TomlItem, Table, Value, value};
 
-use crate::config::Config;
+use crate::config::{Config, Contents};
 use crate::{log_info, log_warn};
 
 /// Section created when there is nowhere else to put a pin.
@@ -58,6 +58,134 @@ pub struct Placement {
 /// Write one section's placement. Returns whether the file changed.
 pub fn set_placement(section: &str, placement: Placement) -> bool {
     Config::path().is_some_and(|path| set_placement_in(&path, section, placement))
+}
+
+/// Which of the centre block's two lists a write means.
+///
+/// Two lists because they answer different questions - an app to start, a page
+/// to open - and because keeping them apart is what lets the block be read
+/// without reading it: the left half is always apps and the right always sites.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Half {
+    Apps,
+    Sites,
+}
+
+impl Half {
+    /// The key under `[favorites]`.
+    pub fn key(self) -> &'static str {
+        match self {
+            Half::Apps => "apps",
+            Half::Sites => "sites",
+        }
+    }
+
+    /// Its place in the block, left to right. The same index `Contents::shows`
+    /// asks about and the same one the store lays the halves out in.
+    pub fn index(self) -> usize {
+        match self {
+            Half::Apps => 0,
+            Half::Sites => 1,
+        }
+    }
+
+    /// Which half a tile belongs in. Apps and folders are things to start;
+    /// everything else the shell opens is a place to go.
+    pub fn of(kind: crate::model::Kind) -> Half {
+        use crate::model::Kind;
+        match kind {
+            Kind::App | Kind::Folder | Kind::Window => Half::Apps,
+            Kind::Link | Kind::Tab | Kind::Action => Half::Sites,
+        }
+    }
+}
+
+/// Add one target to a half of the centre block.
+///
+/// Returns whether the file changed, which is `false` when it was already
+/// there: favoriting something twice is a click, not an error.
+pub fn add_favorite(half: Half, target: &str) -> bool {
+    Config::path().is_some_and(|path| add_favorite_in(&path, half, target))
+}
+
+/// Take one target out of a half of the centre block.
+pub fn remove_favorite(half: Half, target: &str) -> bool {
+    Config::path().is_some_and(|path| remove_favorite_in(&path, half, target))
+}
+
+fn add_favorite_in(path: &Path, half: Half, target: &str) -> bool {
+    favorites_in(path, half, |items| {
+        if items.iter().any(|entry| target_of(entry) == Some(target)) {
+            log_info!("already a favorite, skipping: {target}");
+            return false;
+        }
+        items.push(target);
+        true
+    })
+}
+
+fn remove_favorite_in(path: &Path, half: Half, target: &str) -> bool {
+    favorites_in(path, half, |items| {
+        let before = items.len();
+        items.retain(|entry| target_of(entry) != Some(target));
+        items.len() != before
+    })
+}
+
+/// Take a target out of whichever half is holding it.
+///
+/// Both halves, not the first that answers: a target hand-written into both
+/// would otherwise need two clicks to remove, and the second would look like a
+/// click that did nothing.
+pub fn forget_favorite(target: &str) -> bool {
+    let apps = remove_favorite(Half::Apps, target);
+    let sites = remove_favorite(Half::Sites, target);
+    apps || sites
+}
+
+/// Rewrite one half in the given order. Entries not named keep following, so a
+/// stale list never loses a favorite.
+pub fn order_favorites(half: Half, targets: &[String]) -> bool {
+    Config::path().is_some_and(|path| order_favorites_in(&path, half, targets))
+}
+
+fn order_favorites_in(path: &Path, half: Half, targets: &[String]) -> bool {
+    favorites_in(path, half, |items| {
+        let mut rest: Vec<Value> = items.iter().cloned().collect();
+        let mut sorted = Array::new();
+        for wanted in targets {
+            if let Some(at) = rest
+                .iter()
+                .position(|entry| target_of(entry) == Some(wanted.as_str()))
+            {
+                sorted.push_formatted(rest.remove(at));
+            }
+        }
+        for left in rest {
+            sorted.push_formatted(left);
+        }
+        *items = sorted;
+        true
+    })
+}
+
+/// Edit one of the two lists under `[favorites]`, creating the table and the
+/// key if the config predates them.
+fn favorites_in(path: &Path, half: Half, edit: impl FnOnce(&mut Array) -> bool) -> bool {
+    let Some(mut doc) = read(path) else { return false };
+    let entry = &mut doc["favorites"][half.key()];
+    if entry.is_none() {
+        *entry = value(Array::new());
+    }
+    let Some(items) = entry.as_array_mut() else {
+        log_warn!("favorites.{} is not a list; leaving it alone", half.key());
+        return false;
+    };
+    if !edit(items) {
+        return false;
+    }
+    stack(items);
+    write(path, &doc)
 }
 
 /// Move a section `delta` places through `[[sections]]`.
@@ -422,6 +550,14 @@ pub enum Change {
     ShowDetail(bool),
     MaxColumns(usize),
     Browser(bool),
+    /// The centre block's shape, in tiles a half. 0 turns it off: how much
+    /// centre you want and whether you want any are the same question, so they
+    /// are one square. Both numbers together, for the same reason `Tiles` is
+    /// one change - a file that briefly says 3 x 1 is a layout the watcher
+    /// would draw.
+    CenterSize { columns: usize, rows: usize },
+    /// Which lists the block holds, and whether they are kept apart.
+    CenterContents(Contents),
 }
 
 /// Apply one settings change. Returns whether the file changed.
@@ -440,6 +576,16 @@ fn set_in(path: &Path, change: Change) -> bool {
         Change::ShowDetail(on) => set_key(&mut doc, "grid", "show_detail", on.into()),
         Change::MaxColumns(n) => set_key(&mut doc, "grid", "max_columns", (n as i64).into()),
         Change::Browser(on) => set_key(&mut doc, "browser", "enabled", on.into()),
+        Change::CenterSize { columns, rows } => {
+            set_key(&mut doc, "favorites", "columns", (columns as i64).into());
+            set_key(&mut doc, "favorites", "rows", (rows as i64).into());
+        }
+        Change::CenterContents(contents) => {
+            set_key(&mut doc, "favorites", "contents", contents.key().into());
+            // The key `contents` replaced. Left in, it would keep answering
+            // the question this square just answered - see `Config::validated`.
+            drop_key(&mut doc, "favorites", "split");
+        }
     }
     write(path, &doc)
 }
@@ -460,6 +606,16 @@ fn set_key(doc: &mut DocumentMut, table: &str, key: &str, v: Value) {
         *v.decor_mut() = old.decor().clone();
     }
     *entry = TomlItem::Value(v);
+}
+
+/// Take a key out, leaving the table it was in even if that empties it.
+///
+/// Only for keys this app has replaced with another. A settings square must
+/// never quietly delete something the user wrote.
+fn drop_key(doc: &mut DocumentMut, table: &str, key: &str) {
+    if let Some(table) = doc.get_mut(table).and_then(TomlItem::as_table_like_mut) {
+        table.remove(key);
+    }
 }
 
 /// Through `toml_edit` like every other write, so comments survive.
@@ -903,5 +1059,181 @@ source = \"taskbar\"
         assert!(remove_from(&path, "P", r"R:\dev"));
         let parsed: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(parsed.sections[0].items.is_empty());
+    }
+
+    // --- the centre block ---
+
+    /// A config with a section but nothing said about `[favorites]`, which is
+    /// every config written before the centre existed.
+    fn no_centre(name: &str) -> PathBuf {
+        let path = scratch(name);
+        std::fs::write(
+            &path,
+            "hotkey = \"alt+`\"\n\n[[sections]]\ntitle = \"Launch\"\nsource = \"taskbar\"\n",
+        )
+        .unwrap();
+        path
+    }
+
+    fn favorites(path: &PathBuf) -> Config {
+        toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_favorite_creates_the_table_a_config_never_had() {
+        let path = no_centre("fav-new");
+        assert!(add_favorite_in(&path, Half::Apps, r"C:\Windows\notepad.exe"));
+
+        let parsed = favorites(&path);
+        assert_eq!(parsed.favorites.apps.len(), 1);
+        assert_eq!(parsed.favorites.apps[0].target(), r"C:\Windows\notepad.exe");
+        assert!(parsed.favorites.sites.is_empty());
+        // And nothing else moved.
+        assert_eq!(parsed.sections.len(), 1);
+        assert_eq!(parsed.sections[0].title, "Launch");
+    }
+
+    #[test]
+    fn the_two_halves_are_written_apart() {
+        let path = no_centre("fav-halves");
+        assert!(add_favorite_in(&path, Half::Apps, r"C:\Windows\notepad.exe"));
+        assert!(add_favorite_in(&path, Half::Sites, "https://example.com"));
+
+        let parsed = favorites(&path);
+        assert_eq!(parsed.favorites.apps.len(), 1);
+        assert_eq!(parsed.favorites.sites.len(), 1);
+        assert_eq!(parsed.favorites.sites[0].target(), "https://example.com");
+    }
+
+    #[test]
+    fn favoriting_the_same_thing_twice_is_a_no_op() {
+        let path = no_centre("fav-twice");
+        assert!(add_favorite_in(&path, Half::Apps, "notepad"));
+        assert!(!add_favorite_in(&path, Half::Apps, "notepad"));
+        assert_eq!(favorites(&path).favorites.apps.len(), 1);
+    }
+
+    #[test]
+    fn removing_takes_out_one_favorite_and_leaves_the_rest() {
+        let path = no_centre("fav-remove");
+        for target in ["a", "b", "c"] {
+            assert!(add_favorite_in(&path, Half::Apps, target));
+        }
+        assert!(remove_favorite_in(&path, Half::Apps, "b"));
+
+        let kept: Vec<String> = favorites(&path)
+            .favorites
+            .apps
+            .iter()
+            .map(|entry| entry.target().to_owned())
+            .collect();
+        assert_eq!(kept, vec!["a".to_owned(), "c".to_owned()]);
+    }
+
+    #[test]
+    fn removing_something_that_is_not_a_favorite_writes_nothing() {
+        let path = no_centre("fav-absent");
+        assert!(!remove_favorite_in(&path, Half::Apps, "nothing"));
+    }
+
+    #[test]
+    fn dragging_rewrites_one_half_in_the_order_it_was_dropped_in() {
+        let path = no_centre("fav-order");
+        for target in ["a", "b", "c"] {
+            assert!(add_favorite_in(&path, Half::Apps, target));
+        }
+        let wanted = ["c".to_owned(), "a".to_owned(), "b".to_owned()];
+        assert!(order_favorites_in(&path, Half::Apps, &wanted));
+
+        let got: Vec<String> = favorites(&path)
+            .favorites
+            .apps
+            .iter()
+            .map(|entry| entry.target().to_owned())
+            .collect();
+        assert_eq!(got, wanted);
+    }
+
+    #[test]
+    fn an_order_that_names_too_few_keeps_the_rest_rather_than_dropping_them() {
+        // A stale list must never lose a favorite: the same rule the manual
+        // sections follow, and for the same reason.
+        let path = no_centre("fav-partial");
+        for target in ["a", "b", "c"] {
+            assert!(add_favorite_in(&path, Half::Apps, target));
+        }
+        assert!(order_favorites_in(&path, Half::Apps, &["c".to_owned()]));
+
+        let got: Vec<String> = favorites(&path)
+            .favorites
+            .apps
+            .iter()
+            .map(|entry| entry.target().to_owned())
+            .collect();
+        assert_eq!(got, vec!["c".to_owned(), "a".to_owned(), "b".to_owned()]);
+    }
+
+    #[test]
+    fn a_hand_written_title_survives_being_reordered() {
+        let path = scratch("fav-titled");
+        std::fs::write(
+            &path,
+            concat!(
+                "[[sections]]\ntitle = \"Launch\"\nsource = \"taskbar\"\n\n",
+                "[favorites]\n",
+                "sites = [{ title = \"Docs\", target = \"https://docs.example\" }, \"https://b\"]\n",
+            ),
+        )
+        .unwrap();
+
+        assert!(order_favorites_in(
+            &path,
+            Half::Sites,
+            &["https://b".to_owned(), "https://docs.example".to_owned()],
+        ));
+        let sites = favorites(&path).favorites.sites;
+        assert_eq!(sites[1].title(), Some("Docs"));
+    }
+
+    #[test]
+    fn a_centre_square_writes_its_key_and_leaves_the_comment_beside_it() {
+        let path = scratch("fav-setting");
+        std::fs::write(
+            &path,
+            concat!(
+                "[[sections]]\ntitle = \"Launch\"\nsource = \"taskbar\"\n\n",
+                "[favorites]\nrows = 2 # how tall I like it\nsplit = true\n",
+            ),
+        )
+        .unwrap();
+
+        assert!(set_in(&path, Change::CenterSize { columns: 0, rows: 0 }));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# how tall I like it"), "comment eaten: {text}");
+        assert_eq!(favorites(&path).favorites.rows, 0);
+        // Untouched by a size write: one square, one question.
+        assert_eq!(favorites(&path).favorites.split, Some(true));
+    }
+
+    #[test]
+    fn writing_what_the_centre_holds_takes_the_key_it_replaced_out() {
+        // Both keys left in the file would be two answers to one question, and
+        // `Config::validated` has to pick the older one - so the square that
+        // answers it clears the older one on its way past.
+        let path = scratch("fav-contents");
+        std::fs::write(
+            &path,
+            concat!(
+                "[[sections]]\ntitle = \"Launch\"\nsource = \"taskbar\"\n\n",
+                "[favorites]\nrows = 2\nsplit = true\n",
+            ),
+        )
+        .unwrap();
+
+        assert!(set_in(&path, Change::CenterContents(Contents::Apps)));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("split"), "the old key is still there: {text}");
+        let read = favorites(&path).validated();
+        assert_eq!(read.favorites.contents, Contents::Apps);
     }
 }

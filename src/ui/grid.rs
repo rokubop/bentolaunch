@@ -14,6 +14,9 @@
 //! that list minus the scroll offset. Cheaper to reason about than recovering a
 //! row and column from a point across variable-height sections.
 
+use crate::model::Mode;
+
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect {
     pub x: f32,
@@ -29,6 +32,16 @@ impl Rect {
 
     fn shifted(self, dy: f32) -> Rect {
         Rect { y: self.y - dy, ..self }
+    }
+
+    /// Overlap, edges excluded. Two tiles sharing an edge do not overlap, which
+    /// is what makes a tile sitting exactly against the centre block count as
+    /// clear of it.
+    fn overlaps(&self, other: &Rect) -> bool {
+        self.x < other.x + other.w
+            && other.x < self.x + self.w
+            && self.y < other.y + other.h
+            && other.y < self.y + self.h
     }
 
     /// Content space to panel-local. Bands are handed out whole, so the panel
@@ -184,6 +197,20 @@ pub struct SectionShape {
     pub at: Option<At>,
     /// Tile columns inside this box. 0 fits as many as its rectangle takes.
     pub columns: usize,
+    /// This box is held in the middle of the panel instead of taking a place in
+    /// the tree. `Some(n)` is where it sits in the centre block, left to right.
+    ///
+    /// The centre of the screen is where a gaze pointer is most accurate, so
+    /// one block is nailed there and the bento is laid out around it. The tree
+    /// cannot say this: every cut runs edge to edge, so a centred box would
+    /// drag its lines across the whole panel. Instead the centre claims a
+    /// rectangle up front and every other box flows around it — the tree is
+    /// planned as if the centre were not there, and the wrapping is what makes
+    /// it true. See `Layout::compute`.
+    ///
+    /// A centre box needs `columns`: nothing can derive it, because the box is
+    /// a fixed number of slots rather than a list that grew.
+    pub center: Option<usize>,
 }
 
 
@@ -215,6 +242,10 @@ pub struct Band {
     /// Tile columns inside this box. Boxes in one bento row each have their
     /// own, so a drop slot cannot be worked out from the panel's count.
     pub cols: usize,
+    /// Half of the centre block rather than a box in the tree. Stretching,
+    /// layout editing and drop targeting all have to leave these alone: the
+    /// centre is not somewhere the cuts can reach.
+    pub center: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -246,36 +277,88 @@ impl Layout {
         let capped = if m.max_cols == 0 { fits } else { fits.min(m.max_cols) };
 
         let tree = plan(sections);
+        let middle = center_boxes(sections);
+        // What the block wants, before the panel has a width to give it.
+        let asking: usize = center_widths(sections, &middle, usize::MAX).iter().sum();
         let wanted = tree.as_ref().map_or(1, |tree| tree.want(sections, capped).cols);
+        // The centre wins over `max_columns`. That cap is a preference about
+        // how long a row stays scannable; the block being whole is not a
+        // preference, and a block hanging off the panel is a click that lands
+        // on nothing. It still yields to what fits the screen, and never
+        // narrows past one column a half, so it always fits the panel it is
+        // drawn in.
+        let room = asking.min(fits.max(middle.len()));
         let cols = if m.fixed_cols > 0 {
             m.fixed_cols.clamp(1, capped)
         } else {
             wanted.clamp(1, capped)
+        }
+        .max(room);
+
+        // A block four columns wide in a panel nine columns wide leaves five
+        // spare, which cannot be split evenly: the block ends up half a column
+        // off centre, and off centre is the one thing it must not be. One
+        // column more or less of panel fixes it, and keeping the block on the
+        // same grid as everything around it is what keeps the wrap clean.
+        //
+        // Wider first, because narrower costs a column of grid on every row.
+        // Not while a query is live: the width is frozen then, and a panel that
+        // stepped sideways on a keystroke is the thing that rule exists to stop.
+        let cols = if room > 0 && m.fixed_cols == 0 && (cols + room) % 2 == 1 {
+            if cols < fits {
+                cols + 1
+            } else if cols > room {
+                cols - 1
+            } else {
+                cols
+            }
+        } else {
+            cols
         };
+
+        let widths = center_widths(sections, &middle, cols);
+        let center_cols: usize = widths.iter().sum();
+        let center_rows = center_rows(sections, &middle, &widths);
 
         let panel_w = cols as f32 * m.tile_w + (cols - 1) as f32 * m.gap + 2.0 * m.padding;
 
-        // Every slot up front, in section order. A box that claims a side is
-        // laid out before the boxes that fill what it left, so appending would
-        // hand it the first tiles as well - and the panel indexes its items in
-        // section order. Titles and contents came apart exactly there.
-        let slots = sections.iter().map(|s| s.count).sum();
-        let blank = Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 };
-        let mut out = Placement {
-            tiles: vec![blank; slots],
-            headers: Vec::new(),
-            bands: Vec::new(),
-        };
-        let top = m.search_h + m.padding;
-        let bottom = tree.as_ref().map_or(top, |tree| {
-            let cut = Cut { m: &m, capped, x: m.padding, y: top, cols };
-            tree.place(sections, cut, &mut out)
-        });
+        // Where the centre sits depends on how tall the panel is, and how tall
+        // the panel is depends on what the centre pushed out of its way.
+        //
+        // There is no settling this. Wrapping is a step function - move the
+        // hole down half a tile and a whole row of the grid comes free, which
+        // shortens the panel, which moves the hole back up - so the two can and
+        // do trade places forever. Repeated once to get the hole somewhere
+        // sensible in the content, and then the panel is *positioned* to put it
+        // on the middle of the screen rather than the hole being nudged to the
+        // middle of the panel. The screen is what the centre is measured
+        // against; the panel is only what happens to be drawn on it, and it is
+        // free to sit wherever it has to.
+        let mut reserve = None;
+        let mut align = None;
+        for _ in 0..3 {
+            let (pass, bottom) = lay_out(sections, &m, &tree, capped, cols, reserve);
+            // Read off the pass with no hole in it, so the grid the block lines
+            // up with is the grid the panel would have had without it.
+            align = align.or_else(|| row_grid(&pass, &m));
+            let content_h = reaching(bottom, reserve) + m.padding;
+            let next =
+                center_reserve((center_cols, center_rows), &m, cols, content_h.min(max_h), align);
+            let done = settled(reserve, next);
+            reserve = next;
+            if done {
+                break;
+            }
+        }
 
-        let content_h = bottom + m.padding;
+        let (mut out, bottom) = lay_out(sections, &m, &tree, capped, cols, reserve);
+        let content_h = reaching(bottom, reserve) + m.padding;
         let panel_h = content_h.min(max_h);
 
         // The strip is chrome, so a drop on it hits nobody.
+        //
+        // Before the centre goes in: `stretch` walks the tree and indexes the
+        // bands by leaf order, so the centre's bands have to arrive after it.
         if let Some(tree) = &tree {
             let whole = Rect {
                 x: 0.0,
@@ -285,11 +368,24 @@ impl Layout {
             };
             stretch(tree, &mut out.bands, 0, whole);
         }
+        if let Some(reserve) = reserve {
+            place_center(sections, &m, &middle, &widths, reserve, &mut out);
+        }
 
         // Centered on the work area, snapped to whole pixels so tiles stay crisp.
+        let mut panel_y = work_area.y + (work_area.h - panel_h) / 2.0;
+        // Except when there is a centre block, which is the thing that has to
+        // land on the middle of the screen. The panel slides to put it there.
+        // Clamped to the work area, so a panel taller than the screen still
+        // starts at the top of it and scrolls, which beats hanging off the edge.
+        if let Some(r) = reserve {
+            let slack = (work_area.h - panel_h).max(0.0);
+            panel_y = (work_area.y + work_area.h / 2.0 - (r.y + r.h / 2.0))
+                .clamp(work_area.y, work_area.y + slack);
+        }
         let panel = Rect {
             x: (work_area.x + (work_area.w - panel_w) / 2.0).round(),
-            y: (work_area.y + (work_area.h - panel_h) / 2.0).round(),
+            y: panel_y.round(),
             w: panel_w.round(),
             h: panel_h.round(),
         };
@@ -346,6 +442,30 @@ impl Layout {
 
     pub fn bands(&self) -> &[Band] {
         &self.bands
+    }
+
+    /// The centre block as one rectangle, and the x of each seam between its
+    /// halves. Content space. `None` when there is no block.
+    ///
+    /// The halves are separate boxes with separate tiles, and they have to read
+    /// as one container with a line down it — a border round each half would say
+    /// they were two things that happened to be next to each other, which is
+    /// the opposite of what the block is.
+    pub fn center_frame(&self) -> Option<(Rect, Vec<f32>)> {
+        let halves: Vec<&Band> = self.bands.iter().filter(|band| band.center).collect();
+        let mut rect = halves.first()?.rect;
+        let mut seams = Vec::new();
+        for band in halves.iter().skip(1) {
+            // Midway across the gutter between them, so the line sits in the
+            // space the tiles already leave rather than beside one of them.
+            seams.push((rect.x + rect.w + band.rect.x) / 2.0);
+            rect = Rect {
+                w: band.rect.x + band.rect.w - rect.x,
+                h: rect.h.max(band.rect.h),
+                ..rect
+            };
+        }
+        Some((rect, seams))
     }
 
     /// The keep-open button, panel-local.
@@ -685,11 +805,16 @@ pub fn controls(panel: Rect, tile_w: f32, tile_h: f32, gap: f32) -> Vec<(Control
         .collect()
 }
 
+
 /// What the app's own button opens: everything the right-click menu had, as
 /// squares big enough to aim at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     EditLayout,
+    /// Fill and empty the centre block.
+    Favorites,
+    /// Clicking closes things instead of switching to them.
+    CloseApps,
     AddApp,
     AddFolder,
     AddFile,
@@ -697,12 +822,17 @@ pub enum Command {
     Close,
 }
 
-pub const COMMANDS: [Command; 6] = [
+/// Eight, which is two full rows of four. The three modes lead, because they
+/// are what this menu is now mostly for: the three pickers below them are one
+/// job each and are reachable from the right-click menu as well.
+pub const COMMANDS: [Command; 8] = [
     Command::EditLayout,
+    Command::Favorites,
+    Command::CloseApps,
+    Command::Settings,
     Command::AddApp,
     Command::AddFolder,
     Command::AddFile,
-    Command::Settings,
     Command::Close,
 ];
 
@@ -710,6 +840,13 @@ impl Command {
     pub fn glyph(self) -> &'static str {
         match self {
             Command::EditLayout => "\u{25A6}",
+            // A star, in its text presentation. Every mark on these squares is
+            // a line drawing from the UI font; one coloured pictogram among
+            // them reads as the odd one out rather than as a set.
+            Command::Favorites => "\u{2605}",
+            // A crossed circle, not the plain cross: the plain one already
+            // means "close this menu" two squares along.
+            Command::CloseApps => "\u{2297}",
             Command::AddApp => "+",
             Command::AddFolder => "\u{1F5C0}",
             Command::AddFile => "\u{1F5CE}",
@@ -721,11 +858,27 @@ impl Command {
     pub fn label(self) -> &'static str {
         match self {
             Command::EditLayout => "Edit layout",
+            Command::Favorites => "Favorites",
+            Command::CloseApps => "Close apps",
             Command::AddApp => "Add app",
             Command::AddFolder => "Add folder",
             Command::AddFile => "Add file",
             Command::Settings => "Settings",
             Command::Close => "Close menu",
+        }
+    }
+
+    /// The mode this square turns on, if it turns one on.
+    pub fn mode(self) -> Option<Mode> {
+        match self {
+            Command::EditLayout => Some(Mode::Layout),
+            Command::Favorites => Some(Mode::Favorites),
+            Command::CloseApps => Some(Mode::Close),
+            Command::AddApp
+            | Command::AddFolder
+            | Command::AddFile
+            | Command::Settings
+            | Command::Close => None,
         }
     }
 }
@@ -874,9 +1027,11 @@ impl Node {
     /// it needs, which is what keeps the tile size fixed and the panel growing
     /// from the centre rather than squashing to fit.
     fn place(&self, sections: &[SectionShape], cut: Cut<'_>, out: &mut Placement) -> f32 {
-        let Cut { m, capped, x, y, cols } = cut;
+        let Cut { m, capped, x, y, cols, hole } = cut;
         match self {
-            Node::Leaf(index) => place_box(sections, *index, m, x, y, cols, out),
+            Node::Leaf(index) => {
+                place_box(sections, *index, Spot { m, x, y, cols, hole }, out)
+            }
             Node::Cut { axis, share, near, far } => {
                 let (a, b) = (near.want(sections, capped), far.want(sections, capped));
                 match axis {
@@ -910,6 +1065,207 @@ struct Cut<'a> {
     x: f32,
     y: f32,
     cols: usize,
+    /// Content-space rectangle the centre block is standing on, with its
+    /// clearance already added. Tiles flow around it; the tree never knows it
+    /// is there.
+    hole: Option<Rect>,
+}
+
+/// One pass over the tree. Returns the placement and the bottom edge the tree
+/// reached, which is not the bottom of the panel when the centre hangs lower.
+fn lay_out(
+    sections: &[SectionShape],
+    m: &Metrics,
+    tree: &Option<Node>,
+    capped: usize,
+    cols: usize,
+    reserve: Option<Rect>,
+) -> (Placement, f32) {
+    // Every slot up front, in section order. A box that claims a side is laid
+    // out before the boxes that fill what it left, so appending would hand it
+    // the first tiles as well - and the panel indexes its items in section
+    // order. Titles and contents came apart exactly there.
+    let slots = sections.iter().map(|s| s.count).sum();
+    let blank = Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 };
+    let mut out = Placement {
+        tiles: vec![blank; slots],
+        headers: Vec::new(),
+        bands: Vec::new(),
+    };
+    let top = m.search_h + m.padding;
+    let hole = reserve.map(|r| clearance(r, m.gap));
+    let bottom = tree.as_ref().map_or(top, |tree| {
+        let cut = Cut { m, capped, x: m.padding, y: top, cols, hole };
+        tree.place(sections, cut, &mut out)
+    });
+    (out, bottom)
+}
+
+/// How far down the content actually goes. The centre hangs below a short
+/// bento, and the panel still has to be tall enough to hold it.
+fn reaching(bottom: f32, reserve: Option<Rect>) -> f32 {
+    reserve.map_or(bottom, |r| bottom.max(r.y + r.h))
+}
+
+/// Clear space around the centre, so a box whose rows do not line up with it
+/// never sits flush against it.
+///
+/// Half a gap, not a whole one. The hole lands on whole cells of the grid, so
+/// the row above it already ends a full gap clear and must not be counted as
+/// blocked - that was the bug that filled the panel with space: a row
+/// overlapping the block by ten pixels lost its middle columns exactly as a row
+/// sitting squarely behind it did. Only a box with a row grid of its own, from
+/// being stacked below something, comes closer than that.
+fn clearance(reserve: Rect, gap: f32) -> Rect {
+    Rect { y: reserve.y - gap / 2.0, h: reserve.h + gap, ..reserve }
+}
+
+/// The row grid the centre lines up with: where the first box's tiles start,
+/// and how far apart its rows are.
+///
+/// Landing the hole on whole cells is what makes the block *part* of the grid -
+/// the middle few squares of it, outlined - rather than something dropped on
+/// top of it. Off the grid it costs every row it grazes, and the panel fills
+/// with space that is not holding anything.
+///
+/// The first box, because boxes side by side start at the same y and share a
+/// row grid, and side by side is the arrangement the centre lives in. A box
+/// stacked below has a phase of its own and takes the loose fit.
+fn row_grid(out: &Placement, m: &Metrics) -> Option<(f32, f32)> {
+    let band = out.bands.iter().find(|band| band.count > 0)?;
+    let first = out.tiles.get(band.first)?;
+    Some((first.y, m.tile_h + m.gap))
+}
+
+/// Two reserves that describe the same place. Compared loosely because these
+/// come out of a division that repeats: exact equality would let a half-pixel
+/// disagreement run the settling loop out to its cap for nothing.
+fn settled(before: Option<Rect>, after: Option<Rect>) -> bool {
+    match (before, after) {
+        (None, None) => true,
+        (Some(a), Some(b)) => (a.y - b.y).abs() < 0.5 && (a.x - b.x).abs() < 0.5,
+        _ => false,
+    }
+}
+
+/// The centre block's boxes, in the order they sit left to right.
+///
+/// Empty ones drop out, the same rule the tree uses: a half with nothing in it
+/// is not a box, and leaving it in would hold width the rest could use.
+fn center_boxes(sections: &[SectionShape]) -> Vec<usize> {
+    let mut found: Vec<usize> = (0..sections.len())
+        .filter(|&index| sections[index].center.is_some() && sections[index].count > 0)
+        .collect();
+    found.sort_by_key(|&index| sections[index].center.unwrap_or(0));
+    found
+}
+
+/// How many columns each half of the centre gets, given what the panel has.
+///
+/// Normally each half gets what it asked for, and the block is the same width
+/// on every panel - which is the whole of its worth. The budget only bites on a
+/// panel too narrow to hold it, and there the halves give up a column each from
+/// the widest rather than one of them disappearing: half a block in the middle
+/// of the screen is worse than a smaller one.
+///
+/// The one place the block's width is decided. Both the rectangle it reserves
+/// and the tiles laid into it come off this, so they cannot disagree - and a
+/// disagreement is a hole the grid wraps around with nothing in it, or a block
+/// hanging off the edge of the panel.
+fn center_widths(sections: &[SectionShape], order: &[usize], budget: usize) -> Vec<usize> {
+    let mut want: Vec<usize> = order
+        .iter()
+        .map(|&index| sections[index].columns.max(1))
+        .collect();
+    let mut total: usize = want.iter().sum();
+    while total > budget && want.iter().any(|&w| w > 1) {
+        let Some(widest) = want
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, w)| **w)
+            .map(|(index, _)| index)
+        else {
+            break;
+        };
+        want[widest] -= 1;
+        total -= 1;
+    }
+    want
+}
+
+/// How many rows tall the block is: the tallest of its halves, so a half with
+/// fewer slots leaves its bottom row empty rather than shortening the block.
+fn center_rows(sections: &[SectionShape], order: &[usize], widths: &[usize]) -> usize {
+    order
+        .iter()
+        .zip(widths)
+        .map(|(&index, &across)| sections[index].count.div_ceil(across.max(1)))
+        .max()
+        .unwrap_or(0)
+}
+
+/// Where the centre block sits, in content space.
+///
+/// Snapped to whole columns of the grid every box shares, so nothing is left
+/// with half a column to sit in. An odd number of spare columns rounds the
+/// block to the left, which is a half-column off centre and the price of
+/// keeping the wrap clean.
+fn center_reserve(
+    size: (usize, usize),
+    m: &Metrics,
+    cols: usize,
+    panel_h: f32,
+    align: Option<(f32, f32)>,
+) -> Option<Rect> {
+    let (across, rows) = size;
+    if across == 0 || rows == 0 {
+        return None;
+    }
+    let w = across as f32 * m.tile_w + (across - 1) as f32 * m.gap;
+    let h = rows as f32 * m.tile_h + (rows - 1) as f32 * m.gap;
+    let x = m.padding + (cols.saturating_sub(across) / 2) as f32 * (m.tile_w + m.gap);
+    // The middle of what is on screen, not of the whole scroll. The panel opens
+    // unscrolled, and the middle of the screen is the entire point of this.
+    let floor = m.search_h + m.padding;
+    let want = ((m.search_h + panel_h - h) / 2.0).max(floor);
+    // Then to the nearest whole row, so the block occupies cells of the grid
+    // rather than a rectangle that grazes them.
+    let y = match align {
+        Some((origin, step)) if step > 0.0 => {
+            let rows_down = ((want - origin) / step).round().max(0.0);
+            (origin + rows_down * step).max(floor)
+        }
+        _ => want,
+    };
+    Some(Rect { x, y, w, h })
+}
+
+/// Lay the centre block into the rectangle it claimed.
+///
+/// Runs after `stretch`, so the bands it appends sit past the tree's and
+/// nothing that walks the tree by leaf order can reach them.
+fn place_center(
+    sections: &[SectionShape],
+    m: &Metrics,
+    order: &[usize],
+    widths: &[usize],
+    reserve: Rect,
+    out: &mut Placement,
+) {
+    let mut x = reserve.x;
+    for (&index, &box_cols) in order.iter().zip(widths) {
+        // No hole to dodge: this box is the hole.
+        let spot = Spot { m, x, y: reserve.y, cols: box_cols, hole: None };
+        place_box(sections, index, spot, out);
+        if let Some(band) = out.bands.last_mut() {
+            band.center = true;
+            // The half's whole rectangle, including the rows its shorter
+            // neighbour left empty, so every point of the block belongs to one
+            // half of it.
+            band.rect = Rect { y: reserve.y, h: reserve.h, ..band.rect };
+        }
+        x += box_cols as f32 * (m.tile_w + m.gap);
+    }
 }
 
 /// Split a column budget between two halves. An explicit share wins; otherwise
@@ -938,7 +1294,10 @@ fn plan(sections: &[SectionShape]) -> Option<Node> {
     let mut stacked: Option<Node> = None;
 
     for (index, section) in sections.iter().enumerate() {
-        if section.count == 0 {
+        // The centre is placed by hand afterwards. The tree is planned as if it
+        // were not there, which is exactly what makes the rest wrap around it
+        // instead of being cut by it.
+        if section.count == 0 || section.center.is_some() {
             continue;
         }
         match &section.at {
@@ -984,19 +1343,31 @@ struct Placement {
     bands: Vec<Band>,
 }
 
-/// Lay one box out at `x`, `y`, `box_cols` wide. Returns its bottom edge.
+/// Where one box goes. A value for the same reason `Cut` is one: these five
+/// travel together, and a swapped pair of them is a silent bug.
+#[derive(Clone, Copy)]
+struct Spot<'a> {
+    m: &'a Metrics,
+    x: f32,
+    y: f32,
+    /// Tile columns the box has been given.
+    cols: usize,
+    /// Content-space rectangle the centre block is standing on, clearance
+    /// included. `None` when there is no block, and for the block itself.
+    hole: Option<Rect>,
+}
+
+/// Lay one box out where its `Spot` says. Returns its bottom edge.
 ///
 /// The one place a box becomes rectangles, so no two arrangements can drift
 /// apart in how a header sits over its tiles.
 fn place_box(
     sections: &[SectionShape],
     index: usize,
-    m: &Metrics,
-    x: f32,
-    y: f32,
-    box_cols: usize,
+    spot: Spot<'_>,
     out: &mut Placement,
 ) -> f32 {
+    let Spot { m, x, y, cols: box_cols, hole } = spot;
     let section = &sections[index];
     let box_cols = box_cols.max(1);
     let box_w = box_cols as f32 * m.tile_w + (box_cols - 1) as f32 * m.gap;
@@ -1005,7 +1376,10 @@ fn place_box(
     let first_tile: usize = sections[..index].iter().map(|s| s.count).sum();
     let mut inner = y;
 
-    if !section.title.is_empty() && m.header_h > 0.0 {
+    // The centre block never wears a header. It is the most valuable space on
+    // the panel and a title would spend a row of it saying what the icons
+    // already say.
+    if !section.title.is_empty() && m.header_h > 0.0 && section.center.is_none() {
         out.headers.push(Header {
             title: section.title.clone(),
             rect: Rect { x, y: inner, w: box_w, h: m.header_h },
@@ -1014,15 +1388,58 @@ fn place_box(
         inner += m.header_h + m.header_gap;
     }
 
-    // Left to right, then down. Reading order, wherever the box sits.
-    let tile_rows = section.count.div_ceil(box_cols);
-    for n in 0..section.count {
-        out.tiles[first_tile + n] = Rect {
-            x: x + (n % box_cols) as f32 * (m.tile_w + m.gap),
-            y: inner + (n / box_cols) as f32 * (m.tile_h + m.gap),
+    // A box that fits on one row is a bar, and a bar wrapped around the hole is
+    // unreadable: the six moves came out as four down the left and three up on
+    // the right - in reading order, and in no order at all to look at. A bar
+    // slides down to the first row that takes it whole instead.
+    //
+    // Wrapping is for a box big enough that going round the hole saves it a
+    // row. A bar has one row either way, so it has nothing to gain and its
+    // shape to lose.
+    if let Some(hole) = hole
+        && section.count > 0
+        && section.count <= box_cols
+    {
+        let span = section.count;
+        let bar = span as f32 * m.tile_w + (span - 1) as f32 * m.gap;
+        // The hole is finite, so a row below it is always clear.
+        for _ in 0..64 {
+            let row = Rect { x, y: inner, w: bar, h: m.tile_h };
+            if !hole.overlaps(&row) {
+                break;
+            }
+            inner += m.tile_h + m.gap;
+        }
+    }
+
+    // Left to right, then down, stepping over whatever the centre block is
+    // standing on. Reading order survives the hole: the tiles flow around it
+    // rather than through it, which is what a bento does when something is
+    // pinned in the middle of it.
+    //
+    // Slot, not tile: a skipped slot costs a position but not an item, which
+    // is why these are counted apart.
+    let mut placed = 0;
+    let mut slot = 0;
+    let mut tile_rows = 0;
+    // The hole is finite, so any row below it is free and this always ends.
+    // The ceiling is only so a metric nobody expected cannot spin the UI
+    // thread, which is the one failure that looks like a broken PC.
+    let ceiling = section.count.saturating_mul(4) + 64;
+    while placed < section.count && slot < ceiling {
+        let rect = Rect {
+            x: x + (slot % box_cols) as f32 * (m.tile_w + m.gap),
+            y: inner + (slot / box_cols) as f32 * (m.tile_h + m.gap),
             w: m.tile_w,
             h: m.tile_h,
         };
+        slot += 1;
+        if hole.is_some_and(|hole| hole.overlaps(&rect)) {
+            continue;
+        }
+        out.tiles[first_tile + placed] = rect;
+        placed += 1;
+        tile_rows = slot.div_ceil(box_cols);
     }
     inner += tile_rows as f32 * m.tile_h + (tile_rows.saturating_sub(1)) as f32 * m.gap;
 
@@ -1032,6 +1449,7 @@ fn place_box(
         count: section.count,
         rect: Rect { x, y, w: box_w, h: inner - y },
         cols: box_cols,
+        center: false,
     });
     inner
 }
@@ -1167,7 +1585,7 @@ mod tests {
 
     /// A section that says nothing about where it sits.
     fn shape(title: &str, count: usize) -> SectionShape {
-        SectionShape { title: title.into(), count, at: None, columns: 0 }
+        SectionShape { title: title.into(), count, at: None, columns: 0, center: None }
     }
 
     /// A section placed by path, spelled the way a config would spell it.
@@ -1177,6 +1595,18 @@ mod tests {
             count,
             at: At::parse(spec),
             columns: 0,
+            center: None,
+        }
+    }
+
+    /// One half of the centre block: a fixed number of slots, a fixed width.
+    fn middle(half: usize, count: usize, columns: usize) -> SectionShape {
+        SectionShape {
+            title: String::new(),
+            count,
+            at: None,
+            columns,
+            center: Some(half),
         }
     }
 
@@ -2272,5 +2702,403 @@ mod tests {
         for ((_, a, _), (_, b, _)) in l.headers(0.0).zip(l.headers(scroll)) {
             assert!((a.y - b.y - scroll).abs() < 0.01);
         }
+    }
+
+    // --- the centre block ---
+
+    /// Every tile belonging to a box that is not the centre.
+    fn around(l: &Layout, middle: &[usize]) -> Vec<Rect> {
+        let center: Vec<&Band> = l.bands().iter().filter(|b| b.center).collect();
+        assert_eq!(center.len(), middle.len(), "wrong number of centre bands");
+        let held: Vec<usize> = center
+            .iter()
+            .flat_map(|b| b.first..b.first + b.count)
+            .collect();
+        (0..l.tile_count())
+            .filter(|index| !held.contains(index))
+            .map(|index| l.tile_rect(index, 0.0))
+            .collect()
+    }
+
+    /// The rectangle the centre block actually occupies.
+    fn block(l: &Layout) -> Rect {
+        covering(
+            &l.bands()
+                .iter()
+                .filter(|b| b.center)
+                .cloned()
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    #[test]
+    fn a_three_by_three_a_side_block_still_leaves_a_panel_around_it() {
+        // What a new install starts with: nine slots a half, six columns of
+        // block. It is the widest thing the settings squares can ask for short
+        // of four each way, so this is where "the block wins over max_columns"
+        // has to stop being free.
+        let sections = vec![shape("Apps", 24), middle(0, 9, 3), middle(1, 9, 3)];
+        let l = Layout::compute(&sections, metrics(), WORK);
+        let b = block(&l);
+
+        assert!(b.x >= 0.0 && b.x + b.w <= l.panel.w, "the block hangs off the panel");
+        assert!((b.w - (6.0 * 200.0 + 5.0 * 10.0)).abs() < 0.5, "the block is {} wide", b.w);
+        assert!((b.h - (3.0 * 140.0 + 2.0 * 10.0)).abs() < 0.5, "the block is {} tall", b.h);
+        // And the grid still has somewhere to wrap to on both sides of it.
+        let around = around(&l, &[1, 2]);
+        assert!(around.iter().any(|r| r.x + r.w <= b.x), "nothing fits down the left");
+        assert!(around.iter().any(|r| r.x >= b.x + b.w), "nothing fits down the right");
+    }
+
+    #[test]
+    fn the_centre_holds_the_middle_of_the_screen() {
+        // The whole reason it exists: this is where a gaze pointer is most
+        // accurate, so it is the one box whose position is not up for grabs.
+        //
+        // Measured against the screen, not the panel. Wrapping is a step
+        // function and the two chase each other forever, so the panel is what
+        // moves - which is fine, because the screen is what the eyes are aimed
+        // at.
+        for count in [4usize, 17, 30, 45] {
+            let sections = vec![shape("Apps", count), middle(0, 4, 2), middle(1, 4, 2)];
+            let l = Layout::compute(&sections, metrics(), WORK);
+            let b = block(&l);
+
+            let across = l.panel.x + b.x + b.w / 2.0;
+            let down = l.panel.y + b.y + b.h / 2.0;
+            assert!(
+                (across - (WORK.x + WORK.w / 2.0)).abs() < 1.0,
+                "{count} tiles: the block's middle is at x {across}, the screen's at {}",
+                WORK.x + WORK.w / 2.0
+            );
+            assert!(
+                (down - (WORK.y + WORK.h / 2.0)).abs() < 1.0,
+                "{count} tiles: the block's middle is at y {down}, the screen's at {}",
+                WORK.y + WORK.h / 2.0
+            );
+        }
+    }
+
+    #[test]
+    fn the_panel_is_still_centred_when_there_is_no_block() {
+        let sections = vec![shape("Apps", 30)];
+        let l = Layout::compute(&sections, metrics(), WORK);
+        assert!(
+            ((l.panel.y - WORK.y) - (WORK.h - l.panel.h - (l.panel.y - WORK.y))).abs() < 1.5
+        );
+    }
+
+    #[test]
+    fn a_block_on_a_panel_taller_than_the_screen_still_starts_on_the_screen() {
+        // Sixty tiles overflows and scrolls. The panel cannot slide up to
+        // centre the block without hanging off the top.
+        let sections = vec![shape("Apps", 60), middle(0, 4, 2), middle(1, 4, 2)];
+        let l = Layout::compute(&sections, metrics(), WORK);
+        assert!(l.panel.y >= WORK.y - 0.5, "the panel starts at {}", l.panel.y);
+        assert!(
+            l.panel.y + l.panel.h <= WORK.y + WORK.h + 0.5,
+            "the panel ends at {}",
+            l.panel.y + l.panel.h
+        );
+    }
+
+    #[test]
+    fn nothing_else_is_laid_out_underneath_the_centre() {
+        let sections = vec![shape("Apps", 40), middle(0, 4, 2), middle(1, 4, 2)];
+        let l = Layout::compute(&sections, metrics(), WORK);
+        let b = block(&l);
+
+        for tile in around(&l, &[0, 1]) {
+            assert!(
+                !tile.overlaps(&b),
+                "a tile at {},{} sits under the centre block {b:?}",
+                tile.x,
+                tile.y
+            );
+        }
+    }
+
+    #[test]
+    fn the_boxes_wrap_around_the_centre_rather_than_being_cut_by_it() {
+        // The point of the whole arrangement. The bento is planned as if the
+        // centre were not there, so a box that reaches across the panel comes
+        // out either side of it - not split into two boxes, and not stopped.
+        let sections = vec![shape("Apps", 40), middle(0, 4, 2), middle(1, 4, 2)];
+        let l = Layout::compute(&sections, metrics(), WORK);
+        let b = block(&l);
+        let tiles = around(&l, &[0, 1]);
+
+        let spans = |edge: f32, side: fn(&Rect, f32) -> bool| {
+            tiles.iter().filter(|t| side(t, edge)).count()
+        };
+        let left = spans(b.x, |t, edge| t.x + t.w <= edge + 0.01);
+        let right = spans(b.x + b.w, |t, edge| t.x >= edge - 0.01);
+        assert!(left > 0 && right > 0, "{left} tiles left of the centre, {right} right of it");
+
+        // And one box, not two: every one of those tiles belongs to the same
+        // band it would have without a centre at all.
+        assert_eq!(l.bands().iter().filter(|b| !b.center).count(), 1);
+    }
+
+    #[test]
+    fn a_bar_slides_past_the_centre_rather_than_breaking_around_it() {
+        // Seven controls on one row. Wrapped, they came out as four down the
+        // left and three up on the right - in reading order and in no order at
+        // all to look at. A bar has one row either way, so it has nothing to
+        // gain by going round and its shape to lose.
+        let sections = vec![shape("Apps", 24), shape("Bar", 7), middle(0, 4, 2), middle(1, 4, 2)];
+        let l = Layout::compute(&sections, metrics(), WORK);
+        let bar = l
+            .bands()
+            .iter()
+            .find(|band| band.section == 1)
+            .expect("the bar has a band");
+
+        let tiles: Vec<Rect> = (bar.first..bar.first + bar.count)
+            .map(|index| l.tile_rect(index, 0.0))
+            .collect();
+        let top = tiles[0].y;
+        assert!(
+            tiles.iter().all(|tile| (tile.y - top).abs() < 0.01),
+            "the bar broke across rows: {tiles:?}"
+        );
+        // And it is still one unbroken run, left to right.
+        let m = metrics();
+        for pair in tiles.windows(2) {
+            assert!(
+                (pair[1].x - pair[0].x - (m.tile_w + m.gap)).abs() < 0.01,
+                "a gap opened in the bar at {}", pair[1].x
+            );
+        }
+        for tile in &tiles {
+            assert!(!tile.overlaps(&block(&l)), "the bar sits under the centre");
+        }
+    }
+
+    #[test]
+    fn a_bar_that_already_clears_the_centre_is_left_where_it_was() {
+        // Two tiles down the left, nowhere near the middle. Nothing to slide
+        // past, so nothing moves. Untitled, so its band starts where its tiles
+        // do and any push would show.
+        // Listed first, so it takes the top of the content and a push would
+        // show as a row of empty space above it.
+        let short = vec![shape("", 2), shape("Apps", 24), middle(0, 4, 2), middle(1, 4, 2)];
+        let l = Layout::compute(&short, metrics(), WORK);
+        let bar = l.bands().iter().find(|band| band.section == 0).unwrap();
+        let first = l.tile_rect(bar.first, 0.0);
+        assert!(!first.overlaps(&block(&l)), "the test bar is not clear of the centre");
+        assert!(
+            (first.y - metrics().padding).abs() < 0.01,
+            "the bar was pushed to {} instead of sitting at the top",
+            first.y
+        );
+    }
+
+    #[test]
+    fn the_centre_lands_on_whole_cells_of_the_grid() {
+        // Off the grid it costs every row it grazes: a row overlapping it by
+        // ten pixels loses its middle columns exactly as a row sitting squarely
+        // behind it does, and the panel fills with space holding nothing.
+        for count in [12usize, 24, 40] {
+            let sections = vec![shape("Apps", count), middle(0, 4, 2), middle(1, 4, 2)];
+            let l = Layout::compute(&sections, metrics(), WORK);
+            let m = metrics();
+            let step = m.tile_h + m.gap;
+            let b = block(&l);
+
+            // A tile of the box the block sits in, to read the row grid off.
+            let grid_top = l.tile_rect(0, 0.0).y;
+            let offset = (b.y - grid_top) / step;
+            assert!(
+                (offset - offset.round()).abs() < 0.01,
+                "{count} tiles: the block sits {offset} rows down, not a whole number"
+            );
+        }
+    }
+
+    #[test]
+    fn a_row_that_only_grazes_the_centre_keeps_its_middle() {
+        // The bug this fixes: every row either sits squarely behind the block
+        // or is clear of it, so the only cells lost are the ones the block is
+        // actually standing on.
+        let sections = vec![shape("Apps", 40), middle(0, 4, 2), middle(1, 4, 2)];
+        let l = Layout::compute(&sections, metrics(), WORK);
+        let b = block(&l);
+        let m = metrics();
+
+        // Count the tiles on each row of the surrounding box. Only the rows the
+        // block occupies may be short, and they are short by exactly its width.
+        let mut per_row: std::collections::BTreeMap<i64, usize> = Default::default();
+        for tile in around(&l, &[0, 1]) {
+            *per_row.entry((tile.y * 100.0) as i64).or_default() += 1;
+        }
+        let across = 4;
+        for (key, held) in per_row {
+            let y = key as f32 / 100.0;
+            let row = Rect { x: 0.0, y, w: l.panel.w, h: m.tile_h };
+            let behind = row.overlaps(&b);
+            let last = held < l.cols && !behind;
+            assert!(
+                held == l.cols || held == l.cols - across || last,
+                "row at {y} holds {held} of {} tiles, block behind it: {behind}",
+                l.cols
+            );
+        }
+    }
+
+    #[test]
+    fn reading_order_survives_the_hole() {
+        // Left to right then down, skipping what the centre stands on. A tile
+        // is never earlier in the list than the one above and left of it.
+        let sections = vec![shape("Apps", 40), middle(0, 4, 2), middle(1, 4, 2)];
+        let l = Layout::compute(&sections, metrics(), WORK);
+        let tiles = around(&l, &[0, 1]);
+
+        for pair in tiles.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            let later = b.y > a.y + 0.01 || ((b.y - a.y).abs() < 0.01 && b.x > a.x);
+            assert!(later, "tile at {},{} does not read after {},{}", b.x, b.y, a.x, a.y);
+        }
+    }
+
+    #[test]
+    fn a_short_panel_still_grows_tall_enough_to_hold_the_centre() {
+        // One tile and a centre block: the panel cannot be one tile tall.
+        let sections = vec![shape("Apps", 1), middle(0, 4, 2), middle(1, 4, 2)];
+        let l = Layout::compute(&sections, metrics(), WORK);
+        let b = block(&l);
+        assert!(
+            b.y + b.h <= l.content_h + 0.01,
+            "the centre ends at {} and the content at {}",
+            b.y + b.h,
+            l.content_h
+        );
+        assert!(b.y >= 0.0, "the centre starts above the panel at {}", b.y);
+    }
+
+    #[test]
+    fn the_centre_keeps_its_shape_whatever_is_around_it() {
+        // A learnable position means the same rectangle every summon, however
+        // many windows happen to be open.
+        let m = metrics();
+        let shapes = |count| vec![shape("Apps", count), middle(0, 4, 2), middle(1, 4, 2)];
+        let sizes: Vec<(f32, f32)> = [4usize, 20, 45]
+            .into_iter()
+            .map(|count| {
+                let b = block(&Layout::compute(&shapes(count), m, WORK));
+                (b.w, b.h)
+            })
+            .collect();
+        assert!(
+            sizes.windows(2).all(|pair| pair[0] == pair[1]),
+            "the centre changed size with the grid around it: {sizes:?}"
+        );
+    }
+
+    #[test]
+    fn a_half_that_is_short_leaves_its_slots_empty_rather_than_shortening_the_block() {
+        // Two rows on the left, one on the right: the block is still two rows.
+        let sections = vec![shape("Apps", 20), middle(0, 4, 2), middle(1, 2, 2)];
+        let l = Layout::compute(&sections, metrics(), WORK);
+        let m = metrics();
+        let b = block(&l);
+        assert!((b.h - (2.0 * m.tile_h + m.gap)).abs() < 0.5, "block is {} tall", b.h);
+    }
+
+    #[test]
+    fn an_empty_centre_leaves_the_panel_exactly_as_it_was() {
+        let plain = vec![shape("Apps", 24)];
+        let with_centre = vec![shape("Apps", 24), middle(0, 0, 2), middle(1, 0, 2)];
+        let a = Layout::compute(&plain, metrics(), WORK);
+        let b = Layout::compute(&with_centre, metrics(), WORK);
+        assert_eq!(a.panel, b.panel);
+        assert_eq!(a.cols, b.cols);
+        for index in 0..a.tile_count() {
+            assert_eq!(a.tile_rect(index, 0.0), b.tile_rect(index, 0.0));
+        }
+    }
+
+    #[test]
+    fn the_centre_is_never_squeezed_by_a_narrow_panel() {
+        // Four tiles across is what the block asked for, and it gets them even
+        // though the grid beside it wants only two.
+        let sections = vec![shape("Apps", 2), middle(0, 4, 2), middle(1, 4, 2)];
+        let l = Layout::compute(&sections, metrics(), WORK);
+        let m = metrics();
+        assert!(l.cols >= 4, "panel came out {} columns wide", l.cols);
+        let b = block(&l);
+        assert!((b.w - (4.0 * m.tile_w + 3.0 * m.gap)).abs() < 0.5, "block is {} wide", b.w);
+    }
+
+    #[test]
+    fn a_centre_wider_than_the_panel_takes_the_panel_and_nothing_breaks() {
+        // A hard column cap the block cannot fit inside. It takes what there
+        // is rather than overflowing, and the grid wraps below it.
+        let m = Metrics { max_cols: 3, ..metrics() };
+        let sections = vec![shape("Apps", 12), middle(0, 4, 2), middle(1, 4, 2)];
+        let l = Layout::compute(&sections, m, WORK);
+        let b = block(&l);
+        assert!(b.x >= 0.0 && b.x + b.w <= l.panel.w + 0.01, "block {b:?} left the panel");
+        for tile in around(&l, &[0, 1]) {
+            assert!(!tile.overlaps(&b), "a tile at {},{} sits under the centre", tile.x, tile.y);
+        }
+    }
+
+    #[test]
+    fn every_tile_of_the_centre_lands_inside_the_block() {
+        let sections = vec![shape("Apps", 20), middle(0, 4, 2), middle(1, 4, 2)];
+        let l = Layout::compute(&sections, metrics(), WORK);
+        let b = block(&l);
+        for band in l.bands().iter().filter(|band| band.center) {
+            for index in band.first..band.first + band.count {
+                let tile = l.tile_rect(index, 0.0);
+                assert!(
+                    tile.x >= b.x - 0.01
+                        && tile.x + tile.w <= b.x + b.w + 0.01
+                        && tile.y >= b.y - 0.01
+                        && tile.y + tile.h <= b.y + b.h + 0.01,
+                    "centre tile {index} at {},{} is outside the block {b:?}",
+                    tile.x,
+                    tile.y
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_two_halves_sit_side_by_side_in_order() {
+        let sections = vec![shape("Apps", 20), middle(0, 4, 2), middle(1, 4, 2)];
+        let l = Layout::compute(&sections, metrics(), WORK);
+        let halves: Vec<&Band> = l.bands().iter().filter(|b| b.center).collect();
+        assert_eq!(halves.len(), 2);
+        assert!(
+            halves[0].rect.x + halves[0].rect.w <= halves[1].rect.x + 0.01,
+            "the halves overlap: {:?} and {:?}",
+            halves[0].rect,
+            halves[1].rect
+        );
+        assert!((halves[0].rect.y - halves[1].rect.y).abs() < 0.01, "the halves are not level");
+    }
+
+    #[test]
+    fn the_centre_takes_no_header_however_it_is_titled() {
+        // A header would spend a row of the most valuable space on the panel
+        // saying what the icons already say.
+        let mut titled = middle(0, 4, 2);
+        titled.title = "Favorites".into();
+        let sections = vec![shape("Apps", 12), titled];
+        let l = Layout::compute(&sections, metrics(), WORK);
+        assert_eq!(l.headers(0.0).count(), 1, "the centre drew a header");
+    }
+
+    #[test]
+    fn the_centre_never_takes_a_place_in_the_tree() {
+        // Placed by hand after the tree, so its bands come last and `stretch`
+        // - which walks the tree by leaf order - can never reach them.
+        let sections = vec![at("Left", 8, "left@30"), shape("Rest", 20), middle(0, 4, 2)];
+        let l = Layout::compute(&sections, metrics(), WORK);
+        let bands = l.bands();
+        assert!(bands.last().is_some_and(|band| band.center));
+        assert!(bands[..bands.len() - 1].iter().all(|band| !band.center));
     }
 }

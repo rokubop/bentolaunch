@@ -23,6 +23,130 @@ pub struct Config {
     pub grid: Grid,
     pub theme: Theme,
     pub browser: Browser,
+    pub favorites: Favorites,
+}
+
+/// The block held in the middle of the panel.
+///
+/// The centre of the screen is where a gaze pointer is most accurate, so it is
+/// the one piece of the panel worth reserving rather than letting the bento
+/// spend it on whatever happened to be listed first. What goes there is chosen
+/// by hand and stays put: it is the only part of the grid whose contents do not
+/// change with what is running.
+///
+/// Two halves, because the two things worth putting there answer different
+/// questions - an app to start and a page to open - and mixing them would cost
+/// the block the one thing it has over the rest of the grid, which is that you
+/// already know what is in it without reading.
+///
+/// The centre does not sit in the bento tree. Every cut in that tree runs edge
+/// to edge, so a box in the middle would drag its lines across the whole panel.
+/// Instead it claims its rectangle first and the tree is planned as if it were
+/// not there; the boxes wrap around it. See `ui::grid::Layout::compute`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Favorites {
+    /// Rows of tiles in the block. **0 turns it off**, the same way
+    /// `max_columns = 0` means no cap: how much centre you want and whether you
+    /// want any are one question, and one settings square answers it.
+    pub rows: usize,
+    /// Tiles across in each half. `rows * columns` is how many slots a half
+    /// has, and empty ones are drawn: the shape has to be the same every
+    /// summon or there is nothing to learn the position of.
+    pub columns: usize,
+    /// Which of the two lists the block holds, and whether they are kept
+    /// apart. Four answers to one question, so the square that steps through
+    /// them cannot leave the block in a state no square can name.
+    pub contents: Contents,
+    /// Legacy, and never written back: `contents` says all of this and more.
+    /// `true` becomes `split`, `false` becomes `one`, and the key is dropped
+    /// the next time anything writes the block's settings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub split: Option<bool>,
+    /// Tint behind the block, "#AARRGGBB" or "#RRGGBB". This is the one box
+    /// that is always in the same place, so it is the one worth marking out.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// Shell parsing names, the same strings a manual section's `items` takes.
+    /// Written by favorites mode; hand-editable like everything else here.
+    pub apps: Vec<ManualItem>,
+    /// URLs, and anything else the shell opens. Same form as `apps`.
+    pub sites: Vec<ManualItem>,
+}
+
+impl Default for Favorites {
+    fn default() -> Self {
+        Self {
+            // Nine slots a side. Enough that what you put there stops being a
+            // shortlist you re-pick every week, and still inside the four each
+            // way `validated` allows.
+            rows: 3,
+            columns: 3,
+            contents: Contents::Split,
+            split: None,
+            // Warm, low alpha. It sits over a translucent panel, so anything
+            // opaque would punch a hole in it.
+            color: Some("#38FFC24B".into()),
+            apps: Vec::new(),
+            sites: Vec::new(),
+        }
+    }
+}
+
+/// What the centre block is holding.
+///
+/// The block is two lists that answer different questions - an app to start and
+/// a page to open - and not everyone wants both. Kept as one setting rather
+/// than a switch per list, because "apps only" and "sites only" and "both, but
+/// mixed" are the same question asked once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Contents {
+    /// Apps left, sites right. Two halves, a seam between them.
+    #[default]
+    Split,
+    /// Both lists, apps first, in one block.
+    One,
+    /// Apps alone.
+    Apps,
+    /// Sites alone.
+    Sites,
+}
+
+impl Contents {
+    /// What this is called in the file. The same spelling serde reads, in one
+    /// place, so the settings square and the parser cannot drift apart.
+    pub fn key(self) -> &'static str {
+        match self {
+            Contents::Split => "split",
+            Contents::One => "one",
+            Contents::Apps => "apps",
+            Contents::Sites => "sites",
+        }
+    }
+
+    /// Whether this half is on the panel at all. Favoriting something the block
+    /// would not show is a click that writes to a list nobody can see, so this
+    /// is also what greys those tiles out in favorites mode.
+    pub fn shows(self, half: usize) -> bool {
+        match self {
+            Contents::Split | Contents::One => true,
+            Contents::Apps => half == 0,
+            Contents::Sites => half == 1,
+        }
+    }
+}
+
+impl Favorites {
+    /// Whether the block is drawn at all.
+    pub fn on(&self) -> bool {
+        self.rows > 0 && self.columns > 0
+    }
+
+    /// Slots in one half.
+    pub fn slots(&self) -> usize {
+        self.rows * self.columns
+    }
 }
 
 /// Loopback WebSocket the extension dials into.
@@ -94,8 +218,31 @@ pub enum Source {
     Bookmarks,
     /// The six window moves. A fixed set, so nothing enumerates and the box is
     /// the same shape every summon.
+    ///
+    /// Empty unless the panel is in move mode, when `modes` is also on the
+    /// panel. Six squares that only ever apply to one window at a time are a
+    /// row this app cannot afford to spend all the time; a `modes` box brings
+    /// them out on the click that needs them and puts them away after.
+    ///
+    /// Listed on its own, with no `modes` box anywhere, it is the old always-on
+    /// bar - `Stay open` and the six - because that is a bar some people will
+    /// want and nothing about it stopped working.
     #[serde(rename = "move")]
     Moves,
+    /// One tile per mode: move a window, favorites, close apps, edit layout.
+    ///
+    /// A fixed set in a fixed order, like `move`. This is the bar that replaces
+    /// the move bar: four squares that are always the same four in the same
+    /// places, each one turning on a mode and each one turning it off again.
+    Modes,
+    /// What `[favorites]` holds, apps then sites.
+    ///
+    /// The centre block is where these normally appear, and it is not a
+    /// section. This is here so the one list has one name wherever it turns up:
+    /// it is what tags a tile as belonging to the centre, which is how a
+    /// favorite is left out of the list it came from and how removing one knows
+    /// where to write.
+    Favorites,
 }
 
 /// One group of tiles inside a section: where they come from, and for windows
@@ -260,7 +407,7 @@ pub struct SectionConfig {
 ///   { title = "Display", target = "ms-settings:display" },
 /// ]
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ManualItem {
     Plain(String),
@@ -347,6 +494,19 @@ pub struct Theme {
     /// The logo's own warm colour. Selection, drag and this are one family told
     /// apart by weight, so nothing on the panel is accented in a second hue.
     pub tile_target: String,
+    /// Line around each box. Faint on purpose: it says where one box ends and
+    /// the next begins, which the tiles alone cannot, and it has to do that
+    /// without competing with them. `"#00000000"` turns it off.
+    ///
+    /// Boxes tile the panel with no gaps, so these lines meet and read as the
+    /// seams of the bento rather than as a border round each box.
+    pub box_edge: String,
+    /// Line around the centre block, and the seam down the middle of it.
+    ///
+    /// Distinctly stronger than `box_edge`, because the block is the one thing
+    /// on the panel that is *in front of* the layout rather than part of it.
+    /// The accent again, so nothing is picked out in a second hue.
+    pub center_edge: String,
 }
 
 /// Browsers, grouped together because that is how they are thought about. Any
@@ -376,6 +536,10 @@ fn section(title: &str, sources: &[SourceSpec]) -> SectionConfig {
     }
 }
 
+fn placed(title: &str, sources: &[SourceSpec], at: &str) -> SectionConfig {
+    SectionConfig { at: Some(at.into()), ..section(title, sources) }
+}
+
 fn group(source: Source, matches: &[&str]) -> SourceSpec {
     SourceSpec::Matched {
         source,
@@ -400,10 +564,18 @@ impl Default for Config {
             //
             // Running things first: switching to what exists beats launching
             // something new, so it gets the top of the panel.
+            //
+            // Browsing down the whole right side, everything else down the
+            // left. Two halves and one question each: what is open on the web,
+            // and what is on this machine. A panel split that way is answered
+            // by looking at one half of it, which no stack of full-width rows
+            // ever manages - and it gives the centre block a half to sit in on
+            // either side of it.
             sections: vec![
-                section(
+                placed(
                     "Browsing",
                     &[group(Source::Windows, BROWSERS), SourceSpec::Plain(Source::Tabs)],
+                    "right@50",
                 ),
                 section(
                     "Active",
@@ -416,8 +588,22 @@ impl Default for Config {
                     "Launch",
                     &[SourceSpec::Plain(Source::Taskbar), SourceSpec::Plain(Source::Manual)],
                 ),
+                // A `move` box, empty until move mode brings the six out. An
+                // empty section draws nothing, so this costs a row only while
+                // it is being used - which is the whole reason the moves
+                // stopped being a bar of their own.
+                //
+                // Listed first of the two so it stacks above the modes bar:
+                // that bar is the one row whose position never changes, and a
+                // box appearing under it would push it off the place it is
+                // aimed at.
+                placed("", &[SourceSpec::Plain(Source::Moves)], "bottom"),
+                // Untitled: four squares that each say what they are, under a
+                // header that would only say it again.
+                placed("", &[SourceSpec::Plain(Source::Modes)], "bottom"),
             ],
             grid: Grid::default(),
+            favorites: Favorites::default(),
             theme: Theme::default(),
             browser: Browser::default(),
         }
@@ -456,6 +642,8 @@ impl Default for Theme {
             tile_drag: "#FF7A5326".into(),
             tile_selected: "#FF4E4230".into(),
             tile_target: "#FFFFC24B".into(),
+            box_edge: "#14FFFFFF".into(),
+            center_edge: "#66FFC24B".into(),
         }
     }
 }
@@ -557,6 +745,31 @@ impl Config {
                 g.search_height, d.search_height
             );
             g.search_height = d.search_height;
+        }
+
+        // The centre is held in the middle of the panel and everything else
+        // wraps around it, so a block bigger than the panel would leave the
+        // grid nowhere to wrap to. Four each way is already half a screen.
+        let f = &mut self.favorites;
+        // The old two-value key. Read once, then it is nobody's business but
+        // `contents`: a config carrying both would have two answers to one
+        // question and no way to tell which was meant last.
+        if let Some(split) = f.split.take() {
+            f.contents = if split { Contents::Split } else { Contents::One };
+            log_info!("favorites.split read as contents = \"{}\"", f.contents.key());
+        }
+        if f.rows > 4 {
+            log_warn!("favorites.rows {} is more than 4; using 4", f.rows);
+            f.rows = 4;
+        }
+        if f.columns > 4 {
+            log_warn!("favorites.columns {} is more than 4; using 4", f.columns);
+            f.columns = 4;
+        }
+        // Rows alone says whether the block is on. A width of zero with rows
+        // asked for is a typo, not a way to turn it off.
+        if f.rows > 0 && f.columns == 0 {
+            f.columns = Favorites::default().columns;
         }
 
         if self.sections.is_empty() {
@@ -718,8 +931,85 @@ mod tests {
         let text = toml::to_string_pretty(&Config::default()).unwrap();
         let back: Config = toml::from_str(&text).unwrap();
         assert_eq!(back.hotkey, Config::default().hotkey);
-        assert_eq!(back.sections.len(), 3);
+        // Three of content, then the two bars along the bottom.
+        assert_eq!(back.sections.len(), 5);
         assert!(back.sections[0].source.contains(Source::Tabs));
+        assert_eq!(back.favorites.rows, Config::default().favorites.rows);
+        assert_eq!(back.favorites.columns, Config::default().favorites.columns);
+        assert_eq!(back.favorites.contents, Config::default().favorites.contents);
+        // The legacy key is not written, so a fresh config has nothing to fold.
+        // `contents = "split"` is the value, not the key it replaced.
+        assert!(!text.contains("split ="), "the default config still writes split");
+    }
+
+    #[test]
+    fn the_old_split_key_still_reads_and_becomes_contents() {
+        // A config written before `contents` existed. It has to keep working:
+        // the file is hand-edited, and a parse error falls all the way back to
+        // defaults, which would look like every setting being forgotten.
+        let one: Config = toml::from_str("[favorites]
+split = false
+").unwrap();
+        assert_eq!(one.validated().favorites.contents, Contents::One);
+        let split: Config = toml::from_str("[favorites]
+split = true
+").unwrap();
+        assert_eq!(split.validated().favorites.contents, Contents::Split);
+    }
+
+    #[test]
+    fn the_old_key_still_answers_while_it_is_in_the_file() {
+        // Both keys at once is only reachable by hand-editing `split` back in.
+        // Nothing in the file says which was written last, so the legacy key
+        // answers and the next write of the block's settings takes it out -
+        // which is the only way this can be ambiguous twice.
+        let cfg: Config =
+            toml::from_str("[favorites]
+split = true
+contents = \"apps\"
+").unwrap();
+        assert_eq!(cfg.validated().favorites.contents, Contents::Split);
+    }
+
+    #[test]
+    fn the_block_starts_three_by_three_a_side_and_empty() {
+        let f = Config::default().favorites;
+        assert_eq!((f.rows, f.columns, f.slots()), (3, 3, 9));
+        assert_eq!(f.contents, Contents::Split);
+        assert!(f.apps.is_empty() && f.sites.is_empty());
+    }
+
+    #[test]
+    fn a_half_the_block_does_not_hold_is_not_shown() {
+        assert!(Contents::Split.shows(0) && Contents::Split.shows(1));
+        assert!(Contents::One.shows(0) && Contents::One.shows(1));
+        assert!(Contents::Apps.shows(0) && !Contents::Apps.shows(1));
+        assert!(!Contents::Sites.shows(0) && Contents::Sites.shows(1));
+    }
+
+    #[test]
+    fn the_modes_bar_is_the_bottom_row_and_the_moves_stack_above_it() {
+        // The modes bar is the one row whose place never changes. A box that
+        // came and went underneath it would push it off the spot it is aimed at.
+        let sections = Config::default().sections;
+        let bar = |source| {
+            sections
+                .iter()
+                .position(|s| s.source.contains(source))
+                .unwrap()
+        };
+        assert!(bar(Source::Moves) < bar(Source::Modes));
+        for source in [Source::Moves, Source::Modes] {
+            assert_eq!(sections[bar(source)].at.as_deref(), Some("bottom"));
+        }
+    }
+
+    #[test]
+    fn the_moves_are_not_a_bar_of_their_own_when_there_is_a_mode_to_open_them() {
+        // Six squares that only ever apply to one window at a time cannot hold
+        // a row all the time. The default has a `modes` box, so they wait.
+        let sections = Config::default().sections;
+        assert!(sections.iter().any(|s| s.source.contains(Source::Modes)));
     }
 
     #[test]

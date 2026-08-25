@@ -121,6 +121,15 @@ fn favicons() -> &'static Mutex<HashMap<String, Arc<IconPixels>>> {
 /// the number of distinct origins anyone has open.
 const MAX_FAVICONS: usize = 512;
 
+/// Whether a favicon for this origin is already in hand.
+///
+/// A question rather than a fetch: nothing can go and get one. Favicons only
+/// ever arrive from a paired browser, so a tile that wants one has to be able
+/// to ask first and fall back to the shell if the answer is no.
+pub fn has_favicon(key: &str) -> bool {
+    favicons().lock().is_ok_and(|map| map.contains_key(key))
+}
+
 /// Store a favicon the extension sent, and wake the panel to paint it.
 pub fn put_favicon(key: &str, pixels: IconPixels) {
     let Ok(mut map) = favicons().lock() else { return };

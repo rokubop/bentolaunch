@@ -12,7 +12,7 @@
 //! already has. `Open the file` is one of the squares for exactly that reason -
 //! this surface is the common half, not a replacement.
 
-use crate::config::Config;
+use crate::config::{Config, Contents};
 use crate::pins::Change;
 
 /// Tile sizes, smallest first: width, height, the strip the label gets, and
@@ -37,22 +37,59 @@ const COLUMNS: [(usize, &str); 5] = [
     (0, "As many as fit"),
 ];
 
+/// The centre block's shape, in tiles a half: across, then down.
+///
+/// Off is the first step rather than a square of its own. "Do I want a centre
+/// block" and "how big" are the same question asked twice, and answering it
+/// with two squares means two places for them to disagree. Both numbers on the
+/// one square for the same reason: a block is a shape, and a height and a width
+/// set apart is a file that briefly says 3 x 1 - which the watcher lays out.
+///
+/// Stops at four each way, which is where `Config::validated` stops: a block
+/// wider than that leaves the grid around it nowhere to wrap to.
+const CENTER_SIZES: [(usize, usize, &str); 6] = [
+    (0, 0, "Center \u{00B7} off"),
+    (2, 1, "Center \u{00B7} 2 \u{00D7} 1"),
+    (2, 2, "Center \u{00B7} 2 \u{00D7} 2"),
+    (3, 2, "Center \u{00B7} 3 \u{00D7} 2"),
+    (3, 3, "Center \u{00B7} 3 \u{00D7} 3"),
+    (4, 4, "Center \u{00B7} 4 \u{00D7} 4"),
+];
+
+/// What the block holds, and whether the two lists are kept apart. One square
+/// stepping through all four, because they are four answers to one question.
+const CENTER_CONTENTS: [(Contents, &str); 4] = [
+    (Contents::Split, "Center \u{00B7} apps + sites"),
+    (Contents::One, "Center \u{00B7} one block"),
+    (Contents::Apps, "Center \u{00B7} apps only"),
+    (Contents::Sites, "Center \u{00B7} sites only"),
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Setting {
     Tiles,
     Labels,
     Columns,
+    /// The centre block's shape, off included.
+    Center,
+    /// Which lists the block holds: apps and sites apart, both in one block,
+    /// or one of them alone.
+    CenterHolds,
     Browser,
     /// The escape hatch: everything this surface does not cover.
     OpenFile,
     Done,
 }
 
-pub const SETTINGS: [Setting; 6] = [
+/// Eight, which is two full rows of four. The shape settings first, then the
+/// centre, then the one switch, then the two squares that are not values.
+pub const SETTINGS: [Setting; 8] = [
     Setting::Tiles,
     Setting::Labels,
     Setting::Columns,
     Setting::Browser,
+    Setting::Center,
+    Setting::CenterHolds,
     Setting::OpenFile,
     Setting::Done,
 ];
@@ -76,6 +113,11 @@ impl Setting {
             // the two shape settings and they sit next to each other.
             Setting::Labels => "\u{25A4}",
             Setting::Columns => "\u{25A5}",
+            // A square with its middle filled: the block, and the panel around
+            // it. Then the same square cut down the middle, which is what the
+            // split does to it.
+            Setting::Center => "\u{25FB}",
+            Setting::CenterHolds => "\u{25EB}",
             Setting::Browser => "\u{25EF}",
             // The same mark the menu puts on "Add file". It is the same kind of
             // thing: a file, opened.
@@ -106,6 +148,11 @@ impl Setting {
                 // setting the user chose deliberately.
                 None => "Columns \u{00B7} as set",
             },
+            Setting::Center => match center_now(config) {
+                Some(index) => CENTER_SIZES[index].2,
+                None => "Center \u{00B7} as set",
+            },
+            Setting::CenterHolds => CENTER_CONTENTS[holds_now(config)].1,
             Setting::Browser => {
                 if config.browser.enabled {
                     "Browser \u{00B7} on"
@@ -133,8 +180,29 @@ impl Setting {
                 let index = columns_now(config).map_or(0, |i| (i + 1) % COLUMNS.len());
                 Some(Change::MaxColumns(COLUMNS[index].0))
             }
+            Setting::Center => {
+                let index = center_now(config).map_or(0, |i| (i + 1) % CENTER_SIZES.len());
+                let (columns, rows, _) = CENTER_SIZES[index];
+                Some(Change::CenterSize { columns, rows })
+            }
+            Setting::CenterHolds => {
+                let index = (holds_now(config) + 1) % CENTER_CONTENTS.len();
+                Some(Change::CenterContents(CENTER_CONTENTS[index].0))
+            }
             Setting::Browser => Some(Change::Browser(!config.browser.enabled)),
             Setting::OpenFile | Setting::Done => None,
+        }
+    }
+
+    /// Whether this square does anything where the config currently stands.
+    ///
+    /// Greyed rather than removed, the same rule the edit options follow: the
+    /// squares must never reshuffle under the pointer.
+    pub fn applies(self, config: &Config) -> bool {
+        match self {
+            // Nothing to fill when there is no block.
+            Setting::CenterHolds => config.favorites.on(),
+            _ => true,
         }
     }
 }
@@ -154,6 +222,29 @@ fn columns_now(config: &Config) -> Option<usize> {
     COLUMNS
         .iter()
         .position(|(n, _)| *n == config.grid.max_columns)
+}
+
+/// Which shape the block is on, or `None` for one typed into the file that is
+/// not on the list.
+///
+/// Off is off however it was written: `rows = 0` with a width still set is the
+/// same block as no block, and a square that called that "as set" would take
+/// two clicks to turn anything on.
+fn center_now(config: &Config) -> Option<usize> {
+    let f = &config.favorites;
+    if !f.on() {
+        return Some(0);
+    }
+    CENTER_SIZES
+        .iter()
+        .position(|(cols, rows, _)| *cols == f.columns && *rows == f.rows)
+}
+
+fn holds_now(config: &Config) -> usize {
+    CENTER_CONTENTS
+        .iter()
+        .position(|(c, _)| *c == config.favorites.contents)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -212,6 +303,98 @@ mod tests {
     fn the_two_squares_that_are_not_values_write_nothing() {
         assert_eq!(Setting::OpenFile.next(&config()), None);
         assert_eq!(Setting::Done.next(&config()), None);
+    }
+
+    #[test]
+    fn the_centre_square_steps_through_its_shapes_and_wraps_to_off() {
+        let mut c = config();
+        c.favorites.columns = 4;
+        c.favorites.rows = 4;
+        assert_eq!(Setting::Center.label(&c), "Center \u{00B7} 4 \u{00D7} 4");
+        assert_eq!(
+            Setting::Center.next(&c),
+            Some(Change::CenterSize { columns: 0, rows: 0 })
+        );
+
+        c.favorites.columns = 0;
+        c.favorites.rows = 0;
+        assert_eq!(Setting::Center.label(&c), "Center \u{00B7} off");
+        assert_eq!(
+            Setting::Center.next(&c),
+            Some(Change::CenterSize { columns: 2, rows: 1 })
+        );
+    }
+
+    #[test]
+    fn the_default_block_is_a_shape_the_square_can_name() {
+        assert_eq!(Setting::Center.label(&config()), "Center \u{00B7} 3 \u{00D7} 3");
+    }
+
+    #[test]
+    fn a_block_switched_off_with_a_width_still_set_reads_as_off() {
+        // How the square leaves it: turning the block off writes both numbers,
+        // and a hand-edited `rows = 0` beside a width has to mean the same
+        // thing or the square takes two clicks to turn anything back on.
+        let mut c = config();
+        c.favorites.rows = 0;
+        assert_eq!(Setting::Center.label(&c), "Center \u{00B7} off");
+        assert_eq!(
+            Setting::Center.next(&c),
+            Some(Change::CenterSize { columns: 2, rows: 1 })
+        );
+    }
+
+    #[test]
+    fn a_centre_shape_off_the_list_is_named_not_snapped() {
+        let mut c = config();
+        c.favorites.columns = 1;
+        c.favorites.rows = 4;
+        assert_eq!(Setting::Center.label(&c), "Center \u{00B7} as set");
+        assert_eq!(
+            Setting::Center.next(&c),
+            Some(Change::CenterSize { columns: 0, rows: 0 })
+        );
+    }
+
+    #[test]
+    fn what_the_centre_holds_steps_through_all_four_and_wraps() {
+        let mut c = config();
+        c.favorites.contents = Contents::Split;
+        assert_eq!(Setting::CenterHolds.label(&c), "Center \u{00B7} apps + sites");
+        assert_eq!(
+            Setting::CenterHolds.next(&c),
+            Some(Change::CenterContents(Contents::One))
+        );
+
+        c.favorites.contents = Contents::Sites;
+        assert_eq!(Setting::CenterHolds.label(&c), "Center \u{00B7} sites only");
+        assert_eq!(
+            Setting::CenterHolds.next(&c),
+            Some(Change::CenterContents(Contents::Split))
+        );
+    }
+
+    #[test]
+    fn the_contents_square_greys_out_when_there_is_no_block_to_fill() {
+        let mut c = config();
+        c.favorites.rows = 0;
+        assert!(!Setting::CenterHolds.applies(&c));
+        // And every other square still applies, so nothing else went grey with it.
+        for setting in SETTINGS.iter().filter(|s| **s != Setting::CenterHolds) {
+            assert!(setting.applies(&c), "{setting:?} went grey");
+        }
+    }
+
+    #[test]
+    fn every_centre_shape_survives_the_configs_own_range_check() {
+        for (columns, rows, label) in CENTER_SIZES {
+            let mut c = config();
+            c.favorites.columns = columns;
+            c.favorites.rows = rows;
+            let checked = c.validated();
+            assert_eq!(checked.favorites.rows, rows, "{label} lost its height");
+            assert_eq!(checked.favorites.columns, columns, "{label} lost its width");
+        }
     }
 
     #[test]

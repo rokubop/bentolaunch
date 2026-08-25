@@ -71,6 +71,7 @@ impl WindowInfo {
             icon_source: self.exe.as_ref().map(|p| p.to_string_lossy().into_owned()),
             app: self.app(),
             origin: crate::config::Source::Windows,
+            link: None,
             running: None,
             group: 0,
         }
