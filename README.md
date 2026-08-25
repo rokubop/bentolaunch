@@ -14,41 +14,25 @@ Windows 11 only.
 
 ### 1. The app
 
-1. Download [bentopick.exe](https://github.com/rokubop/bentopick/releases/latest/download/bentopick.exe),
-   or pick it off the [latest release](https://github.com/rokubop/bentopick/releases/latest).
-2. Paste `%LOCALAPPDATA%\Programs` into the Explorer address bar, make a
-   `bentopick` folder there, and move the exe into it.
-3. Run it. Windows warns about an unrecognised app: **More info** -> **Run anyway**.
-4. Press `` Alt+` ``.
-
-Not `Program Files`. BentoPick writes its settings next to the exe, and that
-folder needs admin to write to. Anywhere permanent that you own is fine.
-
-Tray icon only, no window until you summon it. To update, copy a newer exe over
-the old one.
+1. Download [bentopick.exe](https://github.com/rokubop/bentopick/releases/latest/download/bentopick.exe).
+2. Put it in `%LOCALAPPDATA%\Programs\bentopick` (not `Program Files`).
+3. Run it. Windows warns about an unrecognised app: **More info** > **Run anyway**.
+4. Press `` Alt+` `` to summon it.
 
 ### 2. Browser support
 
-Required for anything from the browser: open tabs and bookmarks. Without it the
-grid still shows browser windows, but not what is in them. Chromium for now.
+Required for tabs and bookmarks. Chromium for now.
 
-1. Download `bentopick-extension.zip` from the
-   [same release](https://github.com/rokubop/bentopick/releases/latest) and unzip it.
-2. Go to `chrome://extensions`, turn on Developer mode, click **Load unpacked**,
-   pick the unzipped folder. It appears as **BentoPick bridge**.
-3. Right-click the BentoPick tray icon: **Browser > Pair a browser...**. It
-   shows six digits.
-4. On the BentoPick bridge card click **Details > Extension options**, type the
-   digits, click **Pair with BentoPick**.
-
-Tabs appear in the grid straight away. To unpair: **Browser > Forget**.
+1. Download and unzip `bentopick-extension.zip` from the
+   [same release](https://github.com/rokubop/bentopick/releases/latest).
+2. `chrome://extensions` > Developer mode > **Load unpacked** > the folder.
+3. Tray icon > **Browser > Pair a browser...**. It shows six digits.
+4. On the **BentoPick bridge** card: **Details > Extension options**, type them,
+   **Pair with BentoPick**.
 
 ### Start it at login
 
-Press Win+R, type `shell:startup`, Enter. Put a shortcut to `bentopick.exe` in
-the folder that opens.
-
-Delete the shortcut to undo it.
+Win+R, `shell:startup`, and put a shortcut to the exe in the folder that opens.
 
 ## Build from source
 
