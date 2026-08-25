@@ -45,11 +45,12 @@ use crate::safety;
 use crate::shell::{activate, arrange, icons, picker};
 use crate::ui::filter;
 use crate::ui::grid::{
-    Band, BoxState, Command, Control, Lane, Layout, Metrics, Rect as GridRect, SectionShape,
+    Band, BoxState, CenterState, Command, Control, Lane, Layout, Metrics, Rect as GridRect,
+    SectionShape,
     centred_grid, commands, controls, origin_run, reordered,
 };
 use crate::ui::menu;
-use crate::ui::settings::{SETTINGS, Setting};
+use crate::ui::settings::{self, SETTINGS, Setting};
 use crate::ui::render::{Badge, Mark, OptionPaint, Renderer, TextColors, TilePaint, d2d_color};
 use crate::ui::spotlight::Spotlight;
 use crate::ui::tray;
@@ -1111,6 +1112,11 @@ impl Panel {
                 && let Ok(surface) = renderer.create_surface(rect.w, rect.h)
             {
                 let (glyph, label) = match &state {
+                    // The block is beside the square, so this one says what
+                    // it holds now rather than naming the question again.
+                    Some(_) if control == Control::CenterHolds => {
+                        (control.glyph(), settings::center_holds_said(&self.config))
+                    }
                     Some(state) => control.wording(state),
                     None => (control.glyph(), control.label()),
                 };
@@ -2476,10 +2482,25 @@ impl Panel {
         let g = &self.config.grid;
         controls(
             GridRect { x: 0.0, y: 0.0, w: self.layout.panel.w, h: self.layout.panel.h },
+            self.editing_center(),
             g.tile_width * scale,
             g.tile_height * scale,
             g.gap * scale,
         )
+    }
+
+    /// The block's own section, which is the one edit mode points at for
+    /// either of its halves. They are two boxes on the grid and one thing to
+    /// configure, so picking either lights both and answers as one.
+    fn center_section(&self) -> Option<usize> {
+        self.sections.iter().position(|s| s.center.is_some())
+    }
+
+    /// Whether the box being edited is the centre block.
+    fn editing_center(&self) -> bool {
+        self.edit
+            .and_then(|section| self.sections.get(section))
+            .is_some_and(|section| section.center.is_some())
     }
 
     /// Run whatever the clicked button means. Every one of these is also a key,
@@ -2507,6 +2528,22 @@ impl Panel {
             Control::Left | Control::Right | Control::FullWidth => {
                 let Some(lane) = control.lane() else { return };
                 self.edit_placement(|p| p.side = Some(lane.word().to_owned()));
+            }
+            // The block's shape and its lists, off the same tables the
+            // settings squares step. One list of shapes, whichever surface is
+            // asking, so the two cannot drift apart.
+            Control::CenterSmaller | Control::CenterBigger => {
+                let delta = if control == Control::CenterBigger { 1 } else { -1 };
+                if let Some(change) = settings::center_resize(&self.config, delta)
+                    && pins::set(change)
+                {
+                    self.reload_config();
+                }
+            }
+            Control::CenterHolds => {
+                if pins::set(settings::center_holds_next(&self.config)) {
+                    self.reload_config();
+                }
             }
             Control::MoveUp | Control::MoveDown => {
                 let Some(title) = self.edit_title() else { return };
@@ -2554,6 +2591,10 @@ impl Panel {
             .map(|s| s.title.as_str())
             .collect();
         let at_lane = siblings.iter().position(|name| *name == title).unwrap_or(0);
+        let center = self.editing_center().then(|| {
+            let (size, sizes) = settings::center_steps(&self.config);
+            CenterState { size, sizes }
+        });
 
         Some(BoxState {
             shown: self.sections.get(section).map_or(0, |s| s.items.len()),
@@ -2562,6 +2603,7 @@ impl Panel {
             boxes: self.layout.bands().len(),
             at_lane,
             lane_len: siblings.len(),
+            center,
         })
     }
 
@@ -2743,7 +2785,12 @@ impl Panel {
     /// Selected beats hovered: the box the buttons belong to has to stay
     /// obvious while the pointer wanders over its neighbours.
     fn box_color(&self, band: usize) -> Color {
-        let section = self.layout.bands().get(band).map(|band| band.section);
+        let band = self.layout.bands().get(band);
+        // Both halves of the block light together: one thing to configure.
+        let section = match band.is_some_and(|band| band.center) && self.editing_center() {
+            true => self.edit,
+            false => band.map(|band| band.section),
+        };
         let theme = &self.config.theme;
         if section == self.edit {
             veil(color_of(&theme.tile_selected), 0.62)
@@ -2774,17 +2821,18 @@ impl Panel {
 
     /// Which box a panel-local point falls in, for editing.
     ///
-    /// The centre is not one of them. It is not in the tree, so none of the
-    /// options - claim a side, move up the stack, take more of a cut - has
-    /// anything to say about it, and picking it would light up a box whose
-    /// every button then did nothing. The tree band underneath answers instead,
-    /// which is the box the click is actually over.
+    /// The centre counts, and is looked for first: its band sits inside the
+    /// rectangle of whatever box wrapped around it, so the tree band would
+    /// answer for a click that landed squarely on the block.
     fn box_at(&self, x: f32, y: f32) -> Option<&Band> {
         let content_y = y + self.scroll;
-        self.layout
-            .bands()
-            .iter()
-            .find(|band| !band.center && band.rect.contains(x, content_y))
+        let hit = |center: bool| {
+            self.layout
+                .bands()
+                .iter()
+                .find(move |band| band.center == center && band.rect.contains(x, content_y))
+        };
+        hit(true).or_else(|| hit(false))
     }
 
     /// Point edit mode at whichever box covers a panel-local point. Bands tile
@@ -2796,7 +2844,12 @@ impl Panel {
         // Clicking the picked box again puts the options away. The overlay sits
         // over the middle of the panel, so there has to be a way to clear it
         // without leaving the mode.
-        let section = band.section;
+        // Either half of the block means the block. They are two boxes on the
+        // grid and one thing to configure.
+        let section = match band.center {
+            true => self.center_section().unwrap_or(band.section),
+            false => band.section,
+        };
         self.edit = if self.edit == Some(section) { None } else { Some(section) };
         let _ = self.rebuild_visuals();
     }
@@ -2904,6 +2957,9 @@ impl Panel {
     /// What a header says while its layout is being edited: where the box sits
     /// and how much of its list it is showing.
     fn edit_header(&self, _band: usize, title: &str) -> String {
+        if title.is_empty() {
+            return String::new();
+        }
         let placement = self.placement_of(title);
         let shown = match placement.max_items {
             0 => String::from("all"),

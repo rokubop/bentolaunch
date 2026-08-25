@@ -58,11 +58,13 @@ const CENTER_SIZES: [(usize, usize, &str); 6] = [
 
 /// What the block holds, and whether the two lists are kept apart. One square
 /// stepping through all four, because they are four answers to one question.
-const CENTER_CONTENTS: [(Contents, &str); 4] = [
-    (Contents::Split, "Center \u{00B7} apps + sites"),
-    (Contents::One, "Center \u{00B7} one block"),
-    (Contents::Apps, "Center \u{00B7} apps only"),
-    (Contents::Sites, "Center \u{00B7} sites only"),
+/// The settings square says the whole thing; the edit-layout square has the
+/// block right there beside it and only needs the answer.
+const CENTER_CONTENTS: [(Contents, &str, &str); 4] = [
+    (Contents::Split, "Center \u{00B7} apps + sites", "Apps + sites"),
+    (Contents::One, "Center \u{00B7} one block", "One block"),
+    (Contents::Apps, "Center \u{00B7} apps only", "Apps only"),
+    (Contents::Sites, "Center \u{00B7} sites only", "Sites only"),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -230,6 +232,41 @@ fn columns_now(config: &Config) -> Option<usize> {
 /// Off is off however it was written: `rows = 0` with a width still set is the
 /// same block as no block, and a square that called that "as set" would take
 /// two clicks to turn anything on.
+/// The centre block's shape as a step in the list of shapes it can take, and
+/// how many steps there are. `0` is off.
+///
+/// Public because edit layout drives the same list from its own squares: the
+/// block is a box on the panel, and the shapes it can take are the same shapes
+/// whichever surface is asking.
+pub fn center_steps(config: &Config) -> (usize, usize) {
+    (center_now(config).unwrap_or(0), CENTER_SIZES.len())
+}
+
+/// Step the block's shape by one, never onto `off` - that is the settings
+/// square's job, and a button here that could switch the block off would leave
+/// nothing to click to switch it back on.
+pub fn center_resize(config: &Config, delta: isize) -> Option<Change> {
+    let (now, count) = center_steps(config);
+    let next = now.checked_add_signed(delta)?;
+    if next == 0 || next >= count {
+        return None;
+    }
+    let (columns, rows, _) = CENTER_SIZES[next];
+    Some(Change::CenterSize { columns, rows })
+}
+
+/// Step what the block holds, wrapping. Four answers to one question.
+pub fn center_holds_next(config: &Config) -> Change {
+    let index = (holds_now(config) + 1) % CENTER_CONTENTS.len();
+    Change::CenterContents(CENTER_CONTENTS[index].0)
+}
+
+/// What the block is holding, said short. The block is right beside the square
+/// that says it, so it does not need to name itself again.
+pub fn center_holds_said(config: &Config) -> &'static str {
+    CENTER_CONTENTS[holds_now(config)].2
+}
+
 fn center_now(config: &Config) -> Option<usize> {
     let f = &config.favorites;
     if !f.on() {
@@ -243,7 +280,7 @@ fn center_now(config: &Config) -> Option<usize> {
 fn holds_now(config: &Config) -> usize {
     CENTER_CONTENTS
         .iter()
-        .position(|(c, _)| *c == config.favorites.contents)
+        .position(|(c, ..)| *c == config.favorites.contents)
         .unwrap_or(0)
 }
 

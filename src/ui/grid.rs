@@ -754,6 +754,12 @@ pub enum Control {
     MoveDown,
     Fewer,
     More,
+    /// The centre block's own options. It is not in the tree - it claims its
+    /// rectangle first and the boxes wrap around it - so no lane means
+    /// anything to it. A shape and a pair of lists is all it has.
+    CenterSmaller,
+    CenterBigger,
+    CenterHolds,
     Done,
 }
 
@@ -793,6 +799,10 @@ impl Control {
             Control::MoveDown => "\u{2193}",
             Control::Fewer => "\u{2212}",
             Control::More => "+",
+            Control::CenterSmaller => "\u{2192}\u{2190}",
+            Control::CenterBigger => "\u{2194}",
+            // The same mark the settings square for this wears.
+            Control::CenterHolds => "\u{25EB}",
             Control::Done => "\u{2713}",
         }
     }
@@ -808,6 +818,9 @@ impl Control {
             Control::MoveDown => "Move down",
             Control::Fewer => "Fewer tiles",
             Control::More => "More tiles",
+            Control::CenterSmaller => "Smaller",
+            Control::CenterBigger => "Bigger",
+            Control::CenterHolds => "What it holds",
             Control::Done => "Done",
         }
     }
@@ -843,6 +856,22 @@ pub struct BoxState {
     /// Where it comes down its own lane, and how many are in that lane.
     pub at_lane: usize,
     pub lane_len: usize,
+    /// Set when the box being edited is the centre block, which answers a
+    /// different set of questions from every other box on the panel.
+    pub center: Option<CenterState>,
+}
+
+/// The centre block as its options need to see it.
+///
+/// A shape and a pair of lists, and nothing about lanes: the block is not in
+/// the tree, so left, right and full mean nothing to it. The shapes themselves
+/// live with the settings squares, which step the same list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CenterState {
+    /// Where its shape sits in the list of shapes it can take, and how many
+    /// there are. `0` is off.
+    pub size: usize,
+    pub sizes: usize,
 }
 
 impl Control {
@@ -854,8 +883,22 @@ impl Control {
     /// "share the row", one tile fewer became "show all of them". A layout
     /// breaking under someone being careful is the thing this prevents.
     pub fn allowed(self, state: &BoxState) -> bool {
+        // The centre answers a different set of questions, and none of the
+        // others. It is not in the tree, so no lane means anything to it, and
+        // it holds a fixed number of slots rather than a list to show more of.
+        if let Some(center) = state.center {
+            return match self {
+                Control::Done => true,
+                Control::CenterSmaller => center.size > 1,
+                Control::CenterBigger => center.size + 1 < center.sizes,
+                Control::CenterHolds => center.size > 0,
+                _ => false,
+            };
+        }
         match self {
             Control::Done => true,
+            // Only the centre is asked these.
+            Control::CenterSmaller | Control::CenterBigger | Control::CenterHolds => false,
             Control::Fewer => state.shown > 1,
             Control::More => state.shown < state.total,
             // Nothing to divide the panel with.
@@ -876,6 +919,23 @@ impl Control {
 /// Reading order, four to a row.
 /// Reading order, five to a row.
 /// Reading order, four to a row.
+/// The centre block's own row.
+///
+/// Four, because four is all there is to say to it. It is not in the tree, so
+/// there is no lane to pick and nowhere to move it to - it claims the middle of
+/// the screen and the boxes wrap around it. What is left is how big and what it
+/// holds.
+///
+/// Switching it off is not here. Off, it has no tiles, so it is not a box on
+/// the panel any more - and a square that made the thing you are editing
+/// unreachable is a one-way door. The settings square owns that.
+pub const CENTER_CONTROLS: [Control; 4] = [
+    Control::CenterSmaller,
+    Control::CenterBigger,
+    Control::CenterHolds,
+    Control::Done,
+];
+
 /// Two rows of four. Three answers about the x axis, two about the order down
 /// a lane, two about how much of its list a box shows, and the way out.
 ///
@@ -930,12 +990,13 @@ pub fn centred_grid(panel: Rect, count: usize, tile_w: f32, tile_h: f32, gap: f3
         .collect()
 }
 
-/// The option tiles for the box being edited.
-pub fn controls(panel: Rect, tile_w: f32, tile_h: f32, gap: f32) -> Vec<(Control, Rect)> {
-    CONTROLS
-        .iter()
+/// The option tiles for the box being edited, which set depending on whether
+/// that box is the centre block.
+pub fn controls(panel: Rect, center: bool, tile_w: f32, tile_h: f32, gap: f32) -> Vec<(Control, Rect)> {
+    let set: &[Control] = if center { &CENTER_CONTROLS } else { &CONTROLS };
+    set.iter()
         .copied()
-        .zip(centred_grid(panel, CONTROLS.len(), tile_w, tile_h, gap))
+        .zip(centred_grid(panel, set.len(), tile_w, tile_h, gap))
         .collect()
 }
 
@@ -1845,7 +1906,7 @@ mod tests {
 
     #[test]
     fn every_option_gets_a_tile_sized_square() {
-        let placed = controls(PANEL, 140.0, 100.0, 10.0);
+        let placed = controls(PANEL, false, 140.0, 100.0, 10.0);
         assert_eq!(placed.len(), CONTROLS.len());
         for (control, rect) in &placed {
             assert_eq!((rect.w, rect.h), (140.0, 100.0), "{control:?} is not tile sized");
@@ -1858,7 +1919,7 @@ mod tests {
     fn the_options_are_centred_in_the_panel() {
         // Middle of the screen is the cheapest place for a gaze pointer to
         // reach, so this is the property that matters most.
-        let placed = controls(PANEL, 140.0, 100.0, 10.0);
+        let placed = controls(PANEL, false, 140.0, 100.0, 10.0);
         let left = placed.iter().map(|(_, r)| r.x).fold(f32::MAX, f32::min);
         let right = placed.iter().map(|(_, r)| r.x + r.w).fold(0.0, f32::max);
         let top = placed.iter().map(|(_, r)| r.y).fold(f32::MAX, f32::min);
@@ -1870,7 +1931,7 @@ mod tests {
 
     #[test]
     fn options_do_not_overlap() {
-        let placed = controls(PANEL, 140.0, 100.0, 10.0);
+        let placed = controls(PANEL, false, 140.0, 100.0, 10.0);
         for (a, (_, one)) in placed.iter().enumerate() {
             for (_, other) in placed.iter().skip(a + 1) {
                 let apart = one.x + one.w <= other.x
@@ -1887,7 +1948,7 @@ mod tests {
         // A panel narrower than the option grid still has to put every tile
         // somewhere clickable rather than off the left edge.
         let tiny = Rect { x: 0.0, y: 0.0, w: 300.0, h: 200.0 };
-        let placed = controls(tiny, 140.0, 100.0, 10.0);
+        let placed = controls(tiny, false, 140.0, 100.0, 10.0);
         for (control, rect) in &placed {
             assert!(rect.x >= 0.0 && rect.y >= 0.0, "{control:?} sits off the panel");
         }
@@ -1897,7 +1958,7 @@ mod tests {
     fn a_plate_drawn_round_the_options_covers_all_of_them() {
         // The options sit on a plate derived from where they landed. If the two
         // ever disagree, a square hangs off the edge of its own backing.
-        let placed = controls(PANEL, 140.0, 100.0, 10.0);
+        let placed = controls(PANEL, false, 140.0, 100.0, 10.0);
         let margin = 10.0;
         let left = placed.iter().map(|(_, r)| r.x).fold(f32::MAX, f32::min) - margin;
         let top = placed.iter().map(|(_, r)| r.y).fold(f32::MAX, f32::min) - margin;
@@ -1918,7 +1979,7 @@ mod tests {
         // What the panel hit-tests against, so a click on a greyed square, or
         // in the space beside one, does not fall through to the box behind.
         let panel = Rect { x: 0.0, y: 0.0, w: 1376.0, h: 632.0 };
-        let placed = controls(panel, 140.0, 100.0, 10.0);
+        let placed = controls(panel, false, 140.0, 100.0, 10.0);
         let margin = 10.0;
         let left = placed.iter().map(|(_, r)| r.x).fold(f32::MAX, f32::min) - margin;
         let top = placed.iter().map(|(_, r)| r.y).fold(f32::MAX, f32::min) - margin;
@@ -2042,6 +2103,7 @@ mod tests {
             boxes: 3,
             at_lane: 1,
             lane_len: 3,
+            center: None,
         }
     }
 
@@ -2089,6 +2151,63 @@ mod tests {
         let state = BoxState { shown: 32, total: 32, ..placed() };
         assert!(!Control::More.allowed(&state));
         assert!(Control::Fewer.allowed(&state));
+    }
+
+    #[test]
+    fn the_centre_is_asked_a_different_set_of_questions() {
+        // It is not in the tree, so no lane means anything to it and there is
+        // nowhere to move it to. A shape and a pair of lists is all it has.
+        let block = BoxState {
+            center: Some(CenterState { size: 3, sizes: 6 }),
+            ..placed()
+        };
+        let on_the_block: Vec<Control> = CENTER_CONTROLS
+            .iter()
+            .copied()
+            .filter(|c| c.allowed(&block))
+            .collect();
+        assert_eq!(on_the_block, CENTER_CONTROLS, "every square on its row applies");
+        for control in CONTROLS.iter().filter(|c| **c != Control::Done) {
+            assert!(!control.allowed(&block), "{control:?} applies to the centre");
+        }
+        // And nothing on the block's own row applies to an ordinary box.
+        for control in CENTER_CONTROLS.iter().filter(|c| **c != Control::Done) {
+            assert!(!control.allowed(&placed()), "{control:?} applies to a box in the tree");
+        }
+    }
+
+    #[test]
+    fn the_block_cannot_be_stepped_off_either_end_of_its_shapes() {
+        // Nor onto `off`, which is step zero: the settings square owns that,
+        // because a block that is off has no tiles to click to bring it back.
+        let smallest = BoxState {
+            center: Some(CenterState { size: 1, sizes: 6 }),
+            ..placed()
+        };
+        assert!(!Control::CenterSmaller.allowed(&smallest));
+        assert!(Control::CenterBigger.allowed(&smallest));
+
+        let biggest = BoxState {
+            center: Some(CenterState { size: 5, sizes: 6 }),
+            ..placed()
+        };
+        assert!(Control::CenterSmaller.allowed(&biggest));
+        assert!(!Control::CenterBigger.allowed(&biggest));
+    }
+
+    #[test]
+    fn the_two_option_sets_are_laid_out_the_same_way() {
+        // Same size, same corner, same middle of the screen. The block is a box
+        // being edited like any other; only what it can be told differs.
+        let block = controls(PANEL, true, 140.0, 100.0, 10.0);
+        assert_eq!(block.len(), CENTER_CONTROLS.len());
+        for (control, rect) in &block {
+            assert_eq!((rect.w, rect.h), (140.0, 100.0), "{control:?} is not tile sized");
+            assert!(!control.label().is_empty(), "{control:?} has no words");
+        }
+        let left = block.iter().map(|(_, r)| r.x).fold(f32::MAX, f32::min);
+        let right = block.iter().map(|(_, r)| r.x + r.w).fold(0.0, f32::max);
+        assert!((left - (PANEL.w - right)).abs() < 0.5, "the block's row is not centred");
     }
 
     #[test]
@@ -2150,6 +2269,7 @@ mod tests {
             boxes: 1,
             at_lane: 0,
             lane_len: 1,
+            center: None,
         };
         assert_eq!(offered(&stuck), [Control::Done]);
     }
