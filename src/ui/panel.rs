@@ -459,6 +459,37 @@ impl Panel {
             .flat_map(|s| s.items.iter().cloned())
             .collect();
         self.layout = Layout::compute(&self.shapes(), self.metrics(), work_area());
+        self.fit_window();
+    }
+
+    /// Size the window to the layout it now has.
+    ///
+    /// Every path that recomputes the layout while the panel is up needs this.
+    /// A mode adds a box on the way in and takes it away on the way out, and
+    /// the panel is positioned from its own height, so both the size and the
+    /// place change. Without it the grid is drawn for a panel taller than the
+    /// window and the bottom row is clipped off the edge - which is the modes
+    /// bar, and the corner button with it.
+    ///
+    /// Only while visible: `show` calls this before it has a window on screen,
+    /// and does its own `SWP_SHOWWINDOW` afterwards.
+    fn fit_window(&self) {
+        if !self.visible {
+            return;
+        }
+        let p = self.layout.panel;
+        // SAFETY: our own window; SWP_NOACTIVATE keeps focus where it is.
+        unsafe {
+            let _ = SetWindowPos(
+                self.hwnd,
+                Some(HWND_TOPMOST),
+                p.x as i32,
+                p.y as i32,
+                p.w as i32,
+                p.h as i32,
+                SWP_NOACTIVATE,
+            );
+        }
     }
 
     /// Emptied sections stay in the list: the layout skips them, and removing
@@ -2140,21 +2171,6 @@ impl Panel {
         }
 
         self.frame_target();
-
-        let p = self.layout.panel;
-        // SAFETY: our own window; SWP_NOACTIVATE keeps focus where it is.
-        unsafe {
-            let _ = SetWindowPos(
-                self.hwnd,
-                Some(HWND_TOPMOST),
-                p.x as i32,
-                p.y as i32,
-                p.w as i32,
-                p.h as i32,
-                SWP_NOACTIVATE,
-            );
-        }
-
         self.hover = None;
         if let Err(e) = self.rebuild_visuals() {
             log_error!("could not rebuild the grid: {e}");
