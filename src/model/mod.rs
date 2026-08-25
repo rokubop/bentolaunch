@@ -260,6 +260,14 @@ pub struct Section {
     pub items: Vec<Item>,
     /// Tint behind the box, straight off config.
     pub color: Option<String>,
+    /// Ring round the box, and the colour of its title. `None` takes a colour
+    /// off the theme's palette by `slot` instead.
+    pub edge: Option<String>,
+    /// Where this section sits in the config file, which is what the palette is
+    /// dealt out by. Not its place in the grid: an empty section never reaches
+    /// the panel, and a colour that shifted when a browser connected would be
+    /// no use for finding a box by.
+    pub slot: usize,
     /// How many items the section had before `max_items` cut it down. Edit
     /// mode needs it: "more tiles" has to stop at the number that exist.
     pub total: usize,

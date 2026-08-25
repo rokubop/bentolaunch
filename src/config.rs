@@ -375,6 +375,10 @@ pub struct SectionConfig {
     /// reads as a tint rather than as a second surface.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// Ring around the box, and the colour of its title. `"#AARRGGBB"` or
+    /// `"#RRGGBB"`. Unset takes the next colour off `theme.section_edges`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge: Option<String>,
     /// Where this box sits, as cuts from the whole panel inward.
     ///
     /// `"left"` is the whole left side. `"right/top"` is the top of what is
@@ -454,11 +458,20 @@ pub struct Grid {
     /// default: at compact tile sizes the title alone is what identifies a tile,
     /// and the second line costs a row of tiles across the whole panel.
     pub show_detail: bool,
-    /// Height of a section header.
+    /// Height of the title plate that rides the ring round a box.
+    ///
+    /// Not a row above the tiles any more: it costs no layout at all, so this
+    /// is how tall the mark on the line is and nothing else. `0` hides titles.
     pub header_height: f32,
-    /// Breathing room between a section title and its first row of tiles.
+    /// How far along the ring's top edge the title sits, from the box's left
+    /// corner. Enough to clear the corner arc.
     pub header_gap: f32,
-    /// Extra space above each section after the first.
+    /// Clear rows between a box and the box stacked under it. In pixels, and
+    /// rounded to whole rows - anything under half a row is none.
+    ///
+    /// Never a fraction of a row. The panel is one lattice and every tile in
+    /// every box sits on it, so a box cannot be nudged off it to be told apart
+    /// from its neighbour. The coloured ring is what does that.
     pub section_gap: f32,
     pub corner_radius: f32,
     /// Filter strip. Only appears while there is a query. 0 filters silently.
@@ -494,12 +507,9 @@ pub struct Theme {
     /// The logo's own warm colour. Selection, drag and this are one family told
     /// apart by weight, so nothing on the panel is accented in a second hue.
     pub tile_target: String,
-    /// Line around each box. Faint on purpose: it says where one box ends and
-    /// the next begins, which the tiles alone cannot, and it has to do that
-    /// without competing with them. `"#00000000"` turns it off.
-    ///
-    /// Boxes tile the panel with no gaps, so these lines meet and read as the
-    /// seams of the bento rather than as a border round each box.
+    /// What a box's ring is drawn in when `section_edges` is empty. One colour
+    /// for every box, which is the panel as it was before boxes wore colours of
+    /// their own. `"#00000000"` turns rings off altogether.
     pub box_edge: String,
     /// Line around the centre block, and the seam down the middle of it.
     ///
@@ -507,6 +517,18 @@ pub struct Theme {
     /// on the panel that is *in front of* the layout rather than part of it.
     /// The accent again, so nothing is picked out in a second hue.
     pub center_edge: String,
+    /// Ring colours dealt out to sections in order, when a section does not
+    /// name its own `edge`.
+    ///
+    /// The ring is what says which box this is, which is what lets the title
+    /// shrink to a mark on it instead of taking a row above it. A panel nobody
+    /// has configured still comes out with its boxes told apart.
+    ///
+    /// No amber in here. That hue belongs to the centre block and the tile it
+    /// is pointed at, and a box ring wearing it would read as one of those.
+    /// Empty falls back to `box_edge` for every box, which is the old
+    /// one-colour panel.
+    pub section_edges: Vec<String>,
 }
 
 /// Browsers, grouped together because that is how they are thought about. Any
@@ -528,6 +550,7 @@ fn section(title: &str, sources: &[SourceSpec]) -> SectionConfig {
         source: Sources(sources.to_vec()),
         matches: Vec::new(),
         color: None,
+        edge: None,
         at: None,
         columns: 0,
         max_items: 0,
@@ -575,7 +598,7 @@ impl Default for Config {
                 placed(
                     "Browsing",
                     &[group(Source::Windows, BROWSERS), SourceSpec::Plain(Source::Tabs)],
-                    "right@50",
+                    "right/bottom",
                 ),
                 section(
                     "Active",
@@ -584,6 +607,18 @@ impl Default for Config {
                         SourceSpec::Plain(Source::Windows),
                     ],
                 ),
+                // Bookmarks are a box of their own, above the tabs rather than
+                // merged in with them. Three groups under one header told
+                // apart only by an alternating tile fill said "these belong
+                // together" about two lists that answer different questions:
+                // somewhere you go, and somewhere you already are. The row a
+                // second box used to cost is what kept them merged, and a
+                // title costs no row now.
+                //
+                // Listed after the running sections so the panel still reads
+                // top to bottom as switch-to before launch. Where it lands is
+                // `at`'s business, not the list's.
+                placed("Bookmarks", &[SourceSpec::Plain(Source::Bookmarks)], "right/top"),
                 section(
                     "Launch",
                     &[SourceSpec::Plain(Source::Taskbar), SourceSpec::Plain(Source::Manual)],
@@ -621,9 +656,9 @@ impl Default for Grid {
             max_columns: 9,
             label_height: 24.0,
             show_detail: false,
-            header_height: 22.0,
-            header_gap: 6.0,
-            section_gap: 10.0,
+            header_height: 16.0,
+            header_gap: 14.0,
+            section_gap: 0.0,
             corner_radius: 8.0,
             search_height: 72.0,
         }
@@ -644,6 +679,17 @@ impl Default for Theme {
             tile_target: "#FFFFC24B".into(),
             box_edge: "#14FFFFFF".into(),
             center_edge: "#66FFC24B".into(),
+            // Quieter than `center_edge` on purpose: the block is in front of
+            // the layout and has to win. Far enough apart in hue to be told
+            // apart at a glance from the middle of the screen, which is the
+            // only way this gets read.
+            section_edges: vec![
+                "#5A4FD1C5".into(),
+                "#5AA78BFA".into(),
+                "#5A60A5FA".into(),
+                "#5AF472B6".into(),
+                "#5A6EE7A8".into(),
+            ],
         }
     }
 }
@@ -931,8 +977,8 @@ mod tests {
         let text = toml::to_string_pretty(&Config::default()).unwrap();
         let back: Config = toml::from_str(&text).unwrap();
         assert_eq!(back.hotkey, Config::default().hotkey);
-        // Three of content, then the two bars along the bottom.
-        assert_eq!(back.sections.len(), 5);
+        // Four of content, then the two bars along the bottom.
+        assert_eq!(back.sections.len(), 6);
         assert!(back.sections[0].source.contains(Source::Tabs));
         assert_eq!(back.favorites.rows, Config::default().favorites.rows);
         assert_eq!(back.favorites.columns, Config::default().favorites.columns);

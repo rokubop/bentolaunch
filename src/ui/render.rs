@@ -11,13 +11,16 @@ use windows::Graphics::DirectX::{DirectXAlphaMode, DirectXPixelFormat};
 use windows::UI::Composition::{CompositionDrawingSurface, CompositionGraphicsDevice, Compositor};
 use windows::Win32::Foundation::{HMODULE, POINT, RECT};
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_U,
+    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_FIGURE_BEGIN_HOLLOW,
+    D2D1_FIGURE_END_CLOSED, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_F, D2D_SIZE_U,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_PROPERTIES1, D2D1_DRAW_TEXT_OPTIONS_NONE,
-    D2D1_ELLIPSE, D2D1_FACTORY_TYPE_SINGLE_THREADED,
-    D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1Bitmap1,
-    ID2D1Device, ID2D1DeviceContext, ID2D1Factory1,
+    D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_SMALL, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_PROPERTIES1,
+    D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE, D2D1_FACTORY_TYPE_SINGLE_THREADED,
+    D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, D2D1_ROUNDED_RECT, D2D1_SWEEP_DIRECTION,
+    D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE, D2D1CreateFactory,
+    ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Factory, ID2D1Factory1, ID2D1GeometrySink,
+    ID2D1PathGeometry,
 };
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP};
 use windows::Win32::Graphics::Direct3D11::{
@@ -29,7 +32,7 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER,
     DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TRIMMING,
     DWRITE_TRIMMING_GRANULARITY_CHARACTER,
-    DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory,
+    DWRITE_TEXT_METRICS, DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory,
     IDWriteTextFormat,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -152,7 +155,6 @@ pub struct Renderer {
     graphics: CompositionGraphicsDevice,
     title_format: IDWriteTextFormat,
     detail_format: IDWriteTextFormat,
-    header_format: IDWriteTextFormat,
     /// The filter strip sizes its text per call. See `draw_search`.
     dwrite: IDWriteFactory,
     /// Held so the D2D device outlives every context it hands out.
@@ -183,14 +185,10 @@ impl Renderer {
             text_format(&dwrite, DWRITE_FONT_WEIGHT_SEMI_BOLD, 13.0, DWRITE_TEXT_ALIGNMENT_CENTER)?;
         let detail_format =
             text_format(&dwrite, DWRITE_FONT_WEIGHT_NORMAL, 11.0, DWRITE_TEXT_ALIGNMENT_CENTER)?;
-        // Headers read as labels, so they sit left-aligned against the padding.
-        let header_format =
-            text_format(&dwrite, DWRITE_FONT_WEIGHT_SEMI_BOLD, 14.0, DWRITE_TEXT_ALIGNMENT_LEADING)?;
         Ok(Renderer {
             graphics,
             title_format,
             detail_format,
-            header_format,
             dwrite,
             _d2d_device: d2d_device,
             _d3d_device: d3d_device,
@@ -357,16 +355,35 @@ impl Renderer {
         Ok(())
     }
 
-    /// A section header: one line of text on a transparent surface.
-    pub fn draw_header(
+    /// A section's title, as a mark on the ring round its box.
+    ///
+    /// Not a header: it takes no row, so it has to sit on the line and say the
+    /// line is broken there rather than crossed. A plate in the panel's own
+    /// colour under it does that, and the text is the ring's colour, which is
+    /// what ties the two together.
+    ///
+    /// The plate is only as wide as the words. The surface is the whole box, so
+    /// a long title in edit mode has somewhere to go without a second measure.
+    pub fn draw_legend(
         &self,
         surface: &CompositionDrawingSurface,
         width: f32,
         height: f32,
         title: &str,
         color: D2D1_COLOR_F,
+        plate: D2D1_COLOR_F,
     ) -> Result<()> {
         let interop: ICompositionDrawingSurfaceInterop = surface.cast()?;
+        let format = text_format(
+            &self.dwrite,
+            DWRITE_FONT_WEIGHT_SEMI_BOLD,
+            (height * 0.72).clamp(9.0, 14.0),
+            DWRITE_TEXT_ALIGNMENT_LEADING,
+        )?;
+        // Enough either side that the plate reads as a break in the line rather
+        // than as a box sitting on it.
+        let pad = height * 0.45;
+        let text_w = self.measure(title, &format, width).min(width - 2.0 * pad);
 
         // SAFETY: BeginDraw hands back a context valid until EndDraw, which the
         // matching call below always runs.
@@ -380,13 +397,96 @@ impl Renderer {
         let result = unsafe {
             context.SetTransform(&Matrix3x2::translation(offset.x as f32, offset.y as f32));
             context.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
+            let brush = context.CreateSolidColorBrush(&plate, None)?;
+            context.FillRoundedRectangle(
+                &D2D1_ROUNDED_RECT {
+                    rect: D2D_RECT_F {
+                        left: 0.0,
+                        top: 0.0,
+                        right: text_w + 2.0 * pad,
+                        bottom: height,
+                    },
+                    radiusX: height / 2.0,
+                    radiusY: height / 2.0,
+                },
+                &brush,
+            );
             self.draw_text(
                 &context,
                 title,
-                &self.header_format,
-                D2D_RECT_F { left: 0.0, top: 0.0, right: width, bottom: height },
+                &format,
+                D2D_RECT_F { left: pad, top: 0.0, right: width, bottom: height },
                 color,
             )
+        };
+
+        // SAFETY: pairs with BeginDraw; must run even on failure or the surface
+        // stays locked.
+        unsafe {
+            interop.EndDraw()?;
+        }
+        result
+    }
+
+    /// How wide a string comes out in a format, so a plate can be cut to fit it.
+    fn measure(&self, text: &str, format: &IDWriteTextFormat, limit: f32) -> f32 {
+        if text.is_empty() {
+            return 0.0;
+        }
+        let utf16: Vec<u16> = text.encode_utf16().collect();
+        // SAFETY: the string and the format both outlive the layout below.
+        let measured = unsafe {
+            self.dwrite
+                .CreateTextLayout(&utf16, format, limit.max(1.0), 1024.0)
+                .and_then(|layout| {
+                    let mut metrics = DWRITE_TEXT_METRICS::default();
+                    layout.GetMetrics(&mut metrics)?;
+                    Ok(metrics.width)
+                })
+        };
+        measured.unwrap_or_else(|_| text.chars().count() as f32 * limit * 0.02)
+    }
+
+    /// The ring round one box, as closed runs of corners with the turns rounded
+    /// off.
+    ///
+    /// Not a rounded rectangle, because a box is not always one: it wraps round
+    /// the centre block, so the shape can be an L, a C, or a rectangle with a
+    /// hole in the middle of it. Composition has rectangle geometry and nothing
+    /// else, which is why this goes through D2D.
+    ///
+    /// `rings` are surface-local. Corners are exact right angles coming in;
+    /// every one becomes an arc of `radius`, clipped to half the shorter of the
+    /// two runs meeting there so a short run cannot be over-rounded into a
+    /// bulge.
+    pub fn draw_ring(
+        &self,
+        surface: &CompositionDrawingSurface,
+        rings: &[Vec<(f32, f32)>],
+        radius: f32,
+        stroke: f32,
+        color: D2D1_COLOR_F,
+    ) -> Result<()> {
+        let interop: ICompositionDrawingSurfaceInterop = surface.cast()?;
+
+        // SAFETY: BeginDraw hands back a context valid until EndDraw, which the
+        // matching call below always runs.
+        let (context, offset): (ID2D1DeviceContext, POINT) = unsafe {
+            let mut offset = POINT::default();
+            let context = interop.BeginDraw(None, &mut offset)?;
+            (context, offset)
+        };
+
+        // SAFETY: the context is live until EndDraw, and the geometry is built
+        // from the factory that context reports.
+        let result = unsafe {
+            context.SetTransform(&Matrix3x2::translation(offset.x as f32, offset.y as f32));
+            context.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
+            rounded_path(&context.GetFactory()?, rings, radius).and_then(|path| {
+                let brush = context.CreateSolidColorBrush(&color, None)?;
+                context.DrawGeometry(&path, &brush, stroke, None);
+                Ok(())
+            })
         };
 
         // SAFETY: pairs with BeginDraw; must run even on failure or the surface
@@ -849,6 +949,101 @@ impl Renderer {
         }
         Ok(())
     }
+}
+
+/// Closed rectilinear rings, with every corner turned into an arc.
+///
+/// One figure per ring. An outer ring and a hole are wound opposite ways by the
+/// layout, so the sweep of each arc falls out of which way the path turns
+/// there - a reflex corner rounds the other way, which is what makes the inside
+/// of a C look like the inside of a C.
+unsafe fn rounded_path(
+    factory: &ID2D1Factory,
+    rings: &[Vec<(f32, f32)>],
+    radius: f32,
+) -> Result<ID2D1PathGeometry> {
+    // SAFETY: the factory outlives the geometry, and the sink is closed on
+    // every path out of this function.
+    let path = unsafe { factory.CreatePathGeometry()? };
+    let sink: ID2D1GeometrySink = unsafe { path.Open()? };
+
+    for ring in rings {
+        let n = ring.len();
+        if n < 4 {
+            continue;
+        }
+        // Where each corner's arc starts and ends: back along the run coming
+        // in, forward along the run going out.
+        let cut: Vec<(Vector2, Vector2, D2D1_SWEEP_DIRECTION)> = (0..n)
+            .map(|i| {
+                let before = ring[(i + n - 1) % n];
+                let here = ring[i];
+                let after = ring[(i + 1) % n];
+                let (into, out) = (unit(before, here), unit(here, after));
+                let r = radius
+                    .min(length(before, here) / 2.0)
+                    .min(length(here, after) / 2.0);
+                let turn = into.0 * out.1 - into.1 * out.0;
+                (
+                    point(here.0 - into.0 * r, here.1 - into.1 * r),
+                    point(here.0 + out.0 * r, here.1 + out.1 * r),
+                    if turn >= 0.0 {
+                        D2D1_SWEEP_DIRECTION_CLOCKWISE
+                    } else {
+                        D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE
+                    },
+                )
+            })
+            .collect();
+
+        // SAFETY: the sink is open and is closed once, below.
+        unsafe {
+            sink.BeginFigure(cut[0].0, D2D1_FIGURE_BEGIN_HOLLOW);
+            for i in 0..n {
+                let (_, arc_end, sweep) = cut[i];
+                let r = length(ring[i], (arc_end.X, arc_end.Y));
+                if r > 0.0 {
+                    sink.AddArc(&D2D1_ARC_SEGMENT {
+                        point: arc_end,
+                        size: D2D_SIZE_F { width: r, height: r },
+                        rotationAngle: 0.0,
+                        sweepDirection: sweep,
+                        arcSize: D2D1_ARC_SIZE_SMALL,
+                    });
+                }
+                // Straight to where the next corner starts turning. The last
+                // one lands back where the figure began, which is what closes
+                // it.
+                sink.AddLine(cut[(i + 1) % n].0);
+            }
+            sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+        }
+    }
+
+    // SAFETY: pairs with Open; the geometry is unusable until this runs.
+    unsafe {
+        sink.Close()?;
+    }
+    Ok(path)
+}
+
+fn point(x: f32, y: f32) -> Vector2 {
+    Vector2 { X: x, Y: y }
+}
+
+fn length(from: (f32, f32), to: (f32, f32)) -> f32 {
+    ((to.0 - from.0).powi(2) + (to.1 - from.1).powi(2)).sqrt()
+}
+
+/// The direction from one corner to the next. Runs are axis-aligned and never
+/// zero length, but the guard costs nothing and a NaN here would be a path
+/// nobody could draw.
+fn unit(from: (f32, f32), to: (f32, f32)) -> (f32, f32) {
+    let len = length(from, to);
+    if len <= f32::EPSILON {
+        return (0.0, 0.0);
+    }
+    ((to.0 - from.0) / len, (to.1 - from.1) / len)
 }
 
 /// Icons arrive as premultiplied BGRA, which is what the surface expects.

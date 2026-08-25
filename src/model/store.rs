@@ -33,6 +33,12 @@ pub const WM_MODEL_CHANGED: u32 = WM_APP + 1;
 struct Group {
     title: String,
     color: Option<String>,
+    edge: Option<String>,
+    /// Where this sits in the config file. Not where it sits in the panel: an
+    /// empty section never reaches the grid, so the two drift apart. What is
+    /// dealt out per section - a ring colour - has to key off this one, or a
+    /// browser connecting would recolour every box below it.
+    slot: usize,
     sources: Sources,
     /// Lowercased process names, one entry per source. Empty means catch-all.
     matches: Vec<Vec<String>>,
@@ -145,9 +151,12 @@ fn store() -> &'static Mutex<Store> {
 fn build_groups(sections: &[SectionConfig]) -> Vec<Group> {
     sections
         .iter()
-        .map(|section| Group {
+        .enumerate()
+        .map(|(slot, section)| Group {
             title: section.title.clone(),
             color: section.color.clone(),
+            edge: section.edge.clone(),
+            slot,
             sources: section.source.clone(),
             max_items: section.max_items,
             // A group's own `match` wins; without one it falls back to the
@@ -644,6 +653,12 @@ fn center_sections(center: &Center) -> Vec<Section> {
                 title: String::new(),
                 items,
                 color: center.shape.color.clone(),
+                // The block wears its own frame, in the accent. A palette
+                // colour on top of that would be a second line saying the
+                // same thing in a different hue, and no ring is drawn round a
+                // centre half at all - so the slot is never asked for.
+                edge: None,
+                slot: usize::MAX,
                 total,
                 center: Some(half),
                 columns: center.shape.columns,
@@ -795,6 +810,8 @@ pub fn sections(mode: Mode) -> Vec<Section> {
             out.push(Section {
                 title: group.title.clone(),
                 color: group.color.clone(),
+                edge: group.edge.clone(),
+                slot: group.slot,
                 items,
                 total,
                 center: None,

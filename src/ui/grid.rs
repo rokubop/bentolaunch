@@ -177,9 +177,12 @@ pub struct Metrics {
     /// panel cannot change width per keystroke. Still bounded by the screen.
     pub fixed_cols: usize,
     pub header_h: f32,
-    /// Between a header and the row under it. Folded into the header band, so a
-    /// section with no title does not pay for it.
+    /// How far along the ring's top edge a box's title sits, from its left
+    /// corner. Titles cost no layout, so this is not a gap in the grid.
     pub header_gap: f32,
+    /// Clear rows between one box and the box stacked under it, in pixels and
+    /// rounded to whole rows. Never a fraction of one: the panel is one lattice
+    /// and a box cannot be moved off it.
     pub section_gap: f32,
     /// Filter strip above the grid, 0 when not filtering. Does not scroll: it
     /// is what explains why most of the grid is missing.
@@ -214,6 +217,39 @@ pub struct SectionShape {
 }
 
 
+/// The cells one box's ring encloses, on that box's own tile grid.
+///
+/// Not `Band::rect`. That one is stretched to tile the panel with no gaps,
+/// because a drop landing beside a box has to mean *that* box, and it stays a
+/// rectangle for exactly as long as dropping exists. This is what the box
+/// actually occupies, and it is allowed to have a bite out of it where the
+/// centre block stands - which is what turns a ring into an L or a C.
+///
+/// Ragged ends are filled in: a box whose last row is half full still gets a
+/// squared-off ring. The shape follows the centre block, which never moves, and
+/// not the item count, which changes every time a window opens.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Cells {
+    /// Top left of the first cell, content space.
+    pub x: f32,
+    pub y: f32,
+    pub cols: usize,
+    pub rows: usize,
+    /// Row major, `rows * cols`. False only where the centre block took the
+    /// cell out.
+    pub filled: Vec<bool>,
+}
+
+impl Cells {
+    /// Whether a cell is inside the ring. Out of range is outside, which is
+    /// what makes the edge of the grid an edge of the shape.
+    fn at(&self, row: usize, col: usize) -> bool {
+        row < self.rows
+            && col < self.cols
+            && self.filled.get(row * self.cols + col).copied().unwrap_or(false)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Header {
     pub title: String,
@@ -246,6 +282,9 @@ pub struct Band {
     /// layout editing and drop targeting all have to leave these alone: the
     /// centre is not somewhere the cuts can reach.
     pub center: bool,
+    /// What the box occupies, for the ring drawn round it. Kept apart from
+    /// `rect` on purpose - see `Cells`.
+    pub cells: Cells,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -335,23 +374,30 @@ impl Layout {
         // against; the panel is only what happens to be drawn on it, and it is
         // free to sit wherever it has to.
         let mut reserve = None;
+        let mut home = None;
         let mut align = None;
-        for _ in 0..3 {
-            let (pass, bottom) = lay_out(sections, &m, &tree, capped, cols, reserve);
+        for _ in 0..4 {
+            let (pass, bottom) = lay_out(sections, &m, &tree, capped, cols, reserve, home);
             // Read off the pass with no hole in it, so the grid the block lines
             // up with is the grid the panel would have had without it.
             align = align.or_else(|| row_grid(&pass, &m));
-            let content_h = reaching(bottom, reserve) + m.padding;
+            let reached = reaching(bottom, reserve);
+            let content_h = reached + m.padding;
             let next =
                 center_reserve((center_cols, center_rows), &m, cols, content_h.min(max_h), align);
-            let done = settled(reserve, next);
+            // The corner the app's own button holds, settled in the same loop
+            // and for the same reason: what it takes out of the grid can be the
+            // row that decides how tall the grid is.
+            let next_home = home_reserve(cols, reached, &m);
+            let done = settled(reserve, next) && settled(home, next_home);
             reserve = next;
+            home = next_home;
             if done {
                 break;
             }
         }
 
-        let (mut out, bottom) = lay_out(sections, &m, &tree, capped, cols, reserve);
+        let (mut out, bottom) = lay_out(sections, &m, &tree, capped, cols, reserve, home);
         let content_h = reaching(bottom, reserve) + m.padding;
         let panel_h = content_h.min(max_h);
 
@@ -468,6 +514,42 @@ impl Layout {
         Some((rect, seams))
     }
 
+    /// The ring around one box, panel-local, as closed rings of corners.
+    ///
+    /// More than one when the centre block stands wholly inside the box: an
+    /// outer ring and a hole. Empty for a box with no tiles.
+    pub fn band_ring(&self, band: usize, scroll: f32) -> Vec<Vec<(f32, f32)>> {
+        let Some(band) = self.bands.get(band) else {
+            return Vec::new();
+        };
+        ring_of(&band.cells, &self.metrics)
+            .into_iter()
+            .map(|ring| ring.into_iter().map(|(x, y)| (x, y - scroll)).collect())
+            .collect()
+    }
+
+    /// The panel's own button: always there, bottom right, one cell of the grid.
+    ///
+    /// So the panel can be worked without knowing a right-click menu exists. It
+    /// is the one control that is always in the same place, which is what makes
+    /// it findable by someone pointing with their eyes.
+    ///
+    /// A cell, and the layout keeps that cell clear - `home_reserve`. Panel
+    /// local rather than content space, because chrome that scrolled off the
+    /// top of a long grid would not be always in the same place at all. The two
+    /// are the same rectangle whenever the content fits, which is the case the
+    /// button is drawn in nearly always.
+    pub fn home_rect(&self) -> Rect {
+        let m = self.metrics;
+        Rect {
+            x: (m.padding + (self.cols.saturating_sub(1)) as f32 * (m.tile_w + m.gap))
+                .min((self.panel.w - m.tile_w).max(0.0)),
+            y: (self.panel.h - m.padding - m.tile_h).max(0.0),
+            w: m.tile_w,
+            h: m.tile_h,
+        }
+    }
+
     /// The keep-open button, panel-local.
     ///
     /// Chrome, not content: it does not scroll, so it cannot be carried off the
@@ -500,19 +582,176 @@ impl Layout {
         let Some(band) = self.bands.get(band) else {
             return 0;
         };
-        let Some(origin) = self.tiles.get(band.first) else {
-            return 0;
-        };
+        let cells = &band.cells;
+        let cols = cells.cols.max(1);
         let m = self.metrics;
 
-        let cols = band.cols.max(1);
-        let row = ((y + scroll - origin.y) / (m.tile_h + m.gap)).floor().max(0.0) as usize;
-        let column = ((x - origin.x) / (m.tile_w + m.gap) + 0.5)
+        // Which cell of the box's own grid the pointer landed in. Measured
+        // against tile centres across, so the drop goes to the gap it is
+        // nearest rather than to the tile it happens to be over.
+        let row = ((y + scroll - cells.y) / (m.tile_h + m.gap))
+            .floor()
+            .clamp(0.0, cells.rows as f32) as usize;
+        let column = ((x - cells.x) / (m.tile_w + m.gap) + 0.5)
             .floor()
             .clamp(0.0, cols as f32) as usize;
 
-        (row * cols + column).min(band.count)
+        // Then how many tiles the box actually put before that cell. Not the
+        // cell's own index: a cell the centre block is standing on holds no
+        // tile, so counting cells would land the drop that many places further
+        // along than the pointer.
+        let target = (row * cols + column).min(cells.filled.len());
+        cells.filled[..target]
+            .iter()
+            .filter(|filled| **filled)
+            .count()
+            .min(band.count)
     }
+}
+
+/// The boundary of a box's cells, as closed rings in content space.
+///
+/// One ring for the outside, and one more for every hole strictly inside it -
+/// the centre block standing in the middle of a box rather than against an edge
+/// of it. Every corner is a right angle; rounding them is the drawing's job.
+///
+/// Points sit a quarter of a gap outside the tiles - half the gutter, so two
+/// boxes side by side leave the other half of it clear between their rings.
+///
+/// Not the whole half-gap. Boxes tile the panel, so a ring drawn the full way
+/// out would land in the same pixel as its neighbour's, and one faint seam
+/// shared by two boxes was fine while every box wore the same colour. Two
+/// colours in one line read as a fringe. It also keeps the ring clear of the
+/// centre block's own frame, which does sit at the full half-gap - the block is
+/// in front of the layout, and a sliver of panel between them says so.
+fn ring_of(cells: &Cells, m: &Metrics) -> Vec<Vec<(f32, f32)>> {
+    // Cell corner `k` in pixels: the middle of the gutter, which is the one
+    // place a boundary can sit and mean the same thing from both sides. Uniform
+    // across the grid, so two cells sharing an edge produce the same two points
+    // and the walk below closes exactly. `inset` then pulls the finished ring
+    // back off it, which is a thing only a closed shape can be asked to do.
+    let px = |c: usize| cells.x + c as f32 * (m.tile_w + m.gap) - m.gap / 2.0;
+    let py = |r: usize| cells.y + r as f32 * (m.tile_h + m.gap) - m.gap / 2.0;
+
+    // Directed so the inside is always on the right of travel: right along a
+    // top, down a right, left along a bottom, up a left. Holes come out wound
+    // the other way for free, which is what a fill rule wants.
+    let mut edges: Vec<((usize, usize), (usize, usize))> = Vec::new();
+    for row in 0..cells.rows {
+        for col in 0..cells.cols {
+            if !cells.at(row, col) {
+                continue;
+            }
+            if !(row > 0 && cells.at(row - 1, col)) {
+                edges.push(((col, row), (col + 1, row)));
+            }
+            if !cells.at(row, col + 1) {
+                edges.push(((col + 1, row), (col + 1, row + 1)));
+            }
+            if !cells.at(row + 1, col) {
+                edges.push(((col + 1, row + 1), (col, row + 1)));
+            }
+            if !(col > 0 && cells.at(row, col - 1)) {
+                edges.push(((col, row + 1), (col, row)));
+            }
+        }
+    }
+
+    // Follow each edge to the one leaving where it arrived. Every vertex has as
+    // many edges leaving as arriving, so a walk that starts on an unused edge
+    // always comes back to where it began.
+    let mut used = vec![false; edges.len()];
+    let mut rings = Vec::new();
+    for start in 0..edges.len() {
+        if used[start] {
+            continue;
+        }
+        used[start] = true;
+        let first = edges[start].0;
+        let mut corners = vec![first];
+        let mut here = edges[start].1;
+        // The ceiling is only so a shape nobody expected cannot spin the UI
+        // thread, which is the one failure that looks like a broken PC.
+        while here != first && corners.len() <= edges.len() {
+            corners.push(here);
+            // Two cells touching only at a corner leave two edges from that
+            // point. Either continues a real ring, so take whichever is free.
+            let Some(next) = (0..edges.len()).find(|&e| !used[e] && edges[e].0 == here) else {
+                break;
+            };
+            used[next] = true;
+            here = edges[next].1;
+        }
+        if here != first || corners.len() < 4 {
+            continue;
+        }
+        let ring: Vec<(f32, f32)> = corners_only(&corners)
+            .into_iter()
+            .map(|(col, row)| (px(col), py(row)))
+            .collect();
+        rings.push(inset(&ring, m.gap / 4.0));
+    }
+    rings
+}
+
+/// Pull a closed ring in off the gutter's middle, so two boxes side by side
+/// leave the other half of the gutter clear between their rings.
+///
+/// Every edge moves `d` toward the inside and the corners are put back where
+/// the moved edges cross. Doing it per point instead would push a reflex
+/// corner - the inside of a C, where the centre block bit into the box - the
+/// wrong way, and the notch would close over the block.
+///
+/// The rings arrive wound so the inside is always on the right of travel, which
+/// is what makes one rule work for the outer ring and for a hole alike.
+fn inset(ring: &[(f32, f32)], d: f32) -> Vec<(f32, f32)> {
+    let n = ring.len();
+    // Where each edge lands once moved. Edges are axis aligned, so an edge is
+    // one coordinate and the inward normal only ever touches that one.
+    let moved: Vec<(f32, f32)> = (0..n)
+        .map(|i| {
+            let (from, to) = (ring[i], ring[(i + 1) % n]);
+            let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+            let len = (dx * dx + dy * dy).sqrt().max(f32::EPSILON);
+            // Right of travel, in screen coordinates: (x, y) -> (-y, x).
+            let normal = (-dy / len * d, dx / len * d);
+            (from.0 + normal.0, from.1 + normal.1)
+        })
+        .collect();
+
+    // Corner `i` is where the edge arriving and the edge leaving cross. One is
+    // horizontal and one is vertical, so the crossing is one coordinate from
+    // each - no line intersection needed.
+    (0..n)
+        .map(|i| {
+            let arriving = ring[(i + n - 1) % n];
+            let (before, here) = (moved[(i + n - 1) % n], moved[i]);
+            if (arriving.1 - ring[i].1).abs() < f32::EPSILON {
+                // Arrived along a horizontal run, so it fixes y and the run
+                // leaving fixes x.
+                (here.0, before.1)
+            } else {
+                (before.0, here.1)
+            }
+        })
+        .collect()
+}
+
+/// Drop the points a straight run passes through. Three in a line are one
+/// corner too many, and every corner costs an arc when this is drawn.
+fn corners_only(ring: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let n = ring.len();
+    (0..n)
+        .filter(|&i| {
+            let before = ring[(i + n - 1) % n];
+            let here = ring[i];
+            let after = ring[(i + 1) % n];
+            let straight = (before.0 == here.0 && here.0 == after.0)
+                || (before.1 == here.1 && here.1 == after.1);
+            !straight
+        })
+        .map(|i| ring[i])
+        .collect()
 }
 
 /// One option offered for the box being edited.
@@ -746,25 +985,6 @@ pub const CONTROLS: [Control; 11] = [
 
 /// How many big squares sit in one row.
 const MENU_COLS: usize = 4;
-
-/// Where the app's own button sits, and how big it is, as a share of a tile.
-const HOME_SCALE: f32 = 1.0;
-
-/// The panel's own button: always there, bottom right, tile sized.
-///
-/// So the panel can be worked without knowing a right-click menu exists. It is
-/// the one control that is always in the same place, which is what makes it
-/// findable by someone pointing with their eyes.
-pub fn home_button(panel: Rect, tile_w: f32, tile_h: f32, gap: f32) -> Rect {
-    let w = tile_w * HOME_SCALE;
-    let h = tile_h * HOME_SCALE;
-    Rect {
-        x: (panel.w - w - gap).max(0.0),
-        y: (panel.h - h - gap).max(0.0),
-        w,
-        h,
-    }
-}
 
 /// A grid of big squares, centred in the panel.
 ///
@@ -1027,10 +1247,10 @@ impl Node {
     /// it needs, which is what keeps the tile size fixed and the panel growing
     /// from the centre rather than squashing to fit.
     fn place(&self, sections: &[SectionShape], cut: Cut<'_>, out: &mut Placement) -> f32 {
-        let Cut { m, capped, x, y, cols, hole } = cut;
+        let Cut { m, capped, x, y, cols, holes } = cut;
         match self {
             Node::Leaf(index) => {
-                place_box(sections, *index, Spot { m, x, y, cols, hole }, out)
+                place_box(sections, *index, Spot { m, x, y, cols, holes }, out)
             }
             Node::Cut { axis, share, near, far } => {
                 let (a, b) = (near.want(sections, capped), far.want(sections, capped));
@@ -1048,7 +1268,7 @@ impl Node {
                     }
                     Axis::Down => {
                         let top = near.place(sections, cut, out);
-                        far.place(sections, Cut { y: top + m.section_gap, ..cut }, out)
+                        far.place(sections, Cut { y: next_row(top, m), ..cut }, out)
                     }
                 }
             }
@@ -1065,10 +1285,61 @@ struct Cut<'a> {
     x: f32,
     y: f32,
     cols: usize,
-    /// Content-space rectangle the centre block is standing on, with its
-    /// clearance already added. Tiles flow around it; the tree never knows it
-    /// is there.
-    hole: Option<Rect>,
+    /// Content-space rectangles the grid is not allowed to fill, clearance
+    /// already added: the centre block, and the cell the app's own button
+    /// holds. Tiles flow around them; the tree never knows they are there.
+    holes: &'a [Rect],
+}
+
+/// Whether one row of a box's cells has free ones on both sides of the hole.
+///
+/// That is the arrangement a box must not read across: tiles at the left of the
+/// row, then a jump over the centre block, then more at the right, in reading
+/// order and in no order at all to look at. A hole against a side of the box
+/// leaves one run and reads fine.
+fn straddles(holes: &[Rect], x: f32, y: f32, cols: usize, m: &Metrics) -> bool {
+    let free = |col: usize| {
+        let cell = Rect {
+            x: x + col as f32 * (m.tile_w + m.gap),
+            y,
+            w: m.tile_w,
+            h: m.tile_h,
+        };
+        !holes.iter().any(|hole| hole.overlaps(&cell))
+    };
+    let Some(blocked) = (0..cols).find(|&col| !free(col)) else {
+        return false;
+    };
+    blocked > 0 && (blocked..cols).any(free)
+}
+
+/// Where the box stacked under one ending at `bottom` starts: the next row of
+/// the panel's one lattice, plus whatever whole rows of clearance were asked
+/// for.
+///
+/// Every tile in every box sits on that lattice - `search_h + padding`, then a
+/// tile and a gap over and over - and it is measured from the top of the
+/// content, never from the box a tile happens to be in. A box that started
+/// where its neighbour ended plus a few pixels put its rows a fraction off
+/// every other box's, and a row that is ten pixels out does not read as two
+/// boxes being apart. It reads as the grid being crooked.
+///
+/// This is the same rule the centre block already lives by, and for the same
+/// reason: on the lattice it is part of the grid, and off it every row it
+/// grazes is spent on nothing.
+fn next_row(bottom: f32, m: &Metrics) -> f32 {
+    let origin = m.search_h + m.padding;
+    let pitch = m.tile_h + m.gap;
+    if pitch <= 0.0 {
+        return bottom.max(origin);
+    }
+    // Rounded, not floored: a `section_gap` left at the old pixel value means
+    // no clear row rather than a surprise one.
+    let clear = (m.section_gap / pitch).round().max(0.0);
+    // The epsilon is for a bottom already sitting exactly on a row, which comes
+    // out of a multiplication and is one ulp either side of it.
+    let row = (((bottom - origin) / pitch) - 1e-3).ceil().max(0.0);
+    origin + (row + clear) * pitch
 }
 
 /// One pass over the tree. Returns the placement and the bottom edge the tree
@@ -1080,6 +1351,7 @@ fn lay_out(
     capped: usize,
     cols: usize,
     reserve: Option<Rect>,
+    home: Option<Rect>,
 ) -> (Placement, f32) {
     // Every slot up front, in section order. A box that claims a side is laid
     // out before the boxes that fill what it left, so appending would hand it
@@ -1093,9 +1365,13 @@ fn lay_out(
         bands: Vec::new(),
     };
     let top = m.search_h + m.padding;
-    let hole = reserve.map(|r| clearance(r, m.gap));
+    let holes: Vec<Rect> = [reserve, home]
+        .into_iter()
+        .flatten()
+        .map(|r| clearance(r, m.gap))
+        .collect();
     let bottom = tree.as_ref().map_or(top, |tree| {
-        let cut = Cut { m, capped, x: m.padding, y: top, cols, hole };
+        let cut = Cut { m, capped, x: m.padding, y: top, cols, holes: &holes };
         tree.place(sections, cut, &mut out)
     });
     (out, bottom)
@@ -1146,6 +1422,26 @@ fn settled(before: Option<Rect>, after: Option<Rect>) -> bool {
         (Some(a), Some(b)) => (a.y - b.y).abs() < 0.5 && (a.x - b.x).abs() < 0.5,
         _ => false,
     }
+}
+
+/// The cell the app's own button holds: bottom right of the grid, one tile.
+///
+/// Reserved the way the centre block is, and for the same reason. The button is
+/// the one control that is always in the same place - that is the whole of what
+/// it is for - so a box drawing a tile behind it is a click that lands on the
+/// wrong thing, and a box drawing its ring around it says the button is one of
+/// that box's items.
+///
+/// On the grid, not `gap` in from the panel's corner. Off the grid it was eight
+/// pixels adrift of the column and the row it sits in, which on a panel where
+/// everything else lines up is the one thing that looks broken.
+fn home_reserve(cols: usize, bottom: f32, m: &Metrics) -> Option<Rect> {
+    (cols > 0 && bottom > m.tile_h).then(|| Rect {
+        x: m.padding + (cols - 1) as f32 * (m.tile_w + m.gap),
+        y: bottom - m.tile_h,
+        w: m.tile_w,
+        h: m.tile_h,
+    })
 }
 
 /// The centre block's boxes, in the order they sit left to right.
@@ -1255,7 +1551,7 @@ fn place_center(
     let mut x = reserve.x;
     for (&index, &box_cols) in order.iter().zip(widths) {
         // No hole to dodge: this box is the hole.
-        let spot = Spot { m, x, y: reserve.y, cols: box_cols, hole: None };
+        let spot = Spot { m, x, y: reserve.y, cols: box_cols, holes: &[] };
         place_box(sections, index, spot, out);
         if let Some(band) = out.bands.last_mut() {
             band.center = true;
@@ -1352,9 +1648,9 @@ struct Spot<'a> {
     y: f32,
     /// Tile columns the box has been given.
     cols: usize,
-    /// Content-space rectangle the centre block is standing on, clearance
-    /// included. `None` when there is no block, and for the block itself.
-    hole: Option<Rect>,
+    /// Content-space rectangles this box may not fill, clearance included.
+    /// Empty for the centre block itself, which is one of them.
+    holes: &'a [Rect],
 }
 
 /// Lay one box out where its `Spot` says. Returns its bottom edge.
@@ -1367,7 +1663,7 @@ fn place_box(
     spot: Spot<'_>,
     out: &mut Placement,
 ) -> f32 {
-    let Spot { m, x, y, cols: box_cols, hole } = spot;
+    let Spot { m, x, y, cols: box_cols, holes } = spot;
     let section = &sections[index];
     let box_cols = box_cols.max(1);
     let box_w = box_cols as f32 * m.tile_w + (box_cols - 1) as f32 * m.gap;
@@ -1376,36 +1672,19 @@ fn place_box(
     let first_tile: usize = sections[..index].iter().map(|s| s.count).sum();
     let mut inner = y;
 
-    // The centre block never wears a header. It is the most valuable space on
-    // the panel and a title would spend a row of it saying what the icons
-    // already say.
-    if !section.title.is_empty() && m.header_h > 0.0 && section.center.is_none() {
-        out.headers.push(Header {
-            title: section.title.clone(),
-            rect: Rect { x, y: inner, w: box_w, h: m.header_h },
-            band: out.bands.len(),
-        });
-        inner += m.header_h + m.header_gap;
-    }
-
-    // A box that fits on one row is a bar, and a bar wrapped around the hole is
-    // unreadable: the six moves came out as four down the left and three up on
-    // the right - in reading order, and in no order at all to look at. A bar
-    // slides down to the first row that takes it whole instead.
+    // A box that fits on one row is a bar, and a bar with the hole in the
+    // middle of its row is unreadable: the six moves came out as four down the
+    // left and three up on the right - in reading order, and in no order at all
+    // to look at. It slides down past the hole instead.
     //
-    // Wrapping is for a box big enough that going round the hole saves it a
-    // row. A bar has one row either way, so it has nothing to gain and its
-    // shape to lose.
-    if let Some(hole) = hole
-        && section.count > 0
-        && section.count <= box_cols
-    {
-        let span = section.count;
-        let bar = span as f32 * m.tile_w + (span - 1) as f32 * m.gap;
-        // The hole is finite, so a row below it is always clear.
+    // Only when the row is *straddled*, though. A hole against one side of the
+    // box leaves a single run of free cells, and a run is something a bar can
+    // wrap into - which beats sliding past and leaving those cells empty, which
+    // is what put a three-tile box two rows below the space it fitted in.
+    if !holes.is_empty() && section.count > 0 && section.count <= box_cols {
+        // The holes are finite, so a row below them is always clear.
         for _ in 0..64 {
-            let row = Rect { x, y: inner, w: bar, h: m.tile_h };
-            if !hole.overlaps(&row) {
+            if !straddles(holes, x, inner, box_cols, m) {
                 break;
             }
             inner += m.tile_h + m.gap;
@@ -1419,6 +1698,7 @@ fn place_box(
     //
     // Slot, not tile: a skipped slot costs a position but not an item, which
     // is why these are counted apart.
+    let grid_y = inner;
     let mut placed = 0;
     let mut slot = 0;
     let mut tile_rows = 0;
@@ -1434,7 +1714,7 @@ fn place_box(
             h: m.tile_h,
         };
         slot += 1;
-        if hole.is_some_and(|hole| hole.overlaps(&rect)) {
+        if holes.iter().any(|hole| hole.overlaps(&rect)) {
             continue;
         }
         out.tiles[first_tile + placed] = rect;
@@ -1443,6 +1723,54 @@ fn place_box(
     }
     inner += tile_rows as f32 * m.tile_h + (tile_rows.saturating_sub(1)) as f32 * m.gap;
 
+    // What the ring encloses. Every cell of every row the box reached, minus
+    // the ones the centre block is standing on - so a ragged last row is
+    // squared off and only the block puts a bite in the shape.
+    let mut filled = Vec::with_capacity(tile_rows * box_cols);
+    for row in 0..tile_rows {
+        for col in 0..box_cols {
+            let cell = Rect {
+                x: x + col as f32 * (m.tile_w + m.gap),
+                y: grid_y + row as f32 * (m.tile_h + m.gap),
+                w: m.tile_w,
+                h: m.tile_h,
+            };
+            filled.push(!holes.iter().any(|hole| hole.overlaps(&cell)));
+        }
+    }
+
+    // The title rides the ring's top edge rather than taking a row above it.
+    // A section costs a header plus a whole row even for one tile, and that
+    // row is what stopped the panel being split into the boxes it wants to be
+    // - so the title stops costing one. It is a mark on the ring now, in the
+    // ring's own colour, and the colour is what says which box this is.
+    //
+    // After the tiles are placed, because a bar slides down past the hole and
+    // the label goes where the tiles ended up.
+    //
+    // The centre block never wears one. It is the most valuable space on the
+    // panel, and a title would spend it saying what the icons already say.
+    if !section.title.is_empty() && m.header_h > 0.0 && section.center.is_none() {
+        // On the ring's own top left corner, which is not the box's: the block
+        // can take the whole start of a box's first row, and a title left at
+        // the box's edge then floats over the block with none of its own tiles
+        // anywhere near it.
+        let start = filled.iter().position(|f| *f).unwrap_or(0);
+        let (row, col) = (start / box_cols, start % box_cols);
+        out.headers.push(Header {
+            title: section.title.clone(),
+            rect: Rect {
+                x: x + col as f32 * (m.tile_w + m.gap) + m.header_gap,
+                // Centred on the line the ring is drawn along, which sits a
+                // quarter of a gap out from the tiles.
+                y: grid_y + row as f32 * (m.tile_h + m.gap) - m.gap / 4.0 - m.header_h / 2.0,
+                w: (box_w - col as f32 * (m.tile_w + m.gap) - m.header_gap).max(0.0),
+                h: m.header_h,
+            },
+            band: out.bands.len(),
+        });
+    }
+
     out.bands.push(Band {
         section: index,
         first: first_tile,
@@ -1450,6 +1778,7 @@ fn place_box(
         rect: Rect { x, y, w: box_w, h: inner - y },
         cols: box_cols,
         center: false,
+        cells: Cells { x, y: grid_y, cols: box_cols, rows: tile_rows, filled },
     });
     inner
 }
@@ -1557,6 +1886,26 @@ mod tests {
     use super::*;
 
     const WORK: Rect = Rect { x: 0.0, y: 0.0, w: 2560.0, h: 1400.0 };
+    /// A real 1080p work area, for the rules that only mean anything against
+    /// the shape of an actual panel.
+    const SCREEN: Rect = Rect { x: 0.0, y: 0.0, w: 1920.0, h: 1040.0 };
+
+    /// The working config's grid: ten columns, a three-a-side centre block.
+    fn live() -> Metrics {
+        Metrics {
+            tile_w: 140.0,
+            tile_h: 100.0,
+            gap: 10.0,
+            padding: 18.0,
+            max_fraction: 0.92,
+            max_cols: 10,
+            fixed_cols: 0,
+            header_h: 16.0,
+            header_gap: 14.0,
+            section_gap: 0.0,
+            search_h: 0.0,
+        }
+    }
 
     fn metrics() -> Metrics {
         Metrics {
@@ -1715,13 +2064,63 @@ mod tests {
     fn the_home_button_sits_in_the_same_corner_whatever_the_panel() {
         // The one control that never moves. Someone pointing with their eyes
         // learns where it is once.
-        for (w, h) in [(1376.0, 632.0), (600.0, 400.0), (2400.0, 1200.0)] {
-            let panel = Rect { x: 0.0, y: 0.0, w, h };
-            let button = home_button(panel, 140.0, 100.0, 10.0);
-            assert!(button.x + button.w <= w + 0.01, "off the right edge");
-            assert!(button.y + button.h <= h + 0.01, "off the bottom edge");
+        let m = metrics();
+        for count in [1, 7, 24, 61] {
+            let l = Layout::compute(&[shape("Apps", count)], m, WORK);
+            let button = l.home_rect();
+            assert!(button.x + button.w <= l.panel.w + 0.01, "off the right edge");
+            assert!(button.y + button.h <= l.panel.h + 0.01, "off the bottom edge");
             assert!(button.x >= 0.0 && button.y >= 0.0);
-            assert_eq!((button.w, button.h), (140.0, 100.0), "not tile sized");
+            assert_eq!((button.w, button.h), (m.tile_w, m.tile_h), "not tile sized");
+        }
+    }
+
+    #[test]
+    fn the_home_button_is_a_cell_of_the_grid() {
+        // On the lattice like everything else, and the same inset from the
+        // panel's corner that a tile has. It used to sit `gap` in, which on a
+        // panel where everything else lines up is eight pixels of adrift.
+        let m = metrics();
+        let l = Layout::compute(&[shape("Apps", 14), shape("Active", 3)], m, WORK);
+        let button = l.home_rect();
+
+        let col = (button.x - m.padding) / (m.tile_w + m.gap);
+        assert!((col - col.round()).abs() < 0.01, "the button is off the columns");
+        assert_eq!(button.x + button.w, l.panel.w - m.padding, "not inset like a tile");
+        assert_eq!(button.y + button.h, l.panel.h - m.padding);
+
+        // And it is the last column, not somewhere in the middle.
+        assert_eq!(col.round() as usize, l.cols - 1);
+    }
+
+    #[test]
+    fn nothing_is_laid_into_the_corner_the_button_holds() {
+        // A tile behind it is a click that lands on the wrong thing, and a ring
+        // drawn around it says the button is one of that box's items.
+        let m = metrics();
+        for count in [4, 9, 14, 23, 40] {
+            let l = Layout::compute(&[shape("Apps", count), shape("Active", 3)], m, WORK);
+            let button = l.home_rect();
+            // Content space: the two agree whenever the content fits, which it
+            // does at these counts.
+            assert_eq!(l.max_scroll, 0.0, "{count} items scrolled; test needs a panel that fits");
+
+            for n in 0..l.tile_count() {
+                assert!(
+                    !l.tile_rect(n, 0.0).overlaps(&button),
+                    "{count} items: tile {n} sits behind the button"
+                );
+            }
+            for band in 0..l.bands().len() {
+                for ring in l.band_ring(band, 0.0) {
+                    for (x, y) in ring {
+                        assert!(
+                            !button.contains(x, y),
+                            "{count} items: band {band}'s ring runs through the button"
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -2424,16 +2823,337 @@ mod tests {
     }
 
     #[test]
-    fn a_title_costs_its_header_plus_the_gap_under_it() {
+    fn every_tile_on_the_panel_sits_on_one_lattice() {
+        // Regardless of which box it is in, what that box is titled, or what a
+        // box above it did. A row ten pixels out does not read as two boxes
+        // being apart - it reads as the grid being crooked, and a 3x3 centre
+        // block makes it obvious because more boxes end up stacked.
+        let m = Metrics { section_gap: 20.0, ..metrics() };
+        let l = Layout::compute(
+            &[
+                at("Apps", 14, "left@50"),
+                at("Bookmarks", 12, "right/top"),
+                at("Browsing", 3, "right/bottom"),
+                shape("Active", 2),
+                middle(0, 9, 3),
+                middle(1, 9, 3),
+            ],
+            m,
+            WORK,
+        );
+        let origin = m.search_h + m.padding;
+        let pitch = m.tile_h + m.gap;
+        for n in 0..l.tile_count() {
+            let tile = l.tile_rect(n, 0.0);
+            let row = (tile.y - origin) / pitch;
+            assert!(
+                (row - row.round()).abs() < 0.01,
+                "tile {n} at y {} is {} of a row off the lattice",
+                tile.y,
+                row - row.round()
+            );
+            let col = (tile.x - m.padding) / (m.tile_w + m.gap);
+            assert!(
+                (col - col.round()).abs() < 0.01,
+                "tile {n} at x {} is {} of a column off the lattice",
+                tile.x,
+                col - col.round()
+            );
+        }
+    }
+
+    #[test]
+    fn a_stacked_box_starts_on_the_row_after_the_one_above_it() {
+        // Flush, not flush plus a few pixels. `section_gap` buys whole rows or
+        // it buys nothing.
+        let m = Metrics { section_gap: 0.0, ..metrics() };
+        let l = Layout::compute(&[shape("Apps", 3), shape("Active", 2)], m, WORK);
+        let above = l.tile_rect(0, 0.0);
+        let below = l.tile_rect(3, 0.0);
+        assert_eq!(below.y, above.y + m.tile_h + m.gap);
+
+        // And a whole row of clearance when one is actually asked for.
+        let spaced = Metrics { section_gap: m.tile_h + m.gap, ..m };
+        let l = Layout::compute(&[shape("Apps", 3), shape("Active", 2)], spaced, WORK);
+        assert_eq!(
+            l.tile_rect(3, 0.0).y,
+            l.tile_rect(0, 0.0).y + 2.0 * (m.tile_h + m.gap)
+        );
+    }
+
+    #[test]
+    fn a_title_costs_no_layout_at_all() {
+        // The rule this replaced: a title used to take a row above its tiles,
+        // and a section costing a header plus a row is what stopped the panel
+        // being split into the boxes it wants to be. It rides the ring now.
         let m = Metrics { header_gap: 6.0, ..metrics() };
         let titled = Layout::compute(&[shape("Pinned", 4)], m, WORK);
         let bare = Layout::compute(&[shape("", 4)], m, WORK);
 
-        // The gap is the header's, not the tiles': an untitled section pays for
-        // neither.
-        assert_eq!(titled.content_h, bare.content_h + m.header_h + m.header_gap);
-        let header = titled.headers(0.0).next().unwrap().1;
-        assert_eq!(titled.tile_rect(0, 0.0).y, header.y + m.header_h + m.header_gap);
+        assert_eq!(titled.content_h, bare.content_h);
+        assert_eq!(titled.tile_rect(0, 0.0), bare.tile_rect(0, 0.0));
+    }
+
+    #[test]
+    fn the_title_sits_on_the_ring_above_its_own_tiles() {
+        let m = metrics();
+        let l = Layout::compute(&[shape("Pinned", 4)], m, WORK);
+        let header = l.headers(0.0).next().unwrap().1;
+        let tile = l.tile_rect(0, 0.0);
+
+        // Centred on the line the ring is drawn along, which runs a quarter of
+        // a gap above the tiles. Anywhere else and it reads as a label that
+        // missed.
+        assert_eq!(header.y + m.header_h / 2.0, tile.y - m.gap / 4.0);
+        // Inset from the corner, so it never lands on the arc.
+        assert_eq!(header.x, tile.x + m.header_gap);
+    }
+
+    // --- the ring round a box ---
+
+    /// A ring, as whole cells of the box's own grid: which corners it turns,
+    /// counted off the tile pitch so the numbers read like the picture.
+    fn ring_cells(l: &Layout, band: usize, m: &Metrics) -> Vec<Vec<(i32, i32)>> {
+        let cells = &l.bands()[band].cells;
+        l.band_ring(band, 0.0)
+            .into_iter()
+            .map(|ring| {
+                ring.into_iter()
+                    .map(|(x, y)| {
+                        (
+                            (((x + m.gap / 2.0) - cells.x) / (m.tile_w + m.gap)).round() as i32,
+                            (((y + m.gap / 2.0) - cells.y) / (m.tile_h + m.gap)).round() as i32,
+                        )
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_box_with_nothing_in_its_way_gets_four_corners() {
+        let m = metrics();
+        let l = Layout::compute(&[shape("Pinned", 8)], m, WORK);
+        let rings = ring_cells(&l, 0, &m);
+        assert_eq!(rings.len(), 1, "one box, one ring");
+        assert_eq!(rings[0].len(), 4, "a rectangle has four corners: {:?}", rings[0]);
+    }
+
+    #[test]
+    fn a_ragged_last_row_is_squared_off() {
+        // The shape follows the centre block, which never moves, and not the
+        // item count, which changes every time a window opens. A ring that
+        // stepped in around a half-empty last row would never sit still.
+        let m = metrics();
+        let full = Layout::compute(&[shape("Pinned", 8)], m, WORK);
+        let ragged = Layout::compute(&[shape("Pinned", 8), shape("", 0)], m, WORK);
+        assert_eq!(ring_cells(&full, 0, &m), ring_cells(&ragged, 0, &m));
+
+        // Same box, one tile short of filling its last row.
+        let short = Layout::compute(&[shape("Pinned", 7)], m, WORK);
+        let rings = ring_cells(&short, 0, &m);
+        assert_eq!(rings.len(), 1);
+        assert_eq!(rings[0].len(), 4, "the tail of the list is not a corner: {:?}", rings[0]);
+    }
+
+    #[test]
+    fn a_box_wrapping_the_centre_block_comes_out_a_c() {
+        // The default shape: the panel split down the middle, the block
+        // straddling the seam, so it takes a bite out of the side of each half
+        // rather than sitting inside one of them.
+        let m = metrics();
+        let l = Layout::compute(
+            &[
+                at("Apps", 24, "left@50"),
+                at("Browsing", 24, "right@50"),
+                middle(0, 4, 2),
+                middle(1, 4, 2),
+            ],
+            m,
+            WORK,
+        );
+        for band in 0..2 {
+            let rings = ring_cells(&l, band, &m);
+            assert_eq!(rings.len(), 1, "the block is against an edge, so no hole");
+            // Four corners is a rectangle. Eight is a rectangle with a bite in
+            // it, which is the C.
+            assert_eq!(
+                rings[0].len(),
+                8,
+                "band {band} wrapped round the block is not a C: {:?}",
+                rings[0]
+            );
+        }
+    }
+
+    /// A box's cells, spelled as a picture: `#` filled, `.` taken by a hole.
+    fn cells_of(rows: &[&str]) -> Cells {
+        let cols = rows.first().map_or(0, |row| row.len());
+        Cells {
+            x: 0.0,
+            y: 0.0,
+            cols,
+            rows: rows.len(),
+            filled: rows.iter().flat_map(|row| row.chars().map(|c| c == '#')).collect(),
+        }
+    }
+
+    #[test]
+    fn a_block_inside_a_box_leaves_a_hole_in_the_ring() {
+        // The block standing in the middle of a box rather than against an edge
+        // of it. Two rings, and the inner one is what says the middle of the box
+        // is not part of it.
+        //
+        // Straight off the cells rather than off a layout: which shapes come
+        // out of a real panel depends on how many tiles there happen to be, and
+        // this is a rule about the shape, not about the panel.
+        let m = metrics();
+        let rings = ring_of(&cells_of(&["#####", "#...#", "#...#", "#####"]), &m);
+        assert_eq!(rings.len(), 2, "an outer ring and a hole: {rings:?}");
+        for ring in &rings {
+            assert_eq!(ring.len(), 4, "both are rectangles: {ring:?}");
+        }
+
+        // Wound opposite ways, which is what tells a fill rule they are not two
+        // separate shapes. Shoelace: the outer one turns one way, the hole the
+        // other.
+        let area = |ring: &Vec<(f32, f32)>| {
+            let n = ring.len();
+            (0..n)
+                .map(|i| {
+                    let (a, b) = (ring[i], ring[(i + 1) % n]);
+                    a.0 * b.1 - b.0 * a.1
+                })
+                .sum::<f32>()
+        };
+        assert!(
+            area(&rings[0]) * area(&rings[1]) < 0.0,
+            "the hole is wound the same way as the outer ring"
+        );
+    }
+
+    #[test]
+    fn a_notch_from_two_holes_at_once_is_still_one_ring() {
+        // The centre block and the corner the app's own button holds are both
+        // taken out of the same box. Two bites, one shape.
+        let m = metrics();
+        let rings = ring_of(&cells_of(&["#####", "..###", "..###", "####."]), &m);
+        assert_eq!(rings.len(), 1, "one shape, not one per bite: {rings:?}");
+        assert_eq!(rings[0].len(), 10, "{:?}", rings[0]);
+
+        // A bite that does not reach a side is a hole, and a hole is its own
+        // ring - the block standing in the middle of a box.
+        let inner = ring_of(&cells_of(&["#####", "#..##", "#..##", "####."]), &m);
+        assert_eq!(inner.len(), 2, "the interior bite should be its own ring");
+    }
+
+    #[test]
+    fn two_boxes_side_by_side_leave_their_rings_apart() {
+        // Half the gutter each. Boxes tile the panel, so rings drawn the full
+        // way out would land in the same pixel - which was fine while every box
+        // wore one faint colour, and reads as a fringe now that they do not.
+        let m = metrics();
+        let l = Layout::compute(&[at("Apps", 8, "left@50"), at("Web", 8, "right@50")], m, WORK);
+        let right_of = |band| {
+            l.band_ring(band, 0.0)[0].iter().map(|p| p.0).fold(f32::MIN, f32::max)
+        };
+        let left_of = |band| {
+            l.band_ring(band, 0.0)[0].iter().map(|p| p.0).fold(f32::MAX, f32::min)
+        };
+        assert!(
+            left_of(1) - right_of(0) >= m.gap / 2.0,
+            "the two rings meet: {} then {}",
+            right_of(0),
+            left_of(1)
+        );
+
+        // And still outside their own tiles, or the ring crops what it is
+        // supposed to be round.
+        let tile = l.tile_rect(0, 0.0);
+        assert!(left_of(0) < tile.x);
+        assert!(right_of(0) > tile.x + tile.w);
+    }
+
+    #[test]
+    fn the_notch_opens_rather_than_closes_over_the_block() {
+        // The inset moves every edge toward the inside of its own shape. On a
+        // reflex corner - the inside of the C, where the block bit into the box
+        // - that is *away* from the block. Get the sign wrong and the notch
+        // closes over the block's tiles, and the ring is drawn across them.
+        let m = metrics();
+        let l = Layout::compute(
+            &[
+                at("Apps", 24, "left@50"),
+                at("Browsing", 24, "right@50"),
+                middle(0, 4, 2),
+                middle(1, 4, 2),
+            ],
+            m,
+            WORK,
+        );
+        let (block, _) = l.center_frame().expect("a block");
+        for band in 0..l.bands().len() {
+            for ring in l.band_ring(band, 0.0) {
+                for (x, y) in ring {
+                    assert!(
+                        !block.contains(x, y),
+                        "band {band}: the ring runs through the block at {x},{y}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_ring_never_crosses_a_tile() {
+        // It sits in the gutter, so no corner of it can land on anything the
+        // panel draws a tile in - its own or a neighbour's.
+        let m = metrics();
+        let l = Layout::compute(
+            &[
+                at("Apps", 24, "left@50"),
+                at("Browsing", 17, "right@50"),
+                middle(0, 4, 2),
+                middle(1, 4, 2),
+            ],
+            m,
+            WORK,
+        );
+        let tiles: Vec<Rect> = (0..l.tile_count()).map(|n| l.tile_rect(n, 0.0)).collect();
+        for band in 0..l.bands().len() {
+            for ring in l.band_ring(band, 0.0) {
+                for (x, y) in ring {
+                    assert!(
+                        !tiles.iter().any(|tile| tile.contains(x, y)),
+                        "band {band}: a ring corner lands on a tile at {x},{y}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_ring_closes() {
+        // The walk follows edges until it comes back to where it started. A
+        // ring that did not close would be drawn as an open path, which is a
+        // stroke running off across the panel.
+        let m = metrics();
+        for count in 1..24 {
+            let l = Layout::compute(
+                &[shape("Apps", count), middle(0, 4, 2), middle(1, 4, 2)],
+                m,
+                WORK,
+            );
+            for (index, band) in l.bands().iter().enumerate() {
+                if band.count == 0 {
+                    continue;
+                }
+                for ring in l.band_ring(index, 0.0) {
+                    assert!(ring.len() >= 4, "{count} items: a ring of {}", ring.len());
+                    assert_eq!(ring.len() % 2, 0, "{count} items: odd corners on a rectilinear ring");
+                }
+            }
+        }
     }
 
     #[test]
@@ -2872,6 +3592,115 @@ mod tests {
         }
         for tile in &tiles {
             assert!(!tile.overlaps(&block(&l)), "the bar sits under the centre");
+        }
+    }
+
+    #[test]
+    fn a_bar_wraps_into_the_cells_beside_the_block_rather_than_sliding_past() {
+        // The block against one side of a box leaves a single run of free
+        // cells, and a run is something a bar can wrap into. Sliding past it
+        // instead put a three-tile box two rows below the space it fitted in,
+        // and left that space holding nothing.
+        // The working config's own numbers, because this is a rule about how
+        // much room the block leaves beside it and that depends on the shape of
+        // the real panel: ten columns, a three-a-side block, two columns clear
+        // either side of it.
+        let m = live();
+        let l = Layout::compute(
+            &[
+                at("Browsing", 3, "right/bottom"),
+                shape("Apps", 14),
+                shape("Active", 2),
+                at("Bookmarks", 12, "right/top"),
+                at("", 4, "bottom"),
+                middle(0, 9, 3),
+                middle(1, 9, 3),
+            ],
+            m,
+            SCREEN,
+        );
+        let bar = l.bands().iter().find(|band| band.section == 0).expect("the bar");
+        let first = l.tile_rect(bar.first, 0.0);
+        let last = l.tile_rect(bar.first + bar.count - 1, 0.0);
+        let (block, _) = l.center_frame().expect("a block");
+
+        // Beside the block, not below it.
+        assert!(
+            first.y < block.y + block.h,
+            "the bar slid to {}, past the block ending at {}",
+            first.y,
+            block.y + block.h
+        );
+        // And clear of it, which is the whole point of not just ignoring the
+        // hole.
+        for n in bar.first..bar.first + bar.count {
+            assert!(!l.tile_rect(n, 0.0).overlaps(&block), "tile {n} sits under the block");
+        }
+        assert!(last.y >= first.y, "the bar ran backwards");
+    }
+
+    #[test]
+    fn a_title_lands_on_its_own_ring_and_not_on_the_block() {
+        // The block can take the whole start of a box's first row. A title left
+        // at the box's left edge then floats over the block, with none of the
+        // tiles it names anywhere near it.
+        let m = live();
+        let l = Layout::compute(
+            &[
+                at("Browsing", 3, "right/bottom"),
+                shape("Apps", 14),
+                shape("Active", 2),
+                at("Bookmarks", 12, "right/top"),
+                at("", 4, "bottom"),
+                middle(0, 9, 3),
+                middle(1, 9, 3),
+            ],
+            m,
+            SCREEN,
+        );
+        let (block, _) = l.center_frame().expect("a block");
+        for (title, rect, band) in l.headers(0.0) {
+            assert!(
+                !block.contains(rect.x, rect.y + rect.h / 2.0),
+                "\"{title}\" sits on the block at {},{}",
+                rect.x,
+                rect.y
+            );
+            // And over its own first tile's column, which is what makes it
+            // read as belonging to that box.
+            let first = l.tile_rect(l.bands()[band].first, 0.0);
+            assert_eq!(rect.x, first.x + m.header_gap, "\"{title}\" is not over its tiles");
+        }
+    }
+
+    #[test]
+    fn a_drop_counts_tiles_and_not_the_cells_the_block_took() {
+        // The box wraps round the block, so its cells and its tiles are not the
+        // same list. Counting cells put every drop past the block that many
+        // places too far along, and silently scrambled the order it wrote.
+        let m = metrics();
+        let l = Layout::compute(
+            &[shape("Apps", 24), middle(0, 4, 2), middle(1, 4, 2)],
+            m,
+            WORK,
+        );
+        let band = l
+            .bands()
+            .iter()
+            .position(|band| !band.center && band.count > 0)
+            .expect("the apps box");
+
+        // Dropped on a tile's own left edge, the slot is that tile's index -
+        // for every tile, including the ones past the hole.
+        for n in 0..l.bands()[band].count {
+            let tile = l.tile_rect(n, 0.0);
+            assert_eq!(
+                l.insert_slot(band, tile.x, tile.y + tile.h / 2.0, 0.0),
+                n,
+                "tile {n} at {},{} resolved to the wrong slot",
+                tile.x,
+                tile.y
+            );
         }
     }
 

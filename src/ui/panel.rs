@@ -46,7 +46,7 @@ use crate::shell::{activate, arrange, icons, picker};
 use crate::ui::filter;
 use crate::ui::grid::{
     At, Band, BoxState, Command, Control, Layout, Metrics, Rect as GridRect, SectionShape,
-    centred_grid, commands, controls, home_button, origin_run, reordered,
+    centred_grid, commands, controls, origin_run, reordered,
 };
 use crate::ui::menu;
 use crate::ui::settings::{SETTINGS, Setting};
@@ -660,57 +660,6 @@ impl Panel {
         // it. The panel colour is 94% opaque; anything below it is not seen.
         self.build_box_plates(radius)?;
 
-        // Boxes get a face of their own while editing. The tile is no longer
-        // the thing being pointed at, so the whole box has to light up under
-        // the pointer or there is nothing to aim at.
-        if let Some(renderer) = &self.renderer {
-            let header_color = d2d_color(&self.config.theme.header);
-            // Edit mode says what each box is set to, and marks the one the
-            // keys will land on. The grid underneath is left alone: the point
-            // is to watch the real layout change as it is edited.
-            let editing = self.editing();
-            let selected_color = d2d_color(&self.config.theme.tile_selected);
-            let labels: Vec<String> = if editing {
-                self.layout
-                    .headers(self.scroll)
-                    .map(|(title, _, band)| self.edit_header(band, title))
-                    .collect()
-            } else {
-                Vec::new()
-            };
-
-            let mut built = Vec::new();
-            for (slot, (title, rect, band)) in self.layout.headers(self.scroll).enumerate() {
-                let title = labels.get(slot).map_or(title, String::as_str);
-                let section_of = self.layout.bands().get(band).map(|band| band.section);
-                let header_color = if editing && self.edit == section_of {
-                    selected_color
-                } else {
-                    header_color
-                };
-                let surface = match renderer.create_surface(rect.w, rect.h) {
-                    Ok(surface) => surface,
-                    Err(e) => {
-                        log_warn!("could not create a header surface: {e}");
-                        continue;
-                    }
-                };
-                if let Err(e) =
-                    renderer.draw_header(&surface, rect.w, rect.h, title, header_color)
-                {
-                    log_warn!("could not draw header \"{title}\": {e}");
-                    continue;
-                }
-                let sprite = self.compositor.CreateSpriteVisual()?;
-                sprite.SetSize(Vector2 { X: rect.w, Y: rect.h })?;
-                sprite.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 })?;
-                sprite.SetBrush(&self.compositor.CreateSurfaceBrushWithSurface(&surface)?)?;
-                children.InsertAtTop(&sprite)?;
-                built.push(sprite);
-            }
-            self.headers = built;
-        }
-
         let icon_size = self.icon_size();
         let label_height = self.config.grid.label_height * scale;
         let show_detail = self.config.grid.show_detail;
@@ -793,6 +742,9 @@ impl Panel {
         // Over the tiles: a seam runs between the tiles it separates, and the
         // centre's frame has to read as being in front of the layout.
         self.build_edges(radius)?;
+        // And the titles over the rings, because a title is a break in its
+        // ring and a ring drawn afterwards would run straight through it.
+        self.build_titles()?;
         // Over the tiles, which are no longer the thing being pointed at.
         self.build_box_scrims(radius)?;
         // After the tiles, so the grid scrolls underneath them.
@@ -803,6 +755,72 @@ impl Panel {
         self.build_menu(radius)?;
         self.build_settings(radius)?;
         self.build_home(radius)?;
+        Ok(())
+    }
+
+    /// The section titles, each one a mark on the ring round its own box.
+    ///
+    /// Not headers any more: they take no row, so they sit on the line rather
+    /// than above it, and they are drawn in the ring's own colour. What used to
+    /// identify a box was a word costing a whole row of the panel. It is the
+    /// colour of the line now, and the word is what confirms it.
+    ///
+    /// After `build_edges`, so a title's plate breaks the line it sits on.
+    fn build_titles(&mut self) -> Result<()> {
+        let Some(renderer) = &self.renderer else {
+            return Ok(());
+        };
+        let children = self.content.Children()?;
+        let plate_color = d2d_color(&self.config.theme.panel);
+        // Edit mode says what each box is set to, and marks the one the keys
+        // will land on. The grid underneath is left alone: the point is to
+        // watch the real layout change as it is edited.
+        let editing = self.editing();
+        let selected_color = d2d_color(&self.config.theme.tile_selected);
+        let labels: Vec<String> = if editing {
+            self.layout
+                .headers(self.scroll)
+                .map(|(title, _, band)| self.edit_header(band, title))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        let mut built = Vec::new();
+        for (slot, (title, rect, band)) in self.layout.headers(self.scroll).enumerate() {
+            let title = labels.get(slot).map_or(title, String::as_str);
+            if rect.w < 1.0 || rect.h < 1.0 {
+                continue;
+            }
+            let section_of = self.layout.bands().get(band).map(|band| band.section);
+            // The ring's colour at full strength: the line says which box this
+            // is, and the title has to read as the same statement.
+            let color = if editing && self.edit == section_of {
+                selected_color
+            } else {
+                opaque(self.section_edge(section_of.unwrap_or(0)))
+            };
+            let surface = match renderer.create_surface(rect.w, rect.h) {
+                Ok(surface) => surface,
+                Err(e) => {
+                    log_warn!("could not create a title surface: {e}");
+                    continue;
+                }
+            };
+            if let Err(e) =
+                renderer.draw_legend(&surface, rect.w, rect.h, title, color, plate_color)
+            {
+                log_warn!("could not draw title \"{title}\": {e}");
+                continue;
+            }
+            let sprite = self.compositor.CreateSpriteVisual()?;
+            sprite.SetSize(Vector2 { X: rect.w, Y: rect.h })?;
+            sprite.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 })?;
+            sprite.SetBrush(&self.compositor.CreateSurfaceBrushWithSurface(&surface)?)?;
+            children.InsertAtTop(&sprite)?;
+            built.push(sprite);
+        }
+        self.headers = built;
         Ok(())
     }
 
@@ -819,25 +837,57 @@ impl Panel {
         let scale = self.scale();
         let hairline = (1.0 * scale).max(1.0);
 
-        let seam = color_of(&self.config.theme.box_edge);
-        if seam.A > 0 {
-            // Boxes only. The centre gets its own frame below, at its own
-            // weight, and two lines round it would be one too many.
-            let boxes: Vec<GridRect> = self
-                .layout
-                .bands()
-                .iter()
-                .filter(|band| !band.center)
-                .map(|band| band.rect.shifted_by(self.scroll))
-                .collect();
-            for rect in boxes {
-                if rect.w < 1.0 || rect.h < 1.0 {
+        // Boxes only. The centre gets its own frame below, at its own weight,
+        // and two lines round it would be one too many.
+        //
+        // Not a rectangle round each: a box wraps round the centre block, so
+        // the shape can be an L, a C, or a rectangle with a hole in the middle
+        // of it, and a rectangle would cut straight through the block. What is
+        // drawn is what the box actually occupies - see `grid::Cells`.
+        if let Some(renderer) = &self.renderer {
+            let stroke = (1.5 * self.scale()).max(1.0);
+            // Room for the stroke, which is centred on the path and so hangs
+            // half its weight outside the corners.
+            let margin = stroke;
+            for index in 0..self.layout.bands().len() {
+                let band = &self.layout.bands()[index];
+                if band.center || band.count == 0 {
                     continue;
                 }
-                let ring =
-                    self.outline(Vector2 { X: rect.w, Y: rect.h }, radius, seam, hairline)?;
-                ring.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 })?;
-                children.InsertAtTop(&ring)?;
+                let color = self.section_edge(band.section);
+                if color.a <= 0.0 {
+                    continue;
+                }
+                let rings = self.layout.band_ring(index, self.scroll);
+                let Some(bounds) = covering(&rings, margin) else {
+                    continue;
+                };
+                let surface = match renderer.create_surface(bounds.w, bounds.h) {
+                    Ok(surface) => surface,
+                    Err(e) => {
+                        log_warn!("could not create a ring surface: {e}");
+                        continue;
+                    }
+                };
+                // Surface local, so the sprite can be offset to the bounds and
+                // the geometry never carries the panel's coordinates.
+                let local: Vec<Vec<(f32, f32)>> = rings
+                    .into_iter()
+                    .map(|ring| {
+                        ring.into_iter()
+                            .map(|(x, y)| (x - bounds.x, y - bounds.y))
+                            .collect()
+                    })
+                    .collect();
+                if let Err(e) = renderer.draw_ring(&surface, &local, radius, stroke, color) {
+                    log_warn!("could not draw a box ring: {e}");
+                    continue;
+                }
+                let sprite = self.compositor.CreateSpriteVisual()?;
+                sprite.SetSize(Vector2 { X: bounds.w, Y: bounds.h })?;
+                sprite.SetOffset(Vector3 { X: bounds.x, Y: bounds.y, Z: 0.0 })?;
+                sprite.SetBrush(&self.compositor.CreateSurfaceBrushWithSurface(&surface)?)?;
+                children.InsertAtTop(&sprite)?;
             }
         }
 
@@ -1066,14 +1116,7 @@ impl Panel {
         self.home_awaiting_icon = false;
         let Some(renderer) = &self.renderer else { return Ok(()) };
 
-        let scale = self.scale();
-        let g = &self.config.grid;
-        let rect = home_button(
-            GridRect { x: 0.0, y: 0.0, w: self.layout.panel.w, h: self.layout.panel.h },
-            g.tile_width * scale,
-            g.tile_height * scale,
-            g.gap * scale,
-        );
+        let rect = self.layout.home_rect();
         if rect.w < 24.0 || rect.h < 24.0 {
             return Ok(());
         }
@@ -1493,6 +1536,33 @@ impl Panel {
     /// bug. Whole row, not just the drawn text.
     fn search_hit(&self, y: f32) -> bool {
         !self.query.is_empty() && y >= 0.0 && y < self.layout.search_rect().h
+    }
+
+    /// The colour of one section's ring, and of the title riding it.
+    ///
+    /// A box says which one it is by the colour of the line round it, which is
+    /// what lets the title shrink to a mark on that line instead of taking a
+    /// row above it. Off the section's own `edge` when it names one, and
+    /// otherwise off a palette dealt out in section order - so a panel nobody
+    /// has configured still comes out with its boxes told apart.
+    ///
+    /// An empty palette falls back to `box_edge` for every box, which is the
+    /// old one-colour panel and the way to turn this off.
+    fn section_edge(&self, section: usize) -> D2D1_COLOR_F {
+        let Some(section) = self.sections.get(section) else {
+            return d2d_color(&self.config.theme.box_edge);
+        };
+        if let Some(edge) = section.edge.as_deref() {
+            return d2d_color(edge);
+        }
+        let palette = &self.config.theme.section_edges;
+        match palette.is_empty() {
+            true => d2d_color(&self.config.theme.box_edge),
+            // By its place in the config, not its place on the panel: an empty
+            // section never reaches the grid, and a box that changed colour
+            // because another one turned up is a box you cannot learn.
+            false => d2d_color(&palette[section.slot % palette.len()]),
+        }
     }
 
     fn text_colors(&self) -> TextColors {
@@ -3934,4 +4004,29 @@ unsafe extern "system" fn wndproc(
 
     // SAFETY: standard fallback for every message we do not claim.
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+/// The rectangle a set of rings needs to be drawn in, with room for the stroke
+/// that hangs outside their corners. `None` when there is nothing to draw.
+fn covering(rings: &[Vec<(f32, f32)>], margin: f32) -> Option<GridRect> {
+    let (mut left, mut top) = (f32::MAX, f32::MAX);
+    let (mut right, mut bottom) = (f32::MIN, f32::MIN);
+    for (x, y) in rings.iter().flatten() {
+        left = left.min(*x);
+        top = top.min(*y);
+        right = right.max(*x);
+        bottom = bottom.max(*y);
+    }
+    (right > left && bottom > top).then_some(GridRect {
+        x: left - margin,
+        y: top - margin,
+        w: right - left + 2.0 * margin,
+        h: bottom - top + 2.0 * margin,
+    })
+}
+
+/// The same colour at full strength. A ring is drawn faint enough to sit behind
+/// the tiles; the words on it have to be read.
+fn opaque(color: D2D1_COLOR_F) -> D2D1_COLOR_F {
+    D2D1_COLOR_F { a: 1.0, ..color }
 }
