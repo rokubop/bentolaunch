@@ -2137,11 +2137,6 @@ mod tests {
         }
     }
 
-    /// A box across the whole width.
-    fn loose() -> BoxState {
-        BoxState { lane: Lane::Full, ..placed() }
-    }
-
     fn offered(state: &BoxState) -> Vec<Control> {
         CONTROLS.iter().copied().filter(|c| c.allowed(state)).collect()
     }
