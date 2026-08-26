@@ -24,7 +24,7 @@ jobs:
   release:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: Swatinem/rust-cache@v2
 
@@ -74,34 +74,51 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # A literal here-string: no expansion, so the backticks below stay
-          # markdown instead of becoming PowerShell escapes.
-          # Short on purpose. The README is the install guide, and notes
-          # that repeat it drift from it.
-          $notes = @'
-          Windows 11. Portable single exe, no installer, no admin.
+          # notes.md, then the README's Install section verbatim. Copied not
+          # linked, so a release keeps saying how to install that release.
+          $whatsNew = (Get-Content notes.md -Raw).TrimEnd()
 
-          Download `bentolaunch.exe`, put it somewhere permanent, run it, press
-          Alt+backtick. Windows will warn about an unrecognised app until this
-          is code-signed.
+          $readme = Get-Content README.md
+          $from = ($readme | Select-String -Pattern '^## Install$').LineNumber
+          $to = ($readme | Select-String -Pattern '^## Build from source$').LineNumber
+          if (-not $from -or -not $to -or $to -le $from) {
+            Write-Error "README has no Install section to copy: the headings this reads between are '## Install' and '## Build from source'"
+            exit 1
+          }
+          $install = ($readme[($from - 1)..($to - 2)] -join "`n").TrimEnd()
 
-          `bentolaunch-extension.zip` is here too - required if you want tabs
-          and bookmarks. Use both halves from the same release.
-
-          [Install steps](https://github.com/rokubop/bentolaunch#install)
-          '@
+          $notesFile = Join-Path $env:RUNNER_TEMP "release-notes.md"
+          Set-Content -Path $notesFile -Value "$whatsNew`n`n$install" -Encoding utf8
+          Write-Host "--- notes ---"
+          Get-Content $notesFile | Write-Host
+          Write-Host "--- end notes ---"
 
           # A dispatch run is a rehearsal of the packaging, not a release, so
           # it lands as a draft under its own name.
           $tagged = "${{ github.ref_type }}" -eq "tag"
           $tag = if ($tagged) { "${{ github.ref_name }}" } else { "draft-$(git rev-parse --short HEAD)" }
 
-          $arguments = @(
-            "release", "create", $tag,
-            "target\release\bentolaunch.exe",
-            "bentolaunch-extension.zip",
-            "--title", $tag,
-            "--notes", $notes
-          )
-          if (-not $tagged) { $arguments += "--draft" }
-          gh @arguments
+          $assets = @("target\release\bentolaunch.exe", "bentolaunch-extension.zip")
+
+          # A tag carrying a release already is a tag that moved. Replacing its
+          # assets beats leaving it serving binaries from a commit that is gone.
+          # No such release is an answer, not a failure. This shell stops on
+          # error and pwsh 7.4 throws on a native non-zero exit.
+          $PSNativeCommandUseErrorActionPreference = $false
+          gh release view $tag 2>$null | Out-Null
+          $published = $LASTEXITCODE -eq 0
+          $PSNativeCommandUseErrorActionPreference = $true
+
+          if ($published) {
+            Write-Host "$tag already has a release; replacing its assets"
+            gh release upload $tag @assets --clobber
+            gh release edit $tag --notes-file $notesFile
+          }
+          else {
+            $arguments = @("release", "create", $tag) + $assets + @(
+              "--title", $tag,
+              "--notes-file", $notesFile
+            )
+            if (-not $tagged) { $arguments += "--draft" }
+            gh @arguments
+          }
