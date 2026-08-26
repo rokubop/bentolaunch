@@ -22,7 +22,7 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The runner image ships a current stable toolchain, so there is nothing
       # to install. Pin one here if a specific version ever matters.
