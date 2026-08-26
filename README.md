@@ -93,6 +93,54 @@ Filtering hides tiles, it never reorders them. Tile positions are what make the
 grid learnable, and the panel keeps its width while you type so it cannot slide
 sideways under you.
 
+## All of them
+
+The last square in **Apps**, and the last square in **Bookmarks**. Nine squares
+where the box shows a handful. Either one fills the panel with the whole list in
+place of the grid: type to narrow it, click to take it, corner button to leave.
+
+Both boxes show a row somebody curated — the taskbar's pins, the bookmarks bar.
+Anything not on either had no way onto the panel at all. These are that way in,
+and each is last in its box because a box's whole worth is that its tiles are
+where they were last time.
+
+**All apps** comes off `shell:AppsFolder`, the same virtual folder the **Add
+app** picker opens, so Store apps are in it too. Read on a worker, never on the
+UI thread, and re-read every five minutes, so something installed while the app
+is running turns up without a restart.
+
+**All bookmarks** is the whole tree, flat, with the folder each one is filed
+under on its second line. Flat because the tree is an archive of thousands and
+walking it a folder at a time is several clicks to a place three letters already
+reach. Still read-only: BentoLaunch never writes to a browser profile.
+
+That second line is drawn here whatever `show_detail` says, and it is the only
+place that overrides it. Five videos saved out of one series have five
+near-identical titles and the folder is the only thing telling them apart. It
+costs no layout — both lines share the strip the title already has to itself.
+
+The bar is not named on the line. It is where most bookmarks are, and printing
+it on nine tiles in ten would spend the line saying "the usual place"; a
+bookmark sitting on the bar itself shows its site instead. Every other root
+keeps its name, because "Other bookmarks" is the part worth knowing.
+
+The tree is **asked for, not sent**. The bar arrives on connect because it is on
+the panel all the time; the archive crosses the socket only when the square is
+clicked, and it is asked again each time so an edit made since is in the answer.
+Capped at 5000, and the extension says so in its console when it cuts one.
+
+No favicons come with it. One favicon is filed per site, so a bookmark sharing a
+site with an open tab or a bar entry already wears the right picture; the rest
+fall back to the shell, exactly as a hand-written site favorite does. Fetching
+one for every distinct site in an archive would be minutes of work and megabytes
+of socket.
+
+The square only appears while a browser is connected, since nothing else can
+answer for the tree. An extension too old to know the question leaves the box
+empty rather than breaking the connection — the same trade **Open a tab** makes,
+and the reason neither is a protocol bump: refusing the connection would cost
+every tab to save one square.
+
 ## The center
 
 A block held in the middle of the screen, holding whatever you put there.
@@ -121,6 +169,24 @@ Click an empty one and favorites mode opens.
 While the mode is on, everything the center is already holding wears a **⊖** in
 its corner: the warm fill says this one is in, and the badge says which way the
 next click goes.
+
+Three states, so the panel reads as a field rather than tile by tile:
+
+| Tile | Means |
+|---|---|
+| Warm fill, **⊖** badge | Already in the center. Clicking takes it out |
+| Normal | Can go in |
+| Faded | Cannot. Nothing to write down, or its half is full |
+
+The empty square the next pick lands in wears a ring, and the ring follows the
+pointer: an app rings the apps square, a page rings the sites one. Clicking an
+empty square enters the mode aimed at that half; clicking the square it is
+already aimed at leaves, like every other mode square.
+
+A half with no empty square left refuses. The block shows `rows × columns` of a
+list and keeps the rest, so a write into a full half would be taken and never
+drawn — the same click with no visible result a half `contents` is not showing
+would give. Take one out, or grow the block.
 
 Anything in the center is left out of the list it came from. One thing in two
 places costs a fixed slot the only property that makes it worth having.
@@ -534,9 +600,13 @@ source    = "bookmarks"
 max_items = 12
 ```
 
-The **bookmarks bar only**, one level deep. Not "Other bookmarks", which is an
-archive of thousands and would bury the panel it was pasted into, and not the
-folders sitting on the bar, since there is nothing BentoLaunch could do with one.
+The box is the **bookmarks bar only**, one level deep. Not "Other bookmarks",
+which is an archive of thousands and would bury the panel it was pasted into,
+and not the folders sitting on the bar, since there is nothing BentoLaunch could
+do with one.
+
+The rest of them are one square away: the box's last tile is **All bookmarks**,
+which fills the panel with the whole tree. See *All of them*.
 
 A bookmark tile is a URL handed to the shell, so it opens in your default
 browser and works whether or not the browser that sent it is still running.

@@ -44,6 +44,11 @@ pub struct Bookmark {
     pub url: String,
     #[serde(default)]
     pub icon: Option<String>,
+    /// Which folder it is filed under, as a path. Empty for the bar, which is
+    /// one level and needs no saying. Only the whole tree fills it, where it is
+    /// the difference between two bookmarks with the same title.
+    #[serde(default)]
+    pub folder: String,
 }
 
 impl Bookmark {
@@ -113,6 +118,13 @@ pub enum Inbound {
         /// case this needs to name, so it defaults rather than failing.
         #[serde(default)]
         v: u32,
+        /// The extension's own version, for the log. The protocol number says
+        /// what it can speak; this says which build is speaking, which is the
+        /// question when Chrome keeps a registered service worker across a
+        /// reload and old code carries on answering pings. Defaults, so a build
+        /// that predates it is not refused over a label.
+        #[serde(default)]
+        ext: String,
         /// A string, not an enum: an unknown mode from a newer extension has to
         /// survive parsing far enough for the version check to explain itself.
         mode: String,
@@ -137,6 +149,20 @@ pub enum Inbound {
         bookmarks: Vec<Bookmark>,
         #[serde(default)]
         icons: HashMap<String, IconData>,
+    },
+    /// The whole tree, flattened, each entry carrying its folder path.
+    ///
+    /// Only ever sent in answer to `WantTree`, which is what keeps this off the
+    /// version number. An extension that predates it never sends one and the
+    /// all-bookmarks square comes up empty; a browser paired with an older exe
+    /// is never asked, so it never sends one. Nothing mismatches - the feature
+    /// is simply there or not.
+    ///
+    /// No icons. A favicon is filed by origin, and the origins worth having are
+    /// already in hand from the tabs and the bar; the rest fall back to the
+    /// shell, exactly as a hand-written site favorite does.
+    Tree {
+        bookmarks: Vec<Bookmark>,
     },
     Pong,
 }
@@ -178,6 +204,13 @@ pub enum Outbound {
     /// unknown type on the floor, which costs one button; refusing the whole
     /// connection over it would cost every tab.
     NewTab,
+    /// Ask for the whole bookmark tree. Sent when the all-bookmarks square is
+    /// clicked, not on connect: the bar is what the panel shows all the time,
+    /// and an archive of thousands does not need sending until it is asked for.
+    ///
+    /// Not a PROTOCOL bump either, for the same reason as `NewTab`. An older
+    /// extension drops it, which costs one square rather than every tab.
+    WantTree,
     /// Keeps the MV3 worker alive. bentolaunch drives it: the worker cannot be
     /// trusted to wake itself.
     Ping,
@@ -255,6 +288,37 @@ mod tests {
         assert_eq!(bookmarks[0].id, "14");
         assert_eq!(bookmarks[0].title, "Rust");
         assert_eq!(bookmarks[0].host(), "rust-lang.org");
+    }
+
+    #[test]
+    fn a_whole_tree_parses_with_the_folder_each_one_is_filed_under() {
+        let json = r#"{"type":"tree","bookmarks":[
+            {"id":"31","title":"Rust","url":"https://rust-lang.org/","folder":"dev / langs"},
+            {"id":"32","title":"Loose","url":"https://example.com/"}
+        ]}"#;
+        let Inbound::Tree { bookmarks } = serde_json::from_str(json).unwrap() else {
+            panic!("expected a tree");
+        };
+        assert_eq!(bookmarks[0].folder, "dev / langs");
+        // Filed at a root, which is a real place to be. Empty, never absent.
+        assert!(bookmarks[1].folder.is_empty());
+    }
+
+    /// The bar and the tree are the same shape on the wire, so an old extension
+    /// sending a bar without folders still parses.
+    #[test]
+    fn a_bar_entry_still_parses_without_a_folder() {
+        let json = r#"{"type":"bookmarks","bookmarks":[{"id":"9","url":"https://example.com/"}]}"#;
+        let Inbound::Bookmarks { bookmarks, .. } = serde_json::from_str(json).unwrap() else {
+            panic!("expected a bookmark list");
+        };
+        assert!(bookmarks[0].folder.is_empty());
+    }
+
+    #[test]
+    fn asking_for_the_tree_is_a_type_the_extension_can_switch_on() {
+        let json = serde_json::to_string(&Outbound::WantTree).unwrap();
+        assert_eq!(json, r#"{"type":"wanttree"}"#);
     }
 
     #[test]

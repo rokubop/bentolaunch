@@ -52,6 +52,11 @@ const MAX_TABS: usize = 2_000;
 /// The bar, not the whole tree. A bar this long is a bug or an attempt.
 const MAX_BOOKMARKS: usize = 500;
 
+/// The whole tree is an archive, so this is far above the bar's cap and is a
+/// backstop rather than a rule: it bounds what one browser can make this
+/// process hold, and what it costs to filter on every keystroke.
+const MAX_TREE: usize = 5_000;
+
 /// How long a caller has to finish proving itself. Generous for a local round
 /// trip, short enough that a connection holding a slot in silence is dropped.
 const NEGOTIATION: Duration = Duration::from_secs(5);
@@ -76,6 +81,11 @@ pub struct Owned {
 struct State {
     tabs: HashMap<u64, Vec<Tab>>,
     bookmarks: HashMap<u64, Vec<Bookmark>>,
+    /// The whole tree, kept apart from the bar. The bar is what the panel shows
+    /// all the time and arrives unasked; this arrives only when the all-
+    /// bookmarks square is clicked, and merging them would put an archive of
+    /// thousands into the box that holds the curated row.
+    tree: HashMap<u64, Vec<Bookmark>>,
     outbox: HashMap<u64, Sender<Outbound>>,
 }
 
@@ -85,6 +95,7 @@ fn state() -> &'static Mutex<State> {
         Mutex::new(State {
             tabs: HashMap::new(),
             bookmarks: HashMap::new(),
+            tree: HashMap::new(),
             outbox: HashMap::new(),
         })
     })
@@ -120,6 +131,37 @@ pub fn bookmarks() -> Vec<Bookmark> {
         .into_iter()
         .flat_map(|connection| state.bookmarks[connection].iter().cloned())
         .collect()
+}
+
+/// Every paired browser's whole tree, in connection order. Empty until a
+/// browser has been asked and has answered - and it stays empty against an
+/// extension too old to know the question.
+pub fn tree() -> Vec<Bookmark> {
+    let Ok(state) = state().lock() else {
+        log_warn!("browser state is poisoned; reporting no bookmarks");
+        return Vec::new();
+    };
+    let mut connections: Vec<&u64> = state.tree.keys().collect();
+    connections.sort();
+    connections
+        .into_iter()
+        .flat_map(|connection| state.tree[connection].iter().cloned())
+        .collect()
+}
+
+/// Ask every paired browser for its whole tree.
+///
+/// Asked rather than sent on connect: the archive is only worth carrying when
+/// somebody is looking at it, and it is re-asked each time so an edit made in
+/// the browser since is in the answer.
+pub fn want_tree() {
+    let Ok(state) = state().lock() else { return };
+    log_info!("asking {} browser(s) for the whole bookmark tree", state.outbox.len());
+    for (connection, outbox) in &state.outbox {
+        if outbox.send(Outbound::WantTree).is_err() {
+            log_warn!("browser connection {connection} has gone; cannot ask for its bookmarks");
+        }
+    }
 }
 
 /// Fire and forget. bentolaunch has already hidden by the time the switch lands.
@@ -383,11 +425,19 @@ fn negotiate(
 ) -> Option<Peer> {
     let deadline = Instant::now() + NEGOTIATION;
 
-    let Some(Inbound::Hello { v, mode, nonce, proof }) = read_frame(socket, deadline, connection)
+    let Some(Inbound::Hello { v, ext, mode, nonce, proof }) =
+        read_frame(socket, deadline, connection)
     else {
         log_warn!("browser connection {connection}: no usable hello; closing");
         return None;
     };
+    log_info!(
+        "browser connection {connection}: extension {}, protocol {v}",
+        match ext.is_empty() {
+            true => "(unlabelled)",
+            false => ext.as_str(),
+        }
+    );
 
     if v != PROTOCOL {
         // Named, not just refused. Once the exe and the extension are separate
@@ -602,6 +652,7 @@ fn send(socket: &mut WebSocket<TcpStream>, message: &Outbound, connection: u64) 
     let Ok(text) = serde_json::to_string(message) else {
         return true;
     };
+
     match socket.send(Message::Text(text.into())) {
         Ok(()) => true,
         Err(e) => {
@@ -613,6 +664,7 @@ fn send(socket: &mut WebSocket<TcpStream>, message: &Outbound, connection: u64) 
 
 /// Returns whether the tab list changed.
 fn handle(text: &str, connection: u64) -> bool {
+
     let message: Inbound = match serde_json::from_str(text) {
         Ok(message) => message,
         Err(e) => {
@@ -672,6 +724,28 @@ fn handle(text: &str, connection: u64) -> bool {
             }
             true
         }
+        Inbound::Tree { bookmarks } => {
+            log_info!(
+                "browser connection {connection}: {} bookmark(s) in the whole tree",
+                bookmarks.len()
+            );
+            // Not refused when it is over the cap, unlike the bar: an archive
+            // genuinely is thousands, and the honest answer to a big one is the
+            // first few thousand of it rather than nothing at all. Said out
+            // loud, because a list silently cut is a list that reads complete.
+            let mut bookmarks = bookmarks;
+            if bookmarks.len() > MAX_TREE {
+                log_warn!(
+                    "browser connection {connection} sent {} bookmarks; keeping the first {MAX_TREE}",
+                    bookmarks.len()
+                );
+                bookmarks.truncate(MAX_TREE);
+            }
+            if let Ok(mut state) = state().lock() {
+                state.tree.insert(connection, bookmarks);
+            }
+            true
+        }
         Inbound::Pong => false,
         // Admission is over. Repeating it mid-stream is not a thing this
         // protocol does, and re-running it would be a way to change identity
@@ -687,6 +761,7 @@ fn disconnect(connection: u64, hwnd: isize) {
     if let Ok(mut state) = state().lock() {
         state.tabs.remove(&connection);
         state.bookmarks.remove(&connection);
+        state.tree.remove(&connection);
         state.outbox.remove(&connection);
     }
     log_info!("browser disconnected (connection {connection})");

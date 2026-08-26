@@ -9,6 +9,13 @@
 
 importScripts("bridge.js");
 
+// Printed on every worker start, because Chrome will happily keep a registered
+// service worker across a reload of an unpacked extension: the extension
+// reloads, the script does not, and the new message type is dropped by old code
+// that is still answering pings. If this line does not say what the manifest
+// says, remove the extension and add it again.
+console.log(`bentolaunch bridge ${chrome.runtime.getManifest().version}, protocol ${BRIDGE_PROTOCOL}`);
+
 const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 const TAB_DEBOUNCE_MS = 250;
@@ -55,7 +62,13 @@ async function connect() {
     // A new bentolaunch process knows none of them.
     iconsSent = new Set();
     // Opens the exchange and says nothing else. The token stays here.
-    raw({ type: "hello", v: BRIDGE_PROTOCOL, mode: "resume", nonce: nonceClient });
+    raw({
+      type: "hello",
+      v: BRIDGE_PROTOCOL,
+      ext: chrome.runtime.getManifest().version,
+      mode: "resume",
+      nonce: nonceClient,
+    });
   };
   socket.onmessage = (event) => receive(event.data);
   socket.onclose = () => {
@@ -217,6 +230,46 @@ function scheduleBookmarks() {
   }, BOOKMARK_DEBOUNCE_MS);
 }
 
+// The whole tree, flattened, each entry carrying the folder path it is filed
+// under. Only ever in answer to a request: the bar is what the panel shows all
+// the time, and an archive of thousands is not worth sending until somebody
+// opens it.
+//
+// No icons. Fetching a favicon for every distinct site in an archive is minutes
+// of work and megabytes of socket; BentoLaunch files favicons by origin, so
+// anything sharing a site with an open tab or a bar entry already has one there.
+const MAX_TREE = 5000;
+
+async function sendTree() {
+  if (!proven || !live()) return;
+  const roots = await chrome.bookmarks.getTree();
+  const bar = await barFolder();
+  const out = [];
+
+  const walk = (node, path) => {
+    for (const child of node.children || []) {
+      if (child.url) {
+        out.push({ id: child.id, title: child.title || "", url: child.url, folder: path });
+      } else {
+        walk(child, path ? `${path} / ${child.title}` : child.title || "");
+      }
+    }
+  };
+
+  // The bar is where most bookmarks are, and naming it on nine tiles in ten
+  // spends the line saying "the usual place". It starts at nothing; every other
+  // root keeps its name, because "Other bookmarks" is the part worth knowing.
+  for (const root of (roots[0] && roots[0].children) || []) {
+    walk(root, bar && root.id === bar.id ? "" : root.title || "");
+  }
+
+  if (out.length > MAX_TREE) {
+    console.warn(`bentolaunch: ${out.length} bookmarks; sending the first ${MAX_TREE}`);
+    out.length = MAX_TREE;
+  }
+  send({ type: "tree", bookmarks: out });
+}
+
 // Tab events arrive in bursts.
 function scheduleTabs() {
   if (debounce) clearTimeout(debounce);
@@ -288,6 +341,11 @@ function receive(data) {
     // bentolaunch grants them with AllowSetForegroundWindow before asking.
     chrome.tabs.update(message.tabId, { active: true });
     chrome.windows.update(message.windowId, { focused: true });
+    return;
+  }
+
+  if (message.type === "wanttree") {
+    sendTree();
     return;
   }
 

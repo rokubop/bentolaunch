@@ -185,6 +185,10 @@ fn build_groups(sections: &[SectionConfig]) -> Vec<Group> {
                     | Source::Bookmarks
                     | Source::Moves
                     | Source::Modes
+                    // Read on a worker, or asked of a browser. Neither is fixed
+                    // at config time.
+                    | Source::AllApps
+                    | Source::AllBookmarks
                     // Not fixed per section: the centre resolves them once and
                     // every list of them comes off that.
                     | Source::Favorites => None,
@@ -491,6 +495,49 @@ fn bookmark_items() -> Vec<Item> {
         .collect()
 }
 
+/// Every bookmark there is, folder path and all.
+///
+/// Empty until a browser has been asked and has answered, and empty for good
+/// against an extension that predates the question - which is a box that draws
+/// nothing rather than a panel that breaks.
+///
+/// No favicon came with these. One is filed by origin, so anything sharing a
+/// site with an open tab or a bar entry is already wearing the right picture;
+/// the rest fall back to the shell, exactly as a hand-written site favorite
+/// does.
+fn all_bookmark_items() -> Vec<Item> {
+    crate::browser::server::tree()
+        .into_iter()
+        .map(|bookmark| {
+            let item = Item {
+                id: ItemId::Shell(bookmark.url.clone()),
+                kind: Kind::Link,
+                // The folder, not the host: in an archive of thousands, which
+                // folder something is filed under is what tells two bookmarks
+                // of the same site apart. The host is in the title already
+                // whenever there is nothing else to call it.
+                detail: match bookmark.folder.is_empty() {
+                    true => truncate(bookmark.host(), 48),
+                    false => truncate(&bookmark.folder, 48),
+                },
+                title: if bookmark.title.is_empty() {
+                    truncate(bookmark.host(), 48)
+                } else {
+                    truncate(&bookmark.title, 48)
+                },
+                target: Target::Shell(bookmark.url.clone()),
+                icon_source: None,
+                app: None,
+                origin: Source::AllBookmarks,
+                link: Some(bookmark.url.clone()),
+                running: None,
+                group: 0,
+            };
+            wearing_favicon(&item)
+        })
+        .collect()
+}
+
 /// The modes, one tile each.
 ///
 /// A fixed set in a fixed order, so the four squares are in the same four
@@ -517,6 +564,55 @@ fn mode_items() -> Vec<Item> {
             group: 0,
         })
         .collect()
+}
+
+/// Every installed app, alphabetical.
+///
+/// Empty while the reader is still walking `shell:AppsFolder`, which takes a
+/// moment on a machine with a lot installed. An empty box draws nothing and the
+/// panel is told to rebuild when the list lands, so the wait shows as the box
+/// filling in rather than as the panel being stuck.
+fn all_app_items() -> Vec<Item> {
+    let Some(apps) = crate::shell::apps::request() else {
+        return Vec::new();
+    };
+    apps.iter()
+        .map(|app| Item {
+            id: ItemId::Shell(app.target.clone()),
+            kind: Kind::App,
+            title: app.title.clone(),
+            detail: String::new(),
+            target: Target::Shell(app.target.clone()),
+            icon_source: Some(app.target.clone()),
+            app: None,
+            origin: Source::AllApps,
+            link: None,
+            running: None,
+            group: 0,
+        })
+        .collect()
+}
+
+/// The square that opens the rest of them, at the end of the box showing a few.
+///
+/// The taskbar is a shortlist somebody curated and so is the bookmarks bar, so
+/// anything not on either had no way onto the panel at all. Last in its box,
+/// because a box's whole worth is that its tiles are where they were last time.
+fn all_tile(mode: Mode, id: &'static str) -> Item {
+    Item {
+        id: ItemId::Action(id),
+        kind: Kind::Action,
+        title: mode.label().to_owned(),
+        detail: String::new(),
+        target: Target::Mode(mode),
+        // Drawn, not fetched: nine squares where the box shows a handful.
+        icon_source: None,
+        app: None,
+        origin: Source::Modes,
+        link: None,
+        running: None,
+        group: 0,
+    }
 }
 
 /// The tile naming the window being moved, then the six moves. Fixed, so this
@@ -690,6 +786,27 @@ fn center_sections(center: &Center, mode: Mode) -> Vec<Section> {
 /// draws nothing, so a `move` box that has nothing to say costs no row - which
 /// is what lets a `modes` bar of four squares stand in for a bar of seven.
 pub fn sections(mode: Mode) -> Vec<Section> {
+    // One box holding all of something, in place of the grid rather than beside
+    // it: three hundred tiles are not a box that fits next to anything. The
+    // corner button is the way out, as it is out of every mode.
+    if let Mode::AllApps | Mode::AllBookmarks = mode {
+        let items = match mode {
+            Mode::AllBookmarks => all_bookmark_items(),
+            _ => all_app_items(),
+        };
+        let total = items.len();
+        return vec![Section {
+            title: mode.label().to_owned(),
+            items,
+            color: None,
+            edge: None,
+            slot: usize::MAX,
+            total,
+            center: None,
+            columns: 0,
+        }];
+    }
+
     let Ok(s) = store().lock() else {
         log_warn!("item store is poisoned; showing an empty grid");
         return Vec::new();
@@ -712,6 +829,9 @@ pub fn sections(mode: Mode) -> Vec<Section> {
                     .is_some_and(|app| held_apps.contains(&app.to_lowercase()))
         }
         Source::Windows | Source::Extra | Source::Tabs | Source::Moves | Source::Modes
+        // Lists to launch from rather than ones the centre is drawn out of.
+        | Source::AllApps
+        | Source::AllBookmarks
         // The list itself, wherever it is shown.
         | Source::Favorites => false,
     };
@@ -807,6 +927,8 @@ pub fn sections(mode: Mode) -> Vec<Section> {
                         items.extend(fixed.iter().cloned());
                     }
                 }
+                Source::AllApps => items.extend(all_app_items()),
+                Source::AllBookmarks => items.extend(all_bookmark_items()),
             }
             for item in &mut items[start..] {
                 item.group = index;
@@ -820,6 +942,27 @@ pub fn sections(mode: Mode) -> Vec<Section> {
         let total = items.len();
         if group.max_items > 0 {
             items.truncate(group.max_items);
+        }
+
+        // The square that opens all of them, last in the box showing a few.
+        // After the cut, because it is the way to what `max_items` just took
+        // away. A group of its own, so a drag among the tiles above cannot run
+        // into it.
+        let opens = group.sources.iter().find_map(|spec| match spec.source() {
+            Source::Taskbar => Some((Mode::AllApps, "all-apps")),
+            // Only while a browser is connected. Nothing else can answer for
+            // the tree, and a square that opens an empty box reads as broken.
+            // The bar being empty is not the test: a browser with nothing on
+            // its bar still has an archive behind it.
+            Source::Bookmarks if !crate::browser::server::connections().is_empty() => {
+                Some((Mode::AllBookmarks, "all-bookmarks"))
+            }
+            _ => None,
+        });
+        if let Some((mode, id)) = opens {
+            let mut tile = all_tile(mode, id);
+            tile.group = group.sources.iter().count();
+            items.push(tile);
         }
 
         if !items.is_empty() {
@@ -1189,6 +1332,21 @@ mod tests {
             let filled: Vec<&str> =
                 out[0].items.iter().filter_map(|item| item.shell_target()).collect();
             assert_eq!(filled, vec![held], "{contents:?} holds the wrong list");
+        }
+    }
+
+    /// It belongs to the box that mirrors the taskbar, not to the modes bar.
+    /// The bar is four squares that are always the same four in the same
+    /// places; a fifth that is about one box on the panel would be a fifth
+    /// answer to a different question.
+    #[test]
+    fn the_all_of_it_squares_are_not_modes_bar_squares() {
+        for (mode, id) in [(Mode::AllApps, "all-apps"), (Mode::AllBookmarks, "all-bookmarks")] {
+            assert!(!MODES.contains(&mode), "{mode:?} took a place in the bar");
+            let tile = all_tile(mode, id);
+            assert_eq!(tile.target, Target::Mode(mode));
+            assert!(!tile.title.is_empty(), "{mode:?}'s square has no words");
+            assert!(mode.done().is_some(), "no way out of {mode:?}");
         }
     }
 

@@ -57,6 +57,24 @@ pub enum Mode {
     /// The one mode that does not take clicks off the grid. Clicking is how you
     /// pick the window to move, and clicking is how you move it.
     Move,
+    /// Every installed app, in place of the grid.
+    ///
+    /// The `Apps` box mirrors the taskbar, which is a shortlist somebody
+    /// curated - so an app that is not on it had no way onto the panel at all.
+    /// This is that way in: the last square of the box opens the rest of them.
+    ///
+    /// Clicks mean what they always mean here. It is a mode only because it
+    /// holds the panel open and is left by a square, which is what everything
+    /// that changes the panel has to be.
+    AllApps,
+    /// Every bookmark, in place of the grid. The same answer as `AllApps` to
+    /// the same question: the box shows the row somebody curated, and this is
+    /// the rest of them.
+    ///
+    /// Flat, with the folder each one is filed under on its second line. The
+    /// tree is an archive of thousands and walking it a folder at a time is
+    /// several clicks to a place typing three letters already reaches.
+    AllBookmarks,
 }
 
 impl Mode {
@@ -69,6 +87,8 @@ impl Mode {
             Mode::Favorites => Some("Done \u{00B7} favorites"),
             Mode::Close => Some("Done \u{00B7} closing"),
             Mode::Move => Some("Done \u{00B7} moving"),
+            Mode::AllApps => Some("Done \u{00B7} all apps"),
+            Mode::AllBookmarks => Some("Done \u{00B7} all bookmarks"),
         }
     }
 
@@ -86,6 +106,8 @@ impl Mode {
             Mode::Favorites => "Favorites",
             Mode::Close => "Close apps",
             Mode::Move => "Move window",
+            Mode::AllApps => "All apps",
+            Mode::AllBookmarks => "All bookmarks",
         }
     }
 }

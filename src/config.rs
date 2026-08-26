@@ -135,6 +135,21 @@ impl Contents {
             Contents::Sites => half == 1,
         }
     }
+
+    /// Whether the block's `drawn`th half on screen is holding list `half`.
+    ///
+    /// The two are not the same number. Sites alone draws the sites list as the
+    /// block's first and only half, and one block draws both lists in it - so
+    /// "which square does a page land in" cannot be answered from the list's
+    /// own index. Everything that points at a landing square asks this.
+    pub fn holds(self, drawn: usize, half: usize) -> bool {
+        match self {
+            Contents::Split => drawn == half,
+            Contents::One => drawn == 0,
+            Contents::Apps => drawn == 0 && half == 0,
+            Contents::Sites => drawn == 0 && half == 1,
+        }
+    }
 }
 
 impl Favorites {
@@ -190,6 +205,19 @@ impl Default for Browser {
 pub enum Source {
     /// Apps pinned to the Windows taskbar, read from disk.
     Taskbar,
+    /// Every installed app, from `shell:AppsFolder`.
+    ///
+    /// Not a box to list in the file: it is what all-apps mode fills the panel
+    /// with, and a box of three hundred tiles is not a box. It is named here
+    /// because every tile carries where it came from.
+    #[serde(rename = "allapps")]
+    AllApps,
+    /// Every bookmark a paired browser has, not just the bar. Asked for rather
+    /// than sent, so it is empty until the all-bookmarks square has been
+    /// clicked once. Not a box to list in the file, for the same reason
+    /// `allapps` is not.
+    #[serde(rename = "allbookmarks")]
+    AllBookmarks,
     /// Every open window.
     Windows,
     /// `windows`, minus the redundant half: only apps with more than one window
@@ -982,6 +1010,21 @@ mod tests {
         let hk = parse_hotkey(&spec).expect("the default hotkey must parse");
         assert_eq!(hk.modifiers, MOD_ALT);
         assert_eq!(hk.vk, 0xC0);
+    }
+
+    #[test]
+    fn a_drawn_half_is_not_the_list_it_holds() {
+        // Split is the only case where the two numbers agree.
+        assert!(Contents::Split.holds(0, 0) && Contents::Split.holds(1, 1));
+        assert!(!Contents::Split.holds(0, 1));
+        // Sites alone draws the sites list as the block's first half, so the
+        // square a page lands in is drawn half 0 holding list 1.
+        assert!(Contents::Sites.holds(0, 1));
+        assert!(!Contents::Sites.holds(0, 0));
+        assert!(Contents::Apps.holds(0, 0) && !Contents::Apps.holds(0, 1));
+        // One block: both lists land in the one half that is drawn.
+        assert!(Contents::One.holds(0, 0) && Contents::One.holds(0, 1));
+        assert!(!Contents::One.holds(1, 0));
     }
 
     #[test]

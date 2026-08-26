@@ -68,6 +68,12 @@ const DEACTIVATED_TIMER: usize = 2;
 const DEACTIVATED_MS: u32 = 120;
 /// Thick enough to read past a tile's own fill without eating into the icon.
 const TARGET_STROKE: f32 = 3.0;
+
+/// How far the face of a tile the current mode cannot act on is faded back. Far
+/// enough to read as a field of what is *not* in play at a glance, not so far
+/// that the grid loses its shape - tiles are found by aiming where they were
+/// last time, so an unavailable one stays exactly where it was.
+const INERT_OPACITY: f32 = 0.4;
 /// A press that never travels this far is a click, not a drag.
 ///
 /// Taken from the shell rather than picked, so bentolaunch's idea of "that was a
@@ -94,6 +100,11 @@ struct Tile {
     surface: Option<CompositionDrawingSurface>,
     /// This tile wants an icon that has not arrived yet.
     awaiting_icon: bool,
+    /// The ring saying the next favorite lands here. Built on the block's empty
+    /// squares while favorites mode is on, and shown or hidden as the pointer
+    /// moves - built once rather than rebuilt, because the grid under the
+    /// pointer must not be torn down while it is being pointed at.
+    landing: Option<ShapeVisual>,
 }
 
 pub struct Panel {
@@ -187,6 +198,14 @@ pub struct Panel {
     /// mode is on but nothing is chosen yet, which is where it starts: the
     /// options belong to a box, so there is nothing to show until one is.
     edit: Option<usize>,
+    /// The half of the centre block favorites mode was aimed at, which is the
+    /// empty square that was clicked to get into it. `None` when the mode was
+    /// entered from its own square instead, and both halves are then waiting.
+    ///
+    /// It steers nothing about where a pick is written - a page belongs in the
+    /// sites list whichever square was clicked - it only says which empty
+    /// square is ringed while nothing is under the pointer.
+    filling: Option<pins::Half>,
     /// The box under the pointer while editing. Separate from `hover`, which
     /// is a tile: in this mode the thing being pointed at is a whole box.
     hover_box: Option<usize>,
@@ -339,6 +358,7 @@ impl Panel {
             menu_open: false,
             mode: Mode::Grid,
             edit: None,
+            filling: None,
             hover_box: None,
             box_faces: Vec::new(),
             options: Vec::new(),
@@ -628,6 +648,7 @@ impl Panel {
         self.selected = None;
         self.mode = Mode::Grid;
         self.edit = None;
+        self.filling = None;
         self.hover_box = None;
         self.hover_option = None;
         self.options.clear();
@@ -699,11 +720,12 @@ impl Panel {
 
         let icon_size = self.icon_size();
         let label_height = self.config.grid.label_height * scale;
-        let show_detail = self.config.grid.show_detail;
+        let show_detail = self.show_detail();
         let colors = self.text_colors();
         // What an unavailable move tile is drawn in: the same grey the section
         // titles use, so it reads as label rather than as control.
         let muted = d2d_color(&self.config.theme.header);
+        let accent = d2d_color(&self.config.theme.tile_target);
         let mut built = Vec::with_capacity(self.items.len());
 
         for (index, item) in self.items.iter().enumerate() {
@@ -711,6 +733,7 @@ impl Panel {
             let root = self.compositor.CreateContainerVisual()?;
             root.SetSize(Vector2 { X: rect.w, Y: rect.h })?;
             root.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 })?;
+
 
             let (face, brush) =
                 self.rounded_rect(Vector2 { X: rect.w, Y: rect.h }, radius, self.tile_color(index))?;
@@ -721,6 +744,12 @@ impl Panel {
             let (mark, relabel) = self.action_face(item);
             let colors = match self.inert(item) {
                 true => TextColors { title: muted, detail: muted },
+                // An empty square in favorites mode is the thing being aimed
+                // at, so its plus is drawn in the colour that means "this one",
+                // the same one the ring round the landing square is in.
+                false if self.mode == Mode::Favorites && matches!(item.target, Target::Slot) => {
+                    TextColors { title: accent, detail: accent }
+                }
                 false => colors,
             };
 
@@ -755,6 +784,15 @@ impl Panel {
                         let sprite = self.compositor.CreateSpriteVisual()?;
                         sprite.SetSize(Vector2 { X: rect.w, Y: rect.h })?;
                         sprite.SetBrush(&self.compositor.CreateSurfaceBrushWithSurface(&drawn)?)?;
+                        // A mode should read as a field rather than tile by
+                        // tile: what it can act on stays where it was and
+                        // everything else recedes, so there is nothing to hunt
+                        // for. The icon and the words fade, never the fill -
+                        // the panel is translucent, and a tile faded whole is a
+                        // hole with the desktop showing through it.
+                        if self.inert(item) {
+                            sprite.SetOpacity(INERT_OPACITY)?;
+                        }
                         root.Children()?.InsertAtTop(&sprite)?;
                         surface = Some(drawn);
                     }
@@ -771,11 +809,31 @@ impl Panel {
                 root.Children()?.InsertAtTop(&ring)?;
             }
 
+            // One on every empty square, hidden until the state calls for it.
+            // Which square is next changes with the pointer, and a rebuild to
+            // move a ring would tear the grid down under the hand moving it.
+            let landing = match self.mode == Mode::Favorites
+                && matches!(item.target, Target::Slot)
+            {
+                true => {
+                    let ring = self.rounded_ring(
+                        Vector2 { X: rect.w, Y: rect.h },
+                        radius,
+                        color_of(&self.config.theme.tile_target),
+                    )?;
+                    ring.SetIsVisible(false)?;
+                    root.Children()?.InsertAtTop(&ring)?;
+                    Some(ring)
+                }
+                false => None,
+            };
+
             children.InsertAtTop(&root)?;
-            built.push(Tile { root, brush, surface, awaiting_icon });
+            built.push(Tile { root, brush, surface, awaiting_icon, landing });
         }
 
         self.tiles = built;
+        self.refresh_landing();
         // Over the tiles: a seam runs between the tiles it separates, and the
         // centre's frame has to read as being in front of the layout.
         self.build_edges(radius)?;
@@ -1633,6 +1691,18 @@ impl Panel {
         }
     }
 
+    /// Whether tiles draw their second line.
+    ///
+    /// Off by default because on an ordinary panel the title is what identifies
+    /// a tile and the second line is noise on every one of them. A list of every
+    /// bookmark there is, is the case that needs it: five videos saved out of
+    /// one series have five near-identical titles, and the folder each is filed
+    /// under is the only thing telling them apart. It costs no layout - both
+    /// lines share the label strip the title already has to itself.
+    fn show_detail(&self) -> bool {
+        self.config.grid.show_detail || self.mode == Mode::AllBookmarks
+    }
+
     fn text_colors(&self) -> TextColors {
         let text = d2d_color(&self.config.theme.text);
         TextColors { title: text, detail: dim(text) }
@@ -1718,6 +1788,14 @@ impl Panel {
     /// reads as dead.
     fn tile_color(&self, index: usize) -> Color {
         let theme = &self.config.theme;
+        // Unavailable beats every other state, hover included: a tile that
+        // lights up under the pointer is a tile promising a click, and this
+        // mode has nothing to do with it. Its own fill, banding and all - the
+        // dimming is the whole tile's, done with opacity, and a second colour
+        // saying the same thing would only fight it.
+        if self.items.get(index).is_some_and(|item| self.inert(item)) {
+            return color_of(if self.alternating(index) { &theme.tile_alt } else { &theme.tile });
+        }
         color_of(if self.hover == Some(index) {
             &theme.tile_hover
         } else if self.lit(index) {
@@ -1781,6 +1859,12 @@ impl Panel {
         for slot in [previous, index].into_iter().flatten() {
             self.repaint_tile(slot);
         }
+        // Pointing at a page rings the sites square and pointing at an app
+        // rings the apps one, so where a tile is going is answered before it
+        // is clicked.
+        if self.mode == Mode::Favorites {
+            self.refresh_landing();
+        }
     }
 
     fn set_selected(&mut self, index: Option<usize>) {
@@ -1832,9 +1916,14 @@ impl Panel {
         // The action tiles work the panel rather than leaving it.
         match item.target {
             // An empty square says what it is for by doing it: taking one is
-            // how favorites mode is found without knowing the menu exists.
+            // how favorites mode is found without knowing the menu exists. The
+            // square clicked is what the mode comes up aimed at, so the ring is
+            // already round the square that was asked for.
             Target::Slot => {
+                let half = self.slot_half(index);
                 self.enter_mode(Mode::Favorites);
+                self.filling = half;
+                self.refresh_landing();
                 return;
             }
             // The same square turns the mode on and off, so a mode tile is
@@ -2009,12 +2098,104 @@ impl Panel {
             return false;
         }
         match self.mode {
-            Mode::Favorites => self.favorite_would(item).is_none(),
+            // An empty square is never dim in this mode: it is what the mode
+            // is aimed at, and clicking one aims it at that half.
+            Mode::Favorites => {
+                !matches!(item.target, Target::Slot) && self.favorite_would(item).is_none()
+            }
             // Nothing open behind it, so there is nothing to close.
             Mode::Close => self.window_for(item).is_none(),
-            Mode::Grid | Mode::Layout | Mode::Move => {
+            Mode::Grid | Mode::Layout | Mode::Move | Mode::AllApps | Mode::AllBookmarks => {
                 matches!(item.target, Target::Arrange(_)) && self.moving().is_none()
             }
+        }
+    }
+
+    /// The empty square in the block that each list's next favorite lands in,
+    /// indexed by `pins::Half`.
+    ///
+    /// A pick is written to the end of its list, so it appears in the first
+    /// empty square of the half drawing that list. That square is the answer to
+    /// "where is this going", which is the one thing favorites mode never said.
+    fn landing_slots(&self) -> [Option<usize>; 2] {
+        let contents = self.config.favorites.contents;
+        let mut out = [None, None];
+        let mut base = 0;
+        for section in &self.sections {
+            if let Some(drawn) = section.center {
+                let first = section
+                    .items
+                    .iter()
+                    .position(|item| matches!(item.target, Target::Slot))
+                    .map(|n| base + n);
+                for (half, slot) in out.iter_mut().enumerate() {
+                    if contents.holds(drawn, half) {
+                        *slot = first;
+                    }
+                }
+            }
+            base += section.items.len();
+        }
+        out
+    }
+
+    /// Which list an empty square belongs to, for aiming the mode at it.
+    ///
+    /// One block draws both lists in one half, so a square there answers for
+    /// the first of them. Nothing is lost by that: both lists land in the same
+    /// square, so both rings would be drawn round it anyway.
+    fn slot_half(&self, index: usize) -> Option<pins::Half> {
+        let contents = self.config.favorites.contents;
+        let mut base = 0;
+        for section in &self.sections {
+            if (base..base + section.items.len()).contains(&index)
+                && let Some(drawn) = section.center
+            {
+                return (0..2)
+                    .find(|&half| contents.holds(drawn, half))
+                    .map(|half| match half {
+                        0 => pins::Half::Apps,
+                        _ => pins::Half::Sites,
+                    });
+            }
+            base += section.items.len();
+        }
+        None
+    }
+
+    /// Which landing squares are ringed right now.
+    ///
+    /// Hover wins: pointing at a page rings the sites square and pointing at an
+    /// app rings the apps one, so where a tile is going is answered before the
+    /// click rather than after it. With nothing eligible under the pointer it
+    /// falls back to the square that was clicked to get here - and to both,
+    /// when the mode was entered from its own square and neither was named.
+    fn landing_lit(&self) -> [bool; 2] {
+        let mut lit = [false; 2];
+        if let Some(item) = self.hover.and_then(|index| self.items.get(index))
+            && item.origin != Source::Favorites
+            && let Some((half, _)) = self.favorite_would(item)
+        {
+            lit[half.index()] = true;
+            return lit;
+        }
+        match self.filling {
+            Some(half) => lit[half.index()] = true,
+            None => lit = [true, true],
+        }
+        lit
+    }
+
+    /// Show the ring on the landing squares the state calls for, and hide the
+    /// rest. Cheap enough to run on every hover: it sets a flag on at most two
+    /// visuals that are already built.
+    fn refresh_landing(&self) {
+        let landings = self.landing_slots();
+        let lit = self.landing_lit();
+        for (index, tile) in self.tiles.iter().enumerate() {
+            let Some(ring) = &tile.landing else { continue };
+            let on = (0..2).any(|half| lit[half] && landings[half] == Some(index));
+            let _ = ring.SetIsVisible(on);
         }
     }
 
@@ -2066,6 +2247,10 @@ impl Panel {
                         Mark::Half { left: 0.28, top: 0.24, right: 0.72, bottom: 0.76 }
                     }
                     Mode::Close => Mark::Cross,
+                    // Nine squares where the box under it shows a handful:
+                    // the same tiles, and the rest of them. One figure for both
+                    // squares, because they are one idea asked of two boxes.
+                    Mode::AllApps | Mode::AllBookmarks => Mark::All,
                     Mode::Layout | Mode::Grid => Mark::Bento,
                 };
                 (Some(mark), None)
@@ -2095,7 +2280,7 @@ impl Panel {
         // cannot call back into `&self` helpers.
         let icon_size = self.icon_size();
         let label_height = self.config.grid.label_height * self.scale();
-        let show_detail = self.config.grid.show_detail;
+        let show_detail = self.show_detail();
         let text = d2d_color(&self.config.theme.text);
         let colors = TextColors { title: text, detail: dim(text) };
         // One rule for what a click destroys, read here rather than restated:
@@ -2396,10 +2581,20 @@ impl Panel {
             self.stay = true;
             self.frame_target();
         }
+        // Asked on the way in, every time. The archive is only worth carrying
+        // while somebody is looking at it, and asking again is what puts a
+        // bookmark saved a minute ago in the list.
+        if mode == Mode::AllBookmarks {
+            server::want_tree();
+        }
         self.mode = mode;
         // Nothing picked yet. The options belong to a box, so they wait for one
         // to be clicked rather than guessing at the first.
         self.edit = None;
+        // Nor any half of the block: entered from a mode square, both empty
+        // squares are waiting, and the one path that does name a half - a
+        // click on an empty square - says so after this returns.
+        self.filling = None;
         self.set_hover(None);
         self.set_selected(None);
         self.reload();
@@ -2465,6 +2660,7 @@ impl Panel {
         }
         self.mode = Mode::Grid;
         self.edit = None;
+        self.filling = None;
         self.hover_box = None;
         self.reload();
         let _ = self.rebuild_visuals();
@@ -2681,9 +2877,10 @@ impl Panel {
             return;
         }
         match self.mode {
-            // Move mode leaves the grid alone: clicking is how you pick the
-            // window, and clicking is how you move it.
-            Mode::Grid | Mode::Move => {}
+            // These leave the grid alone: a click on a tile means what it
+            // always means. Move mode picks the window with it, and all-apps
+            // launches with it, which is the whole of what it is for.
+            Mode::Grid | Mode::Move | Mode::AllApps | Mode::AllBookmarks => {}
             Mode::Layout => self.edit_click(x, y),
             Mode::Favorites => {
                 match self.layout.hit_test(x, y, self.scroll) {
@@ -2737,6 +2934,13 @@ impl Panel {
         {
             return None;
         }
+        // Nor when that list has no empty square left. The write would be taken
+        // and nothing would be drawn - the block shows `slots` of a list and
+        // keeps the rest - which is the same click with no visible result a
+        // half that is not drawn at all would give.
+        if item.origin != Source::Favorites && self.landing_slots()[half.index()].is_none() {
+            return None;
+        }
         Some((half, self.favorite_target(item)?))
     }
 
@@ -2747,6 +2951,20 @@ impl Panel {
     /// which is the whole of "manage favorites" without a second surface.
     fn toggle_favorite(&mut self, tile: usize) {
         let Some(item) = self.items.get(tile).cloned() else { return };
+        // An empty square is not something to write down - it is where things
+        // land. Clicking one aims the mode at that half, and clicking the
+        // square it is already aimed at turns the mode off, which is the rule
+        // every mode square follows: its own turns it off, another switches.
+        if matches!(item.target, Target::Slot) {
+            let half = self.slot_half(tile);
+            if half.is_some() && half == self.filling {
+                self.leave_mode();
+            } else {
+                self.filling = half;
+                self.refresh_landing();
+            }
+            return;
+        }
         let Some((half, target)) = self.favorite_would(&item) else {
             log_info!("favorites: nothing to write down for \"{}\"", item.title);
             return;
@@ -3281,6 +3499,10 @@ impl Panel {
             // Ordered by the foreground hook and the browser, not by bentolaunch.
             Source::Windows | Source::Extra | Source::Running | Source::Tabs
             | Source::Bookmarks => false,
+            // Alphabetical, as every all-apps list on Windows is, and the
+            // browser's own order for the bookmarks. Dragging one to a new
+            // place would be dragging it back on the next summon.
+            Source::AllApps | Source::AllBookmarks => false,
             // A fixed set in a fixed order. Nowhere to write one down.
             Source::Moves | Source::Modes => false,
         };

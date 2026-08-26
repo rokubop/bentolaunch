@@ -79,6 +79,9 @@ pub enum Mark {
     /// A rectangle cut into a tall box and two stacked ones: the app's own
     /// shape, and a picture of what editing the layout does.
     Bento,
+    /// Nine filled squares. More of the same thing, where the box this square
+    /// sits at the end of shows a handful - which is what "all of them" is.
+    All,
     /// A cross. What close mode does, drawn rather than spelled.
     Cross,
     /// A bar in a ring. One fewer of the thing this box is full of, and the
@@ -267,6 +270,13 @@ impl Renderer {
             context.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
 
             let icon_area_h = (height - label_height).max(0.0);
+            // How big the face is drawn comes from the icon area, so an empty
+            // square's plus is the size of the icons beside it. Where it is
+            // centred is a different question: a tile with nothing written on
+            // it has no label strip to leave room for, and a plus centred on
+            // the icon area alone rides visibly high in a square with no words
+            // under it. The empty favorite slots are the whole of that case.
+            let face_h = if title.is_empty() && detail.is_empty() { height } else { icon_area_h };
             if let Some(icon) = icon
                 && let Ok(bitmap) = create_bitmap(context, icon)
             {
@@ -274,7 +284,7 @@ impl Renderer {
                 let max = (icon_area_h * 0.6).min(width * 0.5);
                 let side = max.min(icon.width.max(icon.height) as f32).max(1.0);
                 let left = (width - side) / 2.0;
-                let top = (icon_area_h - side) / 2.0;
+                let top = (face_h - side) / 2.0;
                 context.DrawBitmap(
                     &bitmap,
                     Some(&D2D_RECT_F {
@@ -289,7 +299,7 @@ impl Renderer {
                     None,
                 );
             } else if let Some(mark) = mark {
-                self.draw_mark(context, mark, width, icon_area_h, colors)?;
+                self.draw_mark(context, mark, width, icon_area_h, face_h, colors)?;
             }
 
             // The taskbar's underline, same place, same meaning. A marker not a
@@ -300,7 +310,7 @@ impl Renderer {
                 let left = (width - bar_w) / 2.0;
                 // Under the icon, not the text: it belongs to the picture, and
                 // survives labels being turned off.
-                let top = (icon_area_h - bar_h * 2.0).max(0.0);
+                let top = (face_h - bar_h * 2.0).max(0.0);
                 let brush = context.CreateSolidColorBrush(&accent, None)?;
                 context.FillRoundedRectangle(
                     &D2D1_ROUNDED_RECT {
@@ -622,7 +632,7 @@ impl Renderer {
                         // options mixing the two still lines up.
                         let (dx, dy) = (offset.x as f32, offset.y as f32);
                         context.SetTransform(&Matrix3x2::translation(dx, dy + top));
-                        let drawn = self.draw_mark(&context, mark, width, band, colors);
+                        let drawn = self.draw_mark(&context, mark, width, band, band, colors);
                         context.SetTransform(&Matrix3x2::translation(dx, dy));
                         drawn?;
                     }
@@ -799,13 +809,16 @@ impl Renderer {
     }
 
     /// Sized off the same numbers the icon block uses, so a bar of these lines
-    /// up with a row of app tiles.
+    /// up with a row of app tiles. `face_h` is where it centres, which is the
+    /// icon area on a tile with a label under it and the whole tile on one
+    /// without.
     unsafe fn draw_mark(
         &self,
         context: &ID2D1DeviceContext,
         mark: Mark,
         width: f32,
         icon_area_h: f32,
+        face_h: f32,
         colors: TextColors,
     ) -> Result<()> {
         let side = (icon_area_h * 0.6).min(width * 0.5).max(8.0);
@@ -814,13 +827,13 @@ impl Renderer {
             // A plus has no long axis, so it gets a square to sit in. The latch
             // keeps the screen box every other mark uses: sized off its own
             // shape it came out bigger than the marks it sits beside.
-            Mark::Plus | Mark::Slot | Mark::Cross | Mark::Minus => (side, side),
+            Mark::Plus | Mark::Slot | Mark::Cross | Mark::Minus | Mark::All => (side, side),
             Mark::Half { .. } | Mark::Latch { .. } | Mark::Bento => {
                 (side, side * SCREEN_ASPECT)
             }
         };
         let left = (width - w) / 2.0;
-        let top = (icon_area_h - h) / 2.0;
+        let top = (face_h - h) / 2.0;
 
         // SAFETY: the caller holds a live device context, and both brushes
         // outlive every draw below.
@@ -892,6 +905,19 @@ impl Renderer {
                         },
                         &line,
                     );
+                }
+                // Three by three, one gap between. Filled, not outlined: an
+                // outline here would read as nine empty slots.
+                Mark::All => {
+                    let step = w / 3.0;
+                    let dot = step * 0.68;
+                    for row in 0..3 {
+                        for col in 0..3 {
+                            let x = left + step * col as f32;
+                            let y = top + step * row as f32;
+                            context.FillRoundedRectangle(&outline(x, y, dot, dot), &fill);
+                        }
+                    }
                 }
                 Mark::Plus => {
                     let arm = w * 0.42;

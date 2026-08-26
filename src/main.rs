@@ -25,7 +25,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::config::Config;
 use crate::model::store;
-use crate::shell::icons;
+use crate::shell::{apps, icons};
 use crate::ui::panel::Panel;
 use crate::ui::tray;
 
@@ -65,6 +65,7 @@ fn main() {
     store::init(hwnd, &sections, &favorites);
     store::install_hooks(hwnd);
     icons::start(hwnd);
+    apps::start(hwnd);
     watch::start(hwnd);
     tray::install(hwnd);
     browser::server::start(hwnd, &bridge);
