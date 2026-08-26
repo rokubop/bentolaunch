@@ -9,10 +9,19 @@ fn main() {
     // crate. Gives us `asInvoker` (safety rule 1) and PerMonitorV2 DPI awareness.
     let manifest = root.join("bentolaunch.manifest");
     println!("cargo:rerun-if-changed={}", manifest.display());
+
+    // A second copy of the version drifts: 0.4.0 shipped carrying 0.3.0.0.
+    // Windows wants four parts, Cargo gives three.
+    let version = format!("{}.0", std::env::var("CARGO_PKG_VERSION").unwrap());
+    let stamped = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("bentolaunch.manifest");
+    let template = std::fs::read_to_string(&manifest).expect("the manifest is next to build.rs");
+    std::fs::write(&stamped, template.replace("{{VERSION}}", &version))
+        .expect("OUT_DIR is writable");
+
     println!("cargo:rustc-link-arg-bins=/MANIFEST:EMBED");
     println!(
         "cargo:rustc-link-arg-bins=/MANIFESTINPUT:{}",
-        manifest.display()
+        stamped.display()
     );
 
     // The icon needs a real resource, which needs rc.exe. A machine without it
