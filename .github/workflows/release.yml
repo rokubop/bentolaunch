@@ -74,18 +74,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # notes.md, then the README's Install section verbatim. Copied not
-          # linked, so a release keeps saying how to install that release.
+          # notes.md, then install.md. The steps ship with the release
+          # rather than being linked, so a release keeps saying how to install
+          # that release however install.md moves on.
           $whatsNew = (Get-Content notes.md -Raw).TrimEnd()
-
-          $readme = Get-Content README.md
-          $from = ($readme | Select-String -Pattern '^## Install$').LineNumber
-          $to = ($readme | Select-String -Pattern '^## Build from source$').LineNumber
-          if (-not $from -or -not $to -or $to -le $from) {
-            Write-Error "README has no Install section to copy: the headings this reads between are '## Install' and '## Build from source'"
-            exit 1
-          }
-          $install = ($readme[($from - 1)..($to - 2)] -join "`n").TrimEnd()
+          $install = (Get-Content install.md -Raw).TrimEnd()
 
           $notesFile = Join-Path $env:RUNNER_TEMP "release-notes.md"
           Set-Content -Path $notesFile -Value "$whatsNew`n`n$install" -Encoding utf8
