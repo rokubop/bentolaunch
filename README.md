@@ -10,29 +10,11 @@ Example:
 
 ## Install
 
-Windows 11 only.
+Windows 11 only. Two files, the exe and the browser extension, and they have to
+come from the same release - they check each other's version.
 
-### 1. The app
-
-1. Download [bentolaunch.exe](https://github.com/rokubop/bentolaunch/releases/latest/download/bentolaunch.exe).
-2. Put it in `%LOCALAPPDATA%\Programs\bentolaunch` (not `Program Files`).
-3. Run it. Windows warns about an unrecognised app: **More info** > **Run anyway**.
-4. Press `` Alt+` `` to summon it.
-
-### 2. Browser support
-
-Required for tabs and bookmarks. Chromium for now.
-
-1. Download and unzip `bentolaunch-extension.zip` from the
-   [same release](https://github.com/rokubop/bentolaunch/releases/latest).
-2. `chrome://extensions` > Developer mode > **Load unpacked** > the folder.
-3. Tray icon > **Browser > Pair a browser...**. It shows six digits.
-4. On the **BentoLaunch bridge** card: **Details > Extension options**, type them,
-   **Pair with BentoLaunch**.
-
-### Start it at login
-
-Win+R, `shell:startup`, and put a shortcut to the exe in the folder that opens.
+**[Download the latest release](https://github.com/rokubop/bentolaunch/releases/latest)**
+- step by step instructions are on that page.
 
 ## Build from source
 
@@ -71,6 +53,9 @@ Right-click the tray icon:
 | Exit | Quit |
 
 Log: `%LOCALAPPDATA%\bentolaunch\bentolaunch.log`
+
+That directory also holds `peers.json`, the paired browsers, and
+`bentolaunch.toml.bak`, the config as it was before the last **Reset layout**.
 
 ## Finding
 
