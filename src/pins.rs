@@ -9,7 +9,7 @@ use std::path::Path;
 
 use toml_edit::{Array, ArrayOfTables, DocumentMut, Item as TomlItem, Table, Value, value};
 
-use crate::config::{Config, Contents};
+use crate::config::{Config, Contents, Center};
 use crate::ui::grid::Lane;
 use crate::{log_info, log_warn};
 
@@ -73,7 +73,7 @@ pub enum Half {
 }
 
 impl Half {
-    /// The key under `[favorites]`.
+    /// The key under `[center]`.
     pub fn key(self) -> &'static str {
         match self {
             Half::Apps => "apps",
@@ -105,17 +105,17 @@ impl Half {
 ///
 /// Returns whether the file changed, which is `false` when it was already
 /// there: favoriting something twice is a click, not an error.
-pub fn add_favorite(half: Half, target: &str) -> bool {
-    Config::path().is_some_and(|path| add_favorite_in(&path, half, target))
+pub fn add_to_center(half: Half, target: &str) -> bool {
+    Config::path().is_some_and(|path| add_to_center_in(&path, half, target))
 }
 
 /// Take one target out of a half of the centre block.
-pub fn remove_favorite(half: Half, target: &str) -> bool {
-    Config::path().is_some_and(|path| remove_favorite_in(&path, half, target))
+pub fn remove_from_center(half: Half, target: &str) -> bool {
+    Config::path().is_some_and(|path| remove_from_center_in(&path, half, target))
 }
 
-fn add_favorite_in(path: &Path, half: Half, target: &str) -> bool {
-    favorites_in(path, half, |items| {
+fn add_to_center_in(path: &Path, half: Half, target: &str) -> bool {
+    edit_center(path, half, |items| {
         if items.iter().any(|entry| target_of(entry) == Some(target)) {
             log_info!("already a favorite, skipping: {target}");
             return false;
@@ -125,8 +125,8 @@ fn add_favorite_in(path: &Path, half: Half, target: &str) -> bool {
     })
 }
 
-fn remove_favorite_in(path: &Path, half: Half, target: &str) -> bool {
-    favorites_in(path, half, |items| {
+fn remove_from_center_in(path: &Path, half: Half, target: &str) -> bool {
+    edit_center(path, half, |items| {
         let before = items.len();
         items.retain(|entry| target_of(entry) != Some(target));
         items.len() != before
@@ -138,20 +138,20 @@ fn remove_favorite_in(path: &Path, half: Half, target: &str) -> bool {
 /// Both halves, not the first that answers: a target hand-written into both
 /// would otherwise need two clicks to remove, and the second would look like a
 /// click that did nothing.
-pub fn forget_favorite(target: &str) -> bool {
-    let apps = remove_favorite(Half::Apps, target);
-    let sites = remove_favorite(Half::Sites, target);
+pub fn forget_in_center(target: &str) -> bool {
+    let apps = remove_from_center(Half::Apps, target);
+    let sites = remove_from_center(Half::Sites, target);
     apps || sites
 }
 
 /// Rewrite one half in the given order. Entries not named keep following, so a
 /// stale list never loses a favorite.
-pub fn order_favorites(half: Half, targets: &[String]) -> bool {
-    Config::path().is_some_and(|path| order_favorites_in(&path, half, targets))
+pub fn order_center(half: Half, targets: &[String]) -> bool {
+    Config::path().is_some_and(|path| order_center_in(&path, half, targets))
 }
 
-fn order_favorites_in(path: &Path, half: Half, targets: &[String]) -> bool {
-    favorites_in(path, half, |items| {
+fn order_center_in(path: &Path, half: Half, targets: &[String]) -> bool {
+    edit_center(path, half, |items| {
         let mut rest: Vec<Value> = items.iter().cloned().collect();
         let mut sorted = Array::new();
         for wanted in targets {
@@ -170,23 +170,79 @@ fn order_favorites_in(path: &Path, half: Half, targets: &[String]) -> bool {
     })
 }
 
-/// Edit one of the two lists under `[favorites]`, creating the table and the
+/// Edit one of the two lists under `[center]`, creating the table and the
 /// key if the config predates them.
-fn favorites_in(path: &Path, half: Half, edit: impl FnOnce(&mut Array) -> bool) -> bool {
+fn edit_center(path: &Path, half: Half, edit: impl FnOnce(&mut Array) -> bool) -> bool {
     let Some(mut doc) = read(path) else { return false };
-    let entry = &mut doc["favorites"][half.key()];
-    if entry.is_none() {
-        *entry = value(Array::new());
+    {
+        let entry = &mut doc["center"][half.key()];
+        if entry.is_none() {
+            *entry = value(Array::new());
+        }
+        let Some(items) = entry.as_array_mut() else {
+            log_warn!("center.{} is not a list; leaving it alone", half.key());
+            return false;
+        };
+        if !edit(items) {
+            return false;
+        }
+        stack(items);
     }
-    let Some(items) = entry.as_array_mut() else {
-        log_warn!("favorites.{} is not a list; leaving it alone", half.key());
-        return false;
-    };
-    if !edit(items) {
-        return false;
-    }
-    stack(items);
+    // In the same write as the list it is sizing for. Two writes would leave
+    // the file briefly holding more center than the block draws, and the
+    // watcher lays out whatever it finds.
+    grow_to_fit(&mut doc);
     write(path, &doc)
+}
+
+/// Grow the block to hold what the file says it holds.
+///
+/// Only up. Removing a favorite leaves the shape where it is, so the square you
+/// learned the position of is still that square - a block that shrank as it
+/// emptied would be moving targets. Coming back down is an edit-mode click.
+///
+/// A block that is off is a block of no slots, so this is also what the first
+/// favorite turns it on with.
+fn grow_to_fit(doc: &mut DocumentMut) {
+    let count = |key: &str| {
+        doc.get("center")
+            .and_then(|f| f.get(key))
+            .and_then(TomlItem::as_array)
+            .map_or(0, Array::len)
+    };
+    let number = |key: &str| {
+        doc.get("center")
+            .and_then(|f| f.get(key))
+            .and_then(TomlItem::as_integer)
+            .and_then(|n| usize::try_from(n).ok())
+    };
+
+    let (apps, sites) = (count("apps"), count("sites"));
+    // Which lists share a half decides how many slots a half has to hold. Read
+    // off the document rather than off a parsed `Config`: this runs mid-write,
+    // and the file on disk is a write behind.
+    let contents = doc
+        .get("center")
+        .and_then(|f| f.get("contents"))
+        .and_then(TomlItem::as_str)
+        .unwrap_or(Contents::default().key());
+    let held = match contents {
+        "one" => apps + sites,
+        "apps" => apps,
+        "sites" => sites,
+        _ => apps.max(sites),
+    };
+
+    // An absent key is its default, and the default is off. Reading it as zero
+    // is what makes the first favorite on a fresh config turn the block on.
+    let now = number("rows").unwrap_or(0) * number("columns").unwrap_or(0);
+    if held == 0 || now >= held {
+        return;
+    }
+    let (columns, rows) = Center::shape_for(held);
+    set_key(doc, "center", "columns", (columns as i64).into());
+    set_key(doc, "center", "rows", (rows as i64).into());
+    log_info!("centre block grown to {columns} x {rows} a half for {held} favorite(s)");
 }
 
 /// Move a section `delta` places down its own lane.
@@ -198,14 +254,14 @@ pub fn move_section(section: &str, delta: isize) -> bool {
     Config::path().is_some_and(|path| move_section_in(&path, section, delta))
 }
 
-/// Which band across the panel a section's table asks for. `side` wins; `at`
-/// is read for its first cut only, and a section that says neither takes the
-/// default.
+/// Which band across the panel a section's table asks for. A section that says
+/// nothing takes the default.
 fn lane_of(table: &Table) -> Lane {
-    if let Some(lane) = table.get("side").and_then(|v| v.as_str()).and_then(Lane::parse) {
-        return lane;
-    }
-    table.get("at").and_then(|v| v.as_str()).map(Lane::from_at).unwrap_or_default()
+    table
+        .get("side")
+        .and_then(|v| v.as_str())
+        .and_then(Lane::parse)
+        .unwrap_or_default()
 }
 
 fn move_section_in(path: &Path, section: &str, delta: isize) -> bool {
@@ -283,9 +339,6 @@ fn set_placement_in(path: &Path, section: &str, placement: Placement) -> bool {
             table.remove("side");
         }
     }
-    // The old spelling never wins over the new one, so a box that has been
-    // edited once stops being described twice.
-    table.remove("at");
     for (key, number) in [("columns", placement.columns), ("max_items", placement.max_items)] {
         if number == 0 {
             table.remove(key);
@@ -297,6 +350,22 @@ fn set_placement_in(path: &Path, section: &str, placement: Placement) -> bool {
     write(path, &doc) && {
         log_info!("saved the layout of section \"{section}\"");
         true
+    }
+}
+
+/// Which box `add` would put something in, without putting it there.
+///
+/// So a menu can say where a tile is going. "Add to Launch" is worth a read
+/// where "Pin" is not: the useful half of the label is the destination, and
+/// this is the only thing that knows it.
+pub fn destination() -> Option<String> {
+    let path = Config::path()?;
+    let mut doc = read(&path)?;
+    let sections = sections_mut(&mut doc)?;
+    match first_manual(sections) {
+        Some(index) => sections.get(index).map(title_of),
+        // Nowhere to put one yet, so `add` would make this.
+        None => Some(FALLBACK_TITLE.to_string()),
     }
 }
 
@@ -547,14 +616,11 @@ fn set_in(path: &Path, change: Change) -> bool {
         Change::MaxColumns(n) => set_key(&mut doc, "grid", "max_columns", (n as i64).into()),
         Change::Browser(on) => set_key(&mut doc, "browser", "enabled", on.into()),
         Change::CenterSize { columns, rows } => {
-            set_key(&mut doc, "favorites", "columns", (columns as i64).into());
-            set_key(&mut doc, "favorites", "rows", (rows as i64).into());
+            set_key(&mut doc, "center", "columns", (columns as i64).into());
+            set_key(&mut doc, "center", "rows", (rows as i64).into());
         }
         Change::CenterContents(contents) => {
-            set_key(&mut doc, "favorites", "contents", contents.key().into());
-            // The key `contents` replaced. Left in, it would keep answering
-            // the question this square just answered - see `Config::validated`.
-            drop_key(&mut doc, "favorites", "split");
+            set_key(&mut doc, "center", "contents", contents.key().into());
         }
     }
     write(path, &doc)
@@ -578,15 +644,6 @@ fn set_key(doc: &mut DocumentMut, table: &str, key: &str, v: Value) {
     *entry = TomlItem::Value(v);
 }
 
-/// Take a key out, leaving the table it was in even if that empties it.
-///
-/// Only for keys this app has replaced with another. A settings square must
-/// never quietly delete something the user wrote.
-fn drop_key(doc: &mut DocumentMut, table: &str, key: &str) {
-    if let Some(table) = doc.get_mut(table).and_then(TomlItem::as_table_like_mut) {
-        table.remove(key);
-    }
-}
 
 /// Through `toml_edit` like every other write, so comments survive.
 /// Turn the bridge on from the tray. Pairing needs a listening socket, so the
@@ -598,16 +655,178 @@ pub fn set_browser_enabled(enabled: bool) -> bool {
     write(&path, &doc)
 }
 
-/// Empty out the pre-pairing keys once their contents have been carried into
-/// the peer store. `allow` was the pairing list and `token` was a secret in a
-/// world-readable file; neither should linger in the config saying something
-/// that is no longer true.
-pub fn clear_browser_legacy() -> bool {
-    let Some(path) = Config::path() else { return false };
-    let Some(mut doc) = read(&path) else { return false };
-    doc["browser"]["allow"] = value(Array::new());
-    doc["browser"]["token"] = value("");
-    write(&path, &doc)
+
+/// Put the layout back to stock, keeping everything the user put there by hand.
+///
+/// The one write that cannot be a key at a time. A box that was deleted and a
+/// box that was added are both layout, and neither is reachable by setting a
+/// value, so the section list is rebuilt from the defaults outright.
+///
+/// What is not layout is not touched: the hotkey, the theme, the browser
+/// switch, each section's `items` and `order`, and the block's two lists all
+/// come through, comments and all. Paired browsers were never in here - they
+/// live in `peers.json` - so a reset cannot unpair anything.
+///
+/// The old file is copied next to the log first. A reset that took something
+/// wanted is then one file copy from undone, which is the only reason it is
+/// safe to offer as a single click.
+pub fn reset_layout() -> bool {
+    Config::path().is_some_and(|path| reset_layout_in(&path))
+}
+
+/// What a section carries that belongs to the user rather than to the layout.
+/// `items` is what they added by hand; `order` is the order they dragged the
+/// taskbar pins into.
+const KEPT: [&str; 2] = ["items", "order"];
+
+/// The block's shape, which is layout. Its two lists are not, and are absent
+/// from here on purpose.
+const FAVORITE_KEYS: [&str; 3] = ["rows", "columns", "contents"];
+
+fn reset_layout_in(path: &Path) -> bool {
+    let Some(mut doc) = read(path) else { return false };
+    let Some(stock) = stock_doc() else {
+        log_warn!("could not build the default config; layout not reset");
+        return false;
+    };
+    let Some(fresh) = stock.get("sections").and_then(TomlItem::as_array_of_tables) else {
+        return false;
+    };
+    back_up(path);
+
+    let was: Vec<Table> = doc
+        .get("sections")
+        .and_then(TomlItem::as_array_of_tables)
+        .map(|sections| sections.iter().cloned().collect())
+        .unwrap_or_default();
+
+    let mut rebuilt = ArrayOfTables::new();
+    for table in fresh.iter() {
+        let mut table = table.clone();
+        if let Some(before) = was.iter().find(|old| title_of(old) == title_of(&table)) {
+            for key in KEPT {
+                if let Some(item) = before.get(key) {
+                    table[key] = item.clone();
+                }
+            }
+        }
+        tidy(&mut table);
+        rebuilt.push(table);
+    }
+
+    // A box the user wrote themselves is not the layout's to delete. It comes
+    // through whole, after the stock ones, rather than being reset into a lane
+    // it never asked for.
+    let stock_titles: Vec<String> = fresh.iter().map(title_of).collect();
+    for table in was {
+        if !stock_titles.contains(&title_of(&table)) {
+            rebuilt.push(table);
+        }
+    }
+
+    // toml_edit renders tables in recorded-position order and a table with no
+    // position inherits the last one seen. Clearing all of them is what keeps
+    // the rebuilt list together and in list order: positions carried over from
+    // the old file would deal the new sections back out into the old slots,
+    // which is a different order once the count has changed.
+    for table in rebuilt.iter_mut() {
+        table.set_position(None);
+    }
+    doc["sections"] = TomlItem::ArrayOfTables(rebuilt);
+
+    // Every key of `[grid]`, one at a time rather than replacing the table, so
+    // a note written beside a setting survives being reset.
+    if let Some(grid) = stock.get("grid").and_then(TomlItem::as_table) {
+        for (key, item) in grid.iter() {
+            if let Some(v) = item.as_value() {
+                set_key(&mut doc, "grid", key, v.clone());
+            }
+        }
+    }
+    if let Some(center) = stock.get("center").and_then(TomlItem::as_table) {
+        for key in FAVORITE_KEYS {
+            if let Some(v) = center.get(key).and_then(TomlItem::as_value) {
+                set_key(&mut doc, "center", key, v.clone());
+            }
+        }
+    }
+    // Stock is a block that is off, and a reset must not be what hides a
+    // favorite. Sized back up to what the file still holds, which is the same
+    // rule adding one follows - so the stock shape is "as big as it needs".
+    grow_to_fit(&mut doc);
+
+    write(path, &doc) && {
+        log_info!("layout reset to defaults");
+        true
+    }
+}
+
+/// Drop the keys serde wrote out at their empty value.
+///
+/// A default is an absent key, not a zero - the same rule `set_placement_in`
+/// follows. This file is meant to be hand-edited, and `columns = 0` sitting
+/// under every box says less than nothing to whoever opens it.
+///
+/// `title` is left even when it is empty: the two untitled boxes are untitled
+/// on purpose, and the key is how that is said.
+fn tidy(table: &mut Table) {
+    let empty: Vec<String> = table
+        .iter()
+        .filter(|(key, item)| *key != "title" && is_empty(item))
+        .map(|(key, _)| key.to_owned())
+        .collect();
+    for key in empty {
+        table.remove(&key);
+    }
+}
+
+fn is_empty(item: &TomlItem) -> bool {
+    match item.as_value() {
+        Some(Value::Array(list)) => list.is_empty(),
+        Some(Value::Integer(n)) => *n.value() == 0,
+        _ => false,
+    }
+}
+
+/// The default config as a document, to copy stock values out of.
+fn stock_doc() -> Option<DocumentMut> {
+    toml::to_string_pretty(&Config::default()).ok()?.parse::<DocumentMut>().ok()
+}
+
+/// Copy the config beside the log before a reset overwrites it.
+///
+/// In the cache directory rather than beside the exe: that directory is already
+/// this app's, and a portable build dropped in `Program Files` cannot write to
+/// its own folder anyway. One file, overwritten each time - a reset is an undo
+/// of the last one, not a history.
+///
+/// A failed copy does not stop the reset. It is a courtesy, and refusing to
+/// reset because the backup could not be written would be the tool arguing with
+/// a click the user already made.
+fn back_up(path: &Path) {
+    let Some(dir) = backup_dir() else { return };
+    let backup = dir.join("bentolaunch.toml.bak");
+    match std::fs::copy(path, &backup) {
+        Ok(_) => log_info!("previous config saved to {}", backup.display()),
+        Err(e) => log_warn!("could not back up the config: {e}"),
+    }
+}
+
+fn backup_dir() -> Option<std::path::PathBuf> {
+    #[cfg(test)]
+    if let Some(dir) = test_backup_dir().get() {
+        return Some(dir.clone());
+    }
+    crate::log::cache_dir()
+}
+
+/// A reset test writes a real backup, and the real place for it is a real
+/// install's directory. Point it somewhere disposable so a test run never
+/// touches the config someone is using.
+#[cfg(test)]
+fn test_backup_dir() -> &'static std::sync::OnceLock<std::path::PathBuf> {
+    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    &DIR
 }
 
 fn write(path: &Path, doc: &DocumentMut) -> bool {
@@ -633,6 +852,7 @@ fn read(path: &Path) -> Option<DocumentMut> {
         }
     }
 }
+
 
 fn new_manual_section() -> Table {
     let mut table = Table::new();
@@ -1033,7 +1253,7 @@ source = \"taskbar\"
 
     // --- the centre block ---
 
-    /// A config with a section but nothing said about `[favorites]`, which is
+    /// A config with a section but nothing said about `[center]`, which is
     /// every config written before the centre existed.
     fn no_centre(name: &str) -> PathBuf {
         let path = scratch(name);
@@ -1045,19 +1265,19 @@ source = \"taskbar\"
         path
     }
 
-    fn favorites(path: &PathBuf) -> Config {
+    fn center(path: &PathBuf) -> Config {
         toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
     }
 
     #[test]
     fn a_favorite_creates_the_table_a_config_never_had() {
         let path = no_centre("fav-new");
-        assert!(add_favorite_in(&path, Half::Apps, r"C:\Windows\notepad.exe"));
+        assert!(add_to_center_in(&path, Half::Apps, r"C:\Windows\notepad.exe"));
 
-        let parsed = favorites(&path);
-        assert_eq!(parsed.favorites.apps.len(), 1);
-        assert_eq!(parsed.favorites.apps[0].target(), r"C:\Windows\notepad.exe");
-        assert!(parsed.favorites.sites.is_empty());
+        let parsed = center(&path);
+        assert_eq!(parsed.center.apps.len(), 1);
+        assert_eq!(parsed.center.apps[0].target(), r"C:\Windows\notepad.exe");
+        assert!(parsed.center.sites.is_empty());
         // And nothing else moved.
         assert_eq!(parsed.sections.len(), 1);
         assert_eq!(parsed.sections[0].title, "Launch");
@@ -1066,33 +1286,33 @@ source = \"taskbar\"
     #[test]
     fn the_two_halves_are_written_apart() {
         let path = no_centre("fav-halves");
-        assert!(add_favorite_in(&path, Half::Apps, r"C:\Windows\notepad.exe"));
-        assert!(add_favorite_in(&path, Half::Sites, "https://example.com"));
+        assert!(add_to_center_in(&path, Half::Apps, r"C:\Windows\notepad.exe"));
+        assert!(add_to_center_in(&path, Half::Sites, "https://example.com"));
 
-        let parsed = favorites(&path);
-        assert_eq!(parsed.favorites.apps.len(), 1);
-        assert_eq!(parsed.favorites.sites.len(), 1);
-        assert_eq!(parsed.favorites.sites[0].target(), "https://example.com");
+        let parsed = center(&path);
+        assert_eq!(parsed.center.apps.len(), 1);
+        assert_eq!(parsed.center.sites.len(), 1);
+        assert_eq!(parsed.center.sites[0].target(), "https://example.com");
     }
 
     #[test]
     fn favoriting_the_same_thing_twice_is_a_no_op() {
         let path = no_centre("fav-twice");
-        assert!(add_favorite_in(&path, Half::Apps, "notepad"));
-        assert!(!add_favorite_in(&path, Half::Apps, "notepad"));
-        assert_eq!(favorites(&path).favorites.apps.len(), 1);
+        assert!(add_to_center_in(&path, Half::Apps, "notepad"));
+        assert!(!add_to_center_in(&path, Half::Apps, "notepad"));
+        assert_eq!(center(&path).center.apps.len(), 1);
     }
 
     #[test]
     fn removing_takes_out_one_favorite_and_leaves_the_rest() {
         let path = no_centre("fav-remove");
         for target in ["a", "b", "c"] {
-            assert!(add_favorite_in(&path, Half::Apps, target));
+            assert!(add_to_center_in(&path, Half::Apps, target));
         }
-        assert!(remove_favorite_in(&path, Half::Apps, "b"));
+        assert!(remove_from_center_in(&path, Half::Apps, "b"));
 
-        let kept: Vec<String> = favorites(&path)
-            .favorites
+        let kept: Vec<String> = center(&path)
+            .center
             .apps
             .iter()
             .map(|entry| entry.target().to_owned())
@@ -1103,20 +1323,20 @@ source = \"taskbar\"
     #[test]
     fn removing_something_that_is_not_a_favorite_writes_nothing() {
         let path = no_centre("fav-absent");
-        assert!(!remove_favorite_in(&path, Half::Apps, "nothing"));
+        assert!(!remove_from_center_in(&path, Half::Apps, "nothing"));
     }
 
     #[test]
     fn dragging_rewrites_one_half_in_the_order_it_was_dropped_in() {
         let path = no_centre("fav-order");
         for target in ["a", "b", "c"] {
-            assert!(add_favorite_in(&path, Half::Apps, target));
+            assert!(add_to_center_in(&path, Half::Apps, target));
         }
         let wanted = ["c".to_owned(), "a".to_owned(), "b".to_owned()];
-        assert!(order_favorites_in(&path, Half::Apps, &wanted));
+        assert!(order_center_in(&path, Half::Apps, &wanted));
 
-        let got: Vec<String> = favorites(&path)
-            .favorites
+        let got: Vec<String> = center(&path)
+            .center
             .apps
             .iter()
             .map(|entry| entry.target().to_owned())
@@ -1130,12 +1350,12 @@ source = \"taskbar\"
         // sections follow, and for the same reason.
         let path = no_centre("fav-partial");
         for target in ["a", "b", "c"] {
-            assert!(add_favorite_in(&path, Half::Apps, target));
+            assert!(add_to_center_in(&path, Half::Apps, target));
         }
-        assert!(order_favorites_in(&path, Half::Apps, &["c".to_owned()]));
+        assert!(order_center_in(&path, Half::Apps, &["c".to_owned()]));
 
-        let got: Vec<String> = favorites(&path)
-            .favorites
+        let got: Vec<String> = center(&path)
+            .center
             .apps
             .iter()
             .map(|entry| entry.target().to_owned())
@@ -1150,18 +1370,18 @@ source = \"taskbar\"
             &path,
             concat!(
                 "[[sections]]\ntitle = \"Launch\"\nsource = \"taskbar\"\n\n",
-                "[favorites]\n",
+                "[center]\n",
                 "sites = [{ title = \"Docs\", target = \"https://docs.example\" }, \"https://b\"]\n",
             ),
         )
         .unwrap();
 
-        assert!(order_favorites_in(
+        assert!(order_center_in(
             &path,
             Half::Sites,
             &["https://b".to_owned(), "https://docs.example".to_owned()],
         ));
-        let sites = favorites(&path).favorites.sites;
+        let sites = center(&path).center.sites;
         assert_eq!(sites[1].title(), Some("Docs"));
     }
 
@@ -1172,7 +1392,7 @@ source = \"taskbar\"
             &path,
             concat!(
                 "[[sections]]\ntitle = \"Launch\"\nsource = \"taskbar\"\n\n",
-                "[favorites]\nrows = 2 # how tall I like it\nsplit = true\n",
+                "[center]\nrows = 2 # how tall I like it\n",
             ),
         )
         .unwrap();
@@ -1180,30 +1400,309 @@ source = \"taskbar\"
         assert!(set_in(&path, Change::CenterSize { columns: 0, rows: 0 }));
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("# how tall I like it"), "comment eaten: {text}");
-        assert_eq!(favorites(&path).favorites.rows, 0);
-        // Untouched by a size write: one square, one question.
-        assert_eq!(favorites(&path).favorites.split, Some(true));
+        assert_eq!(center(&path).center.rows, 0);
+    }
+
+
+    // --- the block growing to fit ---
+
+    fn block(path: &Path) -> (usize, usize) {
+        let f = reread(path).center;
+        (f.columns, f.rows)
     }
 
     #[test]
-    fn writing_what_the_centre_holds_takes_the_key_it_replaced_out() {
-        // Both keys left in the file would be two answers to one question, and
-        // `Config::validated` has to pick the older one - so the square that
-        // answers it clears the older one on its way past.
-        let path = scratch("fav-contents");
-        std::fs::write(
-            &path,
-            concat!(
-                "[[sections]]\ntitle = \"Launch\"\nsource = \"taskbar\"\n\n",
-                "[favorites]\nrows = 2\nsplit = true\n",
-            ),
-        )
-        .unwrap();
+    fn the_first_favorite_turns_the_block_on() {
+        let path = scratch("grow-first");
+        std::fs::write(&path, "hotkey = 'alt+`'
+").unwrap();
+        assert!(!reread(&path).center.on(), "the block should ship off");
 
-        assert!(set_in(&path, Change::CenterContents(Contents::Apps)));
+        assert!(add_to_center_in(&path, Half::Apps, "notepad.exe"));
+        assert_eq!(block(&path), Center::shape_for(1));
+        assert!(reread(&path).center.on());
+    }
+
+    #[test]
+    fn the_block_grows_when_a_favorite_would_not_be_drawn() {
+        let path = scratch("grow-past");
+        std::fs::write(&path, "[center]
+rows = 1
+columns = 2
+").unwrap();
+
+        // Two fit the 2 x 1 it is on, so nothing moves for either.
+        for app in ["a.exe", "b.exe"] {
+            assert!(add_to_center_in(&path, Half::Apps, app));
+        }
+        assert_eq!(block(&path), (2, 1), "the block grew before it had to");
+
+        // The third would be written and never drawn, which is the click with
+        // no visible result this exists to stop.
+        assert!(add_to_center_in(&path, Half::Apps, "c.exe"));
+        assert_eq!(block(&path), Center::shape_for(3));
+    }
+
+    #[test]
+    fn the_block_does_not_shrink_when_a_favorite_leaves() {
+        let path = scratch("grow-not-back");
+        std::fs::write(&path, "hotkey = 'alt+`'
+").unwrap();
+        for app in ["a.exe", "b.exe", "c.exe"] {
+            assert!(add_to_center_in(&path, Half::Apps, app));
+        }
+        let grown = block(&path);
+
+        assert!(remove_from_center_in(&path, Half::Apps, "c.exe"));
+        assert!(remove_from_center_in(&path, Half::Apps, "b.exe"));
+        assert_eq!(block(&path), grown, "the squares moved out from under the pointer");
+    }
+
+    #[test]
+    fn one_block_counts_both_lists_against_the_same_slots() {
+        // Split gives each list its own half, so a half holds the longer one.
+        // One draws them end to end in a single half, which has to hold both.
+        let path = scratch("grow-one-block");
+        std::fs::write(&path, "[center]
+contents = 'one'
+").unwrap();
+        assert!(add_to_center_in(&path, Half::Apps, "a.exe"));
+        assert!(add_to_center_in(&path, Half::Sites, "https://example.com"));
+        assert!(add_to_center_in(&path, Half::Sites, "https://example.org"));
+        assert_eq!(block(&path), Center::shape_for(3));
+    }
+
+    #[test]
+    fn a_hand_grown_block_is_left_alone() {
+        // Bigger than it needs is a choice, and adding to it is not a reason to
+        // take that choice back.
+        let path = scratch("grow-hand-set");
+        std::fs::write(&path, "[center]
+rows = 4
+columns = 4
+").unwrap();
+        assert!(add_to_center_in(&path, Half::Apps, "a.exe"));
+        assert_eq!(block(&path), (4, 4));
+    }
+
+    // --- resetting the layout ---
+
+    /// One backup file, deliberately: a reset undoes the last reset, not a
+    /// history of them. That makes the reset tests share a file, so they take
+    /// turns. Poisoning is another test's failure, which this one survives.
+    fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+        static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        TURN.lock().unwrap_or_else(|held| held.into_inner())
+    }
+
+    /// Somewhere disposable for the backup. The real place for it is a real
+    /// install's directory, and a test run must never touch a config somebody
+    /// is using. Set once; the ignored result is a later call finding it set.
+    fn scratch_backups() -> PathBuf {
+        let dir = std::env::temp_dir().join("bentolaunch-pins-test-backups");
+        std::fs::create_dir_all(&dir).unwrap();
+        let _ = test_backup_dir().set(dir);
+        test_backup_dir().get().unwrap().clone()
+    }
+
+    /// A config somebody has been living in: boxes moved out of their lanes,
+    /// tiles resized, an app added by hand, the block filled and reshaped, a
+    /// hotkey and a colour of their own, and a comment beside two of them.
+    ///
+    /// TOML literal strings for the paths, so a Windows path is a path rather
+    /// than a row of escapes.
+    const LIVED_IN: &str = r#"
+# my hotkey, do not touch
+hotkey = 'ctrl+alt+space'
+
+[grid]
+tile_width = 220.0
+tile_height = 156.0
+max_columns = 5
+
+[theme]
+# the one colour I got right
+panel = '#F0112233'
+
+[browser]
+enabled = true
+
+[center]
+rows = 1
+columns = 4
+apps = ['notepad.exe']
+sites = ['https://example.com']
+
+[[sections]]
+title = 'Launch'
+source = ['taskbar', 'manual']
+side = 'right'
+max_items = 3
+items = ['R:\dev']
+
+[[sections]]
+title = 'Active'
+source = 'windows'
+side = 'right'
+"#;
+
+    fn a_lived_in_config(name: &str) -> PathBuf {
+        let path = scratch(name);
+        std::fs::write(&path, LIVED_IN).unwrap();
+        path
+    }
+
+    fn reread(path: &Path) -> Config {
+        toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    /// Title, lane and cap, in file order. The whole of what a reset promises
+    /// to put back about the boxes.
+    fn shape(config: &Config) -> Vec<(&str, Option<&str>, usize)> {
+        config
+            .sections
+            .iter()
+            .map(|s| (s.title.as_str(), s.side.as_deref(), s.max_items))
+            .collect()
+    }
+
+    #[test]
+    fn a_reset_puts_the_boxes_and_the_grid_back() {
+        let _turn = one_at_a_time();
+        scratch_backups();
+        let path = a_lived_in_config("reset-layout");
+        assert!(reset_layout_in(&path));
+
+        let after = reread(&path);
+        let stock = Config::default();
+        assert_eq!(after.grid, stock.grid, "the grid was not put back");
+        assert_eq!(shape(&after), shape(&stock), "the boxes are not in their stock lanes and order");
+
+        // The stock block is off, but a reset must not be what hides a
+        // favorite. The fixture holds one a side, so it comes back at the
+        // smallest shape that draws them.
+        assert_eq!((after.center.columns, after.center.rows), Center::shape_for(1));
+    }
+
+    #[test]
+    fn a_reset_keeps_everything_that_is_not_layout() {
+        let _turn = one_at_a_time();
+        scratch_backups();
+        let path = a_lived_in_config("reset-keeps");
+        assert!(reset_layout_in(&path));
+
+        let after = reread(&path);
+        assert_eq!(after.hotkey, "ctrl+alt+space", "the hotkey was reset");
+        assert_eq!(after.theme.panel, "#F0112233", "the theme was reset");
+        assert!(after.browser.enabled, "the browser switch was reset");
+
+        let launch = after.sections.iter().find(|s| s.title == "Launch").unwrap();
+        assert_eq!(launch.items.len(), 1, "a hand-added item was dropped");
+        assert_eq!(launch.items[0].target(), r"R:\dev");
+        assert_eq!(after.center.apps.len(), 1, "the block's apps were dropped");
+        assert_eq!(after.center.sites.len(), 1, "the block's sites were dropped");
+
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(!text.contains("split"), "the old key is still there: {text}");
-        let read = favorites(&path).validated();
-        assert_eq!(read.favorites.contents, Contents::Apps);
+        assert!(text.contains("# my hotkey, do not touch"), "a comment was eaten:\n{text}");
+        assert!(text.contains("# the one colour I got right"), "a comment was eaten:\n{text}");
+    }
+
+    #[test]
+    fn a_reset_switches_the_block_off_when_nothing_is_in_it() {
+        let _turn = one_at_a_time();
+        scratch_backups();
+        let path = scratch("reset-empty-block");
+        std::fs::write(&path, "[center]
+rows = 4
+columns = 4
+").unwrap();
+        assert!(reset_layout_in(&path));
+        assert!(!reread(&path).center.on(), "sixteen empty squares survived a reset");
+    }
+
+    #[test]
+    fn a_reset_brings_back_a_box_that_was_deleted() {
+        let _turn = one_at_a_time();
+        scratch_backups();
+        let path = scratch("reset-deleted");
+        std::fs::write(&path, "[[sections]]\ntitle = 'Launch'\nsource = 'taskbar'\n").unwrap();
+        assert!(reset_layout_in(&path));
+
+        let after = reread(&path);
+        assert_eq!(shape(&after), shape(&Config::default()), "the stock boxes did not come back");
+    }
+
+    #[test]
+    fn a_reset_keeps_a_box_the_user_wrote_themselves() {
+        let _turn = one_at_a_time();
+        scratch_backups();
+        let path = scratch("reset-own-box");
+        let own = r"
+[[sections]]
+title = 'Places'
+source = 'manual'
+side = 'left'
+items = ['R:\dev']
+";
+        std::fs::write(&path, own).unwrap();
+        assert!(reset_layout_in(&path));
+
+        let after = reread(&path);
+        let places = after.sections.iter().find(|s| s.title == "Places").expect("Places was deleted");
+        assert_eq!(places.items.len(), 1, "the box came back empty");
+        assert_eq!(places.side.as_deref(), Some("left"), "the box was moved out of its lane");
+    }
+
+    #[test]
+    fn a_reset_leaves_the_old_file_where_it_can_be_got_back() {
+        let _turn = one_at_a_time();
+        let backup = scratch_backups().join("bentolaunch.toml.bak");
+        let _ = std::fs::remove_file(&backup);
+
+        let path = a_lived_in_config("reset-backup");
+        let before = std::fs::read_to_string(&path).unwrap();
+        assert!(reset_layout_in(&path));
+
+        let saved = std::fs::read_to_string(&backup).expect("no backup was written");
+        assert_eq!(saved, before, "the backup is not the file that was reset");
+    }
+
+    #[test]
+    fn a_config_with_a_box_of_its_own_reads_as_stock_once_reset() {
+        // The square greys itself off `layout_is_stock`, and a kept box must
+        // not keep answering "still not stock" after the reset that kept it.
+        let _turn = one_at_a_time();
+        scratch_backups();
+        let path = scratch("reset-stock-after");
+        let own = r"
+[[sections]]
+title = 'Places'
+source = 'manual'
+side = 'left'
+items = ['R:\dev']
+";
+        std::fs::write(&path, own).unwrap();
+        assert!(!crate::ui::settings::layout_is_stock(&reread(&path)));
+
+        assert!(reset_layout_in(&path));
+        assert!(
+            crate::ui::settings::layout_is_stock(&reread(&path)),
+            "the square would stay live after a reset that changed everything it could",
+        );
+    }
+
+    #[test]
+    fn a_reset_reads_back_as_the_layout_it_wrote() {
+        let _turn = one_at_a_time();
+        scratch_backups();
+        let path = a_lived_in_config("reset-round-trip");
+        assert!(reset_layout_in(&path));
+        let once = std::fs::read_to_string(&path).unwrap();
+
+        // Twice: the second reset reads what the first wrote, so anything the
+        // writer emits that the reader trips over turns up here.
+        assert!(reset_layout_in(&path));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), once, "a reset is not settled");
+        assert_eq!(shape(&reread(&path)), shape(&Config::default()));
     }
 }

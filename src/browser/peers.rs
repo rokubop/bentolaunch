@@ -152,36 +152,6 @@ pub fn today() -> String {
     format!("{:04}-{:02}-{:02}", t.wYear, t.wMonth, t.wDay)
 }
 
-/// Carry an older install's single shared token onto the origins it served, so
-/// updating bentolaunch does not make the user re-pair. The caller clears both
-/// legacy keys from the config afterwards.
-///
-/// Returns how many peers were created.
-pub fn migrate_legacy(allow: &[String], token: &str) -> usize {
-    if allow.is_empty() || token.is_empty() {
-        return 0;
-    }
-    let mut added = 0;
-    for origin in allow {
-        let origin = origin.trim();
-        if origin.is_empty() || find(origin).is_some() {
-            continue;
-        }
-        let peer = Peer {
-            origin: origin.to_owned(),
-            name: name_for(origin),
-            token: token.to_owned(),
-            added: today(),
-        };
-        if put(peer) {
-            added += 1;
-        }
-    }
-    if added > 0 {
-        log_info!("carried {added} paired browser(s) over from browser.allow");
-    }
-    added
-}
 
 fn normalize(origin: &str) -> String {
     origin.trim().to_ascii_lowercase()

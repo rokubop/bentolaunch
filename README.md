@@ -137,17 +137,29 @@ chosen by hand.
 
 Two halves: **apps on the left, sites on the right.** Starting something and
 opening a page are different questions, and keeping them apart is what lets you
-hit the right square without reading it. Nine squares a half out of the box,
-which is what **Center** in Settings starts on.
+hit the right square without reading it.
+
+**An empty block draws nothing**, whatever `rows` and `columns` say. Eighteen
+empty squares in the middle of the screen is the one place on the panel worth
+reserving spent on nothing. Right-click anything and choose **Add to center**,
+or use Center mode, and the block appears around the first one. Add one that would not
+fit and the block grows to the least rectangle that holds them: one favorite is
+one square, two are 2 x 1, four are 4 x 1, five are 3 x 2. Up to 4 x 4 a half.
+
+Holding something, it draws its whole shape — empty slots included. Those are
+where the next one lands, and they stay put as things come and go: a block that
+shrank to fit would move every square you had learned the position of. Empty it
+completely and it collapses again. Coming back down a size is a click in edit
+mode, or **Center** in Settings.
 
 Empty squares are drawn, not left out. A block that shrank as it emptied would
 be a set of moving targets, which is the one thing a gaze pointer cannot use.
-Click an empty one and favorites mode opens.
+Click an empty one and Center mode opens.
 
 | Do | Get |
 |---|---|
-| Click **Favorites**, then a tile | It moves into the center |
-| Click **Favorites**, then a center tile | It comes back out |
+| Click **Center**, then a tile | It moves into the center |
+| Click **Center**, then a center tile | It comes back out |
 | Drag inside a half | Reorder it |
 | Right-click a tile | **Add to center**, **Remove from center** |
 
@@ -206,10 +218,10 @@ shortens the panel, which moves the hole back up — so the two would trade plac
 forever. The panel moves instead. It is only what happens to be drawn on the
 screen, and it is free to sit wherever it has to.
 
-`[favorites]` in the config is the whole of it:
+`[center]` in the config is the whole of it:
 
 ```toml
-[favorites]
+[center]
 rows     = 3        # tiles down, per half. 0 turns the block off
 columns  = 3        # tiles across, per half. Four each way is the ceiling
 contents = "split"  # "split", "one", "apps", "sites"
@@ -221,13 +233,13 @@ and still comes back when the setting does. While it is not being shown it stays
 in the box it came from, rather than vanishing off the panel entirely.
 
 Two squares in Settings say the same thing: **Center** steps the shape, `off`
-included, and **Center · apps + sites** steps what it holds. `split = true` is
-the old spelling of `contents`; it is still read, and the next thing that writes
-the setting takes it out.
+included, and **Center · apps + sites** steps what it holds.
 
 ## Modes
 
-Four squares in a row that never moves. Each turns on a mode. Clicking it
+Four squares in a row that never moves — including when the grid is long
+enough to scroll. The bar is pinned to the foot of the panel and the grid slides
+under it. Each turns on a mode. Clicking it
 again, another mode's square, the corner button, or Escape turns it off, and
 clicking off the panel dismisses it, in a mode exactly as out of one. A mode
 square is never greyed and never swallows its own click: a mode with one way out
@@ -236,7 +248,7 @@ is a mode you can be stuck in.
 | Square | While it is on |
 |---|---|
 | **Move window** | The six moves appear, and clicking a tile picks the window to move |
-| **Favorites** | Clicking fills and empties the center |
+| **Center** | Clicking fills and empties the center |
 | **Close apps** | Clicking closes the window behind a tile |
 | **Edit layout** | Clicking picks a box and the options rearrange the bento |
 
@@ -281,6 +293,11 @@ then **Add app**, **Add folder**, **Add file**, **Settings**. The modes bar in
 the grid is the first way to reach them; this is the second, and right-click is
 the third.
 
+Right-clicking a tile says where it goes rather than what it is: **Add to
+Launch**, **Add to Center**, **Remove from Launch**. One verb, and the half
+worth reading is the destination. The box named is the one it will actually
+land in, read from the config rather than assumed.
+
 **Settings** opens eight more squares. Each one is a value and each click steps
 it to the next: tile size, whether tiles show a second line, how many columns,
 whether the browser bridge listens, the center block's shape and what it holds.
@@ -291,6 +308,32 @@ sections, which need typing.
 A square that would do nothing where the config stands is greyed rather than
 removed — **Center · apps + sites** with no center block, for instance — so the
 squares never reshuffle under the pointer.
+
+### Reset layout
+
+A ninth square sits on its own under the other eight. **Reset layout** puts the
+boxes back in their stock lanes and order, the grid back to stock tiles and
+columns, and the center block back to the shape that fits what it holds.
+
+It asks first, and the question takes the whole surface: the eight squares go,
+and two arrive — **Keep my layout** and **Reset the layout**. Neither is where
+the square you clicked was, so a second click cannot answer by accident. Escape
+or the corner button backs out of the question without answering it.
+
+Then it says what it did. The square reads **Layout · stock** and greys
+out, the same way every other square here says where its setting stands, and
+stays that way until something moves a box again. A box you wrote yourself does
+not count against that — a reset keeps it, so it is stock with it there.
+
+It only touches layout. Your hotkey, theme, browser switch, hand-added apps and
+files, dragged pin order, and the center block's own contents all come through
+untouched, comments and all. Paired browsers are in `peers.json` rather than the
+config, so a reset cannot unpair anything. A box you wrote yourself is kept as
+it is, after the stock ones; a stock box you deleted comes back.
+
+The file it replaced is copied to
+`%LOCALAPPDATA%entolaunchentolaunch.toml.bak` first. One file, overwritten
+each time — the undo of the last reset, not a history of them.
 
 In **Edit layout**, boxes light up as you move across them. Click one and its
 options appear as tile-sized squares over the middle of the panel. The button in
@@ -391,7 +434,7 @@ different question.
 title  = "Browsing"
 source = "windows"
 match  = ["chrome.exe", "msedge.exe", "firefox.exe"]
-at     = "right@50"  # the whole right side; everything else fills the left
+side   = "right"     # the whole right side; everything else fills the left
 
 [[sections]]
 title  = "Files"
@@ -422,12 +465,12 @@ items = [
 [[sections]]
 title  = ""
 source = "move"
-at     = "bottom"
+side   = "full"
 
 [[sections]]
 title  = ""
 source = "modes"
-at     = "bottom"
+side   = "full"
 ```
 
 Two keys place a section's box. Both optional, both set by **Edit layout**:
@@ -436,29 +479,26 @@ Two keys place a section's box. Both optional, both set by **Edit layout**:
 [[sections]]
 title     = "Launch"
 source    = "taskbar"
-at        = "left@35"   # the whole left side, 35% of the width
+side      = "left"      # which lane: "left", "right" or "full"
 max_items = 12          # most tiles to show; omit for all of them
 ```
 
-The panel is one rectangle cut in two, over and over - the same structure a
-tiling window manager uses. `at` is the run of cuts from the whole panel inward:
+A box picks a lane, and that is the whole of its x axis:
 
-| `at` | Where the box goes |
+| `side` | Where the box goes |
 |---|---|
-| `"left"` | The whole left side, top to bottom |
-| `"bottom"` | The whole bottom, edge to edge |
-| `"right/top"` | The top of what is left after the right-hand cut |
-| `"left@35"` | The left side, pinned to 35% of the width |
+| `"left"` | The left lane, top to bottom |
+| `"right"` | The right lane |
+| `"full"` | Edge to edge |
 
-Sections that say nothing fill whatever the cuts left over, stacking in the
-order they are listed. So `at = "left"` on one section is a complete
-instruction: that box down the left, everything else filling the right.
+Height is not a choice - a box is as tall as what it holds - so the only other
+thing to say is where it comes in its lane, which is the order it is listed in
+the file. A box that says nothing takes the default lane.
 
-A share pins one side of a cut; without one, the two halves are sized by what
-they hold. `"left@35"` and `"right@65"` describe the same panel.
-
-Claiming a side takes the whole of it, so anything else already there is moved
-off and goes back to filling the rest.
+A lane is a property of one box, never a relationship with another. "Left" is
+still the left half when nothing is on the right, so a box does not change shape
+because a browser disconnected. Where the seam down the panel sits is
+`grid.split`: one number for the whole panel, hand-edited.
 
 `max_items` is what a tabs or bookmarks box wants: both lists are as long as the
 browser makes them, and a box that grows without limit pushes the rest off
@@ -531,8 +571,9 @@ Its own table, not a section: nothing `at` can say puts a box in the middle
 without cutting the panel in half to get there.
 
 ```toml
-[favorites]
-rows     = 3       # 0 turns the block off
+[center]
+rows     = 0       # 0 turns the block off, and is what it ships as;
+                   # an empty block draws nothing whatever this says
 columns  = 3       # tiles across in each half; rows * columns is a half's slots
 contents = "split" # "split", "one", "apps", "sites" - see The center
 color    = "#38FFC24B"
@@ -547,7 +588,7 @@ sites = [
 ```
 
 Both lists take the same entries a manual section's `items` does: a path, a
-`.lnk`, `shell:AppsFolder\<AppUserModelID>`, or a URI. Favorites mode writes
+`.lnk`, `shell:AppsFolder\<AppUserModelID>`, or a URI. Center mode writes
 them; hand-editing works the same as everywhere else here.
 
 A site wears its own favicon when a paired browser has sent one for that site,

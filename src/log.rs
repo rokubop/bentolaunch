@@ -18,19 +18,8 @@ pub fn cache_dir() -> Option<PathBuf> {
     cache_dir_in(&PathBuf::from(std::env::var_os("LOCALAPPDATA")?))
 }
 
-/// Renamed from BentoPick. The move carries `peers.json`, so pairings survive.
-/// A failed move keeps the old directory: the pairing is in it.
 fn cache_dir_in(base: &Path) -> Option<PathBuf> {
     let dir = base.join("bentolaunch");
-    if !dir.exists() {
-        let legacy = base.join("bentopick");
-        if legacy.is_dir() {
-            if fs::rename(&legacy, &dir).is_err() {
-                return Some(legacy);
-            }
-            let _ = fs::rename(dir.join("bentopick.log"), dir.join("bentolaunch.log"));
-        }
-    }
     fs::create_dir_all(&dir).ok()?;
     Some(dir)
 }
@@ -100,24 +89,6 @@ mod tests {
         dir
     }
 
-    #[test]
-    fn a_bentopick_cache_is_carried_over_so_paired_browsers_survive() {
-        let base = scratch("carried");
-        let legacy = base.join("bentopick");
-        fs::create_dir_all(&legacy).unwrap();
-        fs::write(legacy.join("peers.json"), r#"{"peers":[]}"#).unwrap();
-        fs::write(legacy.join("bentopick.log"), "old line\n").unwrap();
-
-        let dir = cache_dir_in(&base).unwrap();
-
-        assert_eq!(dir, base.join("bentolaunch"));
-        assert_eq!(
-            fs::read_to_string(dir.join("peers.json")).unwrap(),
-            r#"{"peers":[]}"#
-        );
-        assert!(dir.join("bentolaunch.log").is_file(), "log renamed too");
-        assert!(!legacy.exists(), "the old directory is moved, not copied");
-    }
 
     #[test]
     fn an_existing_bentolaunch_cache_is_left_alone() {

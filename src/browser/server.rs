@@ -242,7 +242,6 @@ pub fn start(hwnd: HWND, config: &crate::config::Browser) -> bool {
         return matches!(status().0, Status::Listening);
     }
 
-    migrate_legacy(config);
 
     // Explicit loopback. The unspecified address would put the tab list on
     // every interface.
@@ -272,21 +271,6 @@ pub fn start(hwnd: HWND, config: &crate::config::Browser) -> bool {
     true
 }
 
-/// Carry an older install's shared token onto the origins it served, then clear
-/// both legacy keys so the config stops holding a secret.
-fn migrate_legacy(config: &crate::config::Browser) {
-    if config.allow.is_empty() {
-        return;
-    }
-    let legacy = if config.token.is_empty() {
-        gate::legacy_token().unwrap_or_default()
-    } else {
-        config.token.clone()
-    };
-    if peers::migrate_legacy(&config.allow, &legacy) > 0 {
-        crate::pins::clear_browser_legacy();
-    }
-}
 
 fn accept_loop(listener: TcpListener, hwnd: isize) {
     static NEXT: AtomicU64 = AtomicU64::new(1);

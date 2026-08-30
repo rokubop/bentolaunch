@@ -169,13 +169,6 @@ pub fn test_turn() -> std::sync::MutexGuard<'static, ()> {
     guard
 }
 
-/// The single shared token an older build kept in `%LOCALAPPDATA%`, if it is
-/// still there. Only used to carry an existing pairing forward.
-pub fn legacy_token() -> Option<String> {
-    let path = crate::log::cache_dir()?.join("bridge-token");
-    let stored = std::fs::read_to_string(path).ok()?.trim().to_owned();
-    (!stored.is_empty()).then_some(stored)
-}
 
 #[cfg(test)]
 mod tests {

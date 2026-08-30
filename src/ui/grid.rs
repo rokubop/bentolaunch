@@ -51,31 +51,6 @@ impl Rect {
     }
 }
 
-/// One cut in the panel: which side of it a box ends up on.
-///
-/// Left and right cut a rectangle down the middle; top and bottom cut it
-/// across. Nothing else is needed to describe a bento, because every bento is
-/// a rectangle cut in two, over and over.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Side {
-    Left,
-    Right,
-    Top,
-    Bottom,
-}
-
-impl Side {
-    pub fn parse(word: &str) -> Option<Side> {
-        match word.trim().to_ascii_lowercase().as_str() {
-            "left" | "l" => Some(Side::Left),
-            "right" | "r" => Some(Side::Right),
-            "top" | "t" | "up" => Some(Side::Top),
-            "bottom" | "b" | "down" => Some(Side::Bottom),
-            _ => None,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Axis {
     /// Side by side.
@@ -126,16 +101,6 @@ impl Lane {
         }
     }
 
-    /// What an old `at` path meant, as a lane. Only the first cut ever said
-    /// anything about the x axis; the rest ordered boxes within it, which is
-    /// what the order in the file does now.
-    pub fn from_at(spec: &str) -> Lane {
-        match spec.split(['/', ' ', ',', '@']).find_map(Side::parse) {
-            Some(Side::Left) => Lane::Left,
-            Some(Side::Right) => Lane::Right,
-            _ => Lane::Full,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -191,6 +156,12 @@ pub struct SectionShape {
     /// A centre box needs `columns`: nothing can derive it, because the box is
     /// a fixed number of slots rather than a list that grew.
     pub center: Option<usize>,
+    /// This box is the bar at the foot of the panel: chrome, not content, so it
+    /// does not scroll.
+    ///
+    /// Only the trailing run of them counts. A pinned box with an ordinary one
+    /// after it is not a foot, and stays in the flow where it was written.
+    pub pinned: bool,
 }
 
 
@@ -273,10 +244,19 @@ pub struct Layout {
     pub content_h: f32,
     /// 0.0 when everything fits.
     pub max_scroll: f32,
-    /// One per item, flattened across sections in order. Content space.
+    /// One per item, flattened across sections in order. Content space, except
+    /// from `foot_tile` on - see there.
     tiles: Vec<Rect>,
     headers: Vec<Header>,
     bands: Vec<Band>,
+    /// Where the foot begins. Tiles and bands from here on are panel space and
+    /// do not scroll; both are `len()` when there is no foot, so every accessor
+    /// compares against them without a special case.
+    ///
+    /// One index each rather than a set: the foot is the trailing run of
+    /// sections, and tiles and bands both follow section order.
+    foot_tile: usize,
+    foot_band: usize,
     metrics: Metrics,
 }
 
@@ -413,11 +393,40 @@ impl Layout {
             h: panel_h.round(),
         };
 
+        // The foot of the panel is chrome. "Four squares in a row that never
+        // moves" is what the modes bar is aimed at as, and a bar carried off
+        // the bottom the moment the grid got long is a bar that moves.
+        //
+        // Lifted out after the tree placed it, not kept out of the tree: it is
+        // a full-width box at the end, so the tree already got its width, its
+        // wrapping and the corner it leaves the app's own button right. All
+        // that is left is which space its y is measured in.
+        //
+        // Up by exactly what the panel is shorter than the content, so its
+        // bottom edge lands on the panel's - and so this does nothing at all
+        // when everything fits, which is the case it is drawn in nearly always.
+        let (foot_tile, foot_band) = foot_of(sections, &out);
+        let lift = panel_h - content_h;
+        if lift < 0.0 {
+            for tile in &mut out.tiles[foot_tile..] {
+                tile.y += lift;
+            }
+            for band in &mut out.bands[foot_band..] {
+                band.rect.y += lift;
+                band.cells.y += lift;
+            }
+            for header in out.headers.iter_mut().filter(|h| h.band >= foot_band) {
+                header.rect.y += lift;
+            }
+        }
+
         Layout {
             cols,
             panel,
             content_h,
             max_scroll: (content_h - panel_h).max(0.0),
+            foot_tile,
+            foot_band,
             tiles: out.tiles,
             headers: out.headers,
             bands: out.bands,
@@ -432,19 +441,31 @@ impl Layout {
 
     /// Tile rect in panel-local coordinates, with `scroll` applied. May be
     /// partly or wholly outside the panel when scrolled.
+    /// How much scroll applies to a tile. None at the foot: it is already in
+    /// panel space, and shifting it again is what would carry it off.
+    fn tile_scroll(&self, index: usize, scroll: f32) -> f32 {
+        if index >= self.foot_tile { 0.0 } else { scroll }
+    }
+
+    /// How much scroll applies to a band. None at the foot, which is chrome.
+    /// Public so the panel can move a ring it drew earlier by the same rule.
+    pub fn band_scroll(&self, band: usize, scroll: f32) -> f32 {
+        if band >= self.foot_band { 0.0 } else { scroll }
+    }
+
     pub fn tile_rect(&self, index: usize, scroll: f32) -> Rect {
         self.tiles
             .get(index)
             .copied()
             .unwrap_or(Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 })
-            .shifted(scroll)
+            .shifted(self.tile_scroll(index, scroll))
     }
 
     /// Title, where to draw it, and which band it belongs to.
     pub fn headers(&self, scroll: f32) -> impl Iterator<Item = (&str, Rect, usize)> {
-        self.headers
-            .iter()
-            .map(move |h| (h.title.as_str(), h.rect.shifted(scroll), h.band))
+        self.headers.iter().map(move |h| {
+            (h.title.as_str(), h.rect.shifted(self.band_scroll(h.band, scroll)), h.band)
+        })
     }
 
     /// Panel-local point -> item index. Gaps, padding and headers are misses, so
@@ -453,8 +474,13 @@ impl Layout {
         if x < 0.0 || y < 0.0 || x >= self.panel.w || y >= self.panel.h {
             return None;
         }
+        // The foot first, and unscrolled. It is drawn over whatever the body
+        // scrolled under it, so it has to be hit before it too.
+        if let Some(hit) = self.tiles[self.foot_tile..].iter().position(|t| t.contains(x, y)) {
+            return Some(self.foot_tile + hit);
+        }
         let content_y = y + scroll;
-        self.tiles
+        self.tiles[..self.foot_tile]
             .iter()
             .position(|tile| tile.contains(x, content_y))
     }
@@ -495,14 +521,40 @@ impl Layout {
     ///
     /// More than one when the centre block stands wholly inside the box: an
     /// outer ring and a hole. Empty for a box with no tiles.
-    pub fn band_ring(&self, band: usize, scroll: f32) -> Vec<Vec<(f32, f32)>> {
-        let Some(band) = self.bands.get(band) else {
+    pub fn band_ring(&self, index: usize, scroll: f32) -> Vec<Vec<(f32, f32)>> {
+        let scroll = self.band_scroll(index, scroll);
+        let Some(band) = self.bands.get(index) else {
             return Vec::new();
         };
+        // Translated, never reshaped. A ring is drawn once into a surface of
+        // its own size, and a scroll moves that surface - so a clamp here would
+        // mean redrawing every ring on every wheel tick. The bar covers what
+        // runs under it instead, by being drawn after them.
         ring_of(&band.cells, &self.metrics)
             .into_iter()
             .map(|ring| ring.into_iter().map(|(x, y)| (x, y - scroll)).collect())
             .collect()
+    }
+
+    /// Where the foot begins in the flat tile run. `tile_count()` when there is
+    /// no foot, so a loop comparing against it never needs a special case.
+    pub fn foot_from(&self) -> usize {
+        self.foot_tile
+    }
+
+    /// The strip the foot occupies, panel-local. `None` when there is no foot,
+    /// or nothing scrolling behind it to hide.
+    ///
+    /// The grid slides under the bar. The panel is translucent and the bar has
+    /// gaps between its tiles, so without something opaque behind it the grid
+    /// is watched going past through the bar's own gaps.
+    pub fn foot_rect(&self) -> Option<Rect> {
+        if self.max_scroll <= 0.0 || self.foot_tile >= self.tiles.len() {
+            return None;
+        }
+        let top = self.tiles[self.foot_tile..].iter().map(|t| t.y).fold(f32::MAX, f32::min)
+            - self.metrics.gap;
+        Some(Rect { x: 0.0, y: top, w: self.panel.w, h: (self.panel.h - top).max(0.0) })
     }
 
     /// The panel's own button: always there, bottom right, one cell of the grid.
@@ -884,7 +936,7 @@ pub struct BoxState {
 pub struct CenterState {
     /// Tiles across and down in one half. Stepped apart, because a block is a
     /// shape and the two directions are two questions: three columns of
-    /// favorites and one row of them is a real answer.
+    /// center and one row of them is a real answer.
     pub columns: usize,
     pub rows: usize,
     /// The most it may be either way.
@@ -954,7 +1006,7 @@ impl Control {
 /// What is left is a shape, what it holds, and whether it is there at all.
 ///
 /// The two directions are stepped apart. A block is a shape, and three columns
-/// of favorites with one row of them is a real answer that one Bigger/Smaller
+/// of center with one row of them is a real answer that one Bigger/Smaller
 /// pair walking a list of presets could not give.
 pub const CENTER_CONTROLS: [Control; 7] = [
     Control::CenterNarrower,
@@ -998,12 +1050,17 @@ const MENU_COLS: usize = 4;
 ///
 /// Panel-local, and deliberately not in content space: menus are overlays and
 /// must not scroll away from under the pointer.
+///
+/// A short last row is centred under the full ones. Left-aligned, the one
+/// square of a nine-square surface hangs off the corner of the block and reads
+/// as a row that lost the rest of itself, rather than as the odd square out.
 pub fn centred_grid(panel: Rect, count: usize, tile_w: f32, tile_h: f32, gap: f32) -> Vec<Rect> {
     if count == 0 {
         return Vec::new();
     }
     let across = count.min(MENU_COLS);
     let rows = count.div_ceil(MENU_COLS);
+    let step = tile_w + gap;
     let total_w = across as f32 * tile_w + (across - 1) as f32 * gap;
     let total_h = rows as f32 * tile_h + (rows - 1) as f32 * gap;
 
@@ -1011,11 +1068,16 @@ pub fn centred_grid(panel: Rect, count: usize, tile_w: f32, tile_h: f32, gap: f3
     let top = ((panel.h - total_h) / 2.0).max(0.0);
 
     (0..count)
-        .map(|n| Rect {
-            x: left + (n % MENU_COLS) as f32 * (tile_w + gap),
-            y: top + (n / MENU_COLS) as f32 * (tile_h + gap),
-            w: tile_w,
-            h: tile_h,
+        .map(|n| {
+            let row = n / MENU_COLS;
+            let wide = (count - row * MENU_COLS).min(MENU_COLS);
+            let indent = (across - wide) as f32 * step / 2.0;
+            Rect {
+                x: left + indent + (n % MENU_COLS) as f32 * step,
+                y: top + row as f32 * (tile_h + gap),
+                w: tile_w,
+                h: tile_h,
+            }
         })
         .collect()
 }
@@ -1037,7 +1099,7 @@ pub fn controls(panel: Rect, center: bool, tile_w: f32, tile_h: f32, gap: f32) -
 pub enum Command {
     EditLayout,
     /// Fill and empty the centre block.
-    Favorites,
+    Center,
     /// Clicking closes things instead of switching to them.
     CloseApps,
     AddApp,
@@ -1052,7 +1114,7 @@ pub enum Command {
 /// job each and are reachable from the right-click menu as well.
 pub const COMMANDS: [Command; 8] = [
     Command::EditLayout,
-    Command::Favorites,
+    Command::Center,
     Command::CloseApps,
     Command::Settings,
     Command::AddApp,
@@ -1068,7 +1130,7 @@ impl Command {
             // A star, in its text presentation. Every mark on these squares is
             // a line drawing from the UI font; one coloured pictogram among
             // them reads as the odd one out rather than as a set.
-            Command::Favorites => "\u{2605}",
+            Command::Center => "\u{2605}",
             // A crossed circle, not the plain cross: the plain one already
             // means "close this menu" two squares along.
             Command::CloseApps => "\u{2297}",
@@ -1083,7 +1145,7 @@ impl Command {
     pub fn label(self) -> &'static str {
         match self {
             Command::EditLayout => "Edit layout",
-            Command::Favorites => "Favorites",
+            Command::Center => "Center",
             Command::CloseApps => "Close apps",
             Command::AddApp => "Add app",
             Command::AddFolder => "Add folder",
@@ -1097,7 +1159,7 @@ impl Command {
     pub fn mode(self) -> Option<Mode> {
         match self {
             Command::EditLayout => Some(Mode::Layout),
-            Command::Favorites => Some(Mode::Favorites),
+            Command::Center => Some(Mode::Center),
             Command::CloseApps => Some(Mode::Close),
             Command::AddApp
             | Command::AddFolder
@@ -1322,6 +1384,25 @@ fn lay_out(
         tree.place(sections, cut, &mut out)
     });
     (out, bottom)
+}
+
+/// Where the foot begins, as a tile index and a band index.
+///
+/// The trailing run of pinned sections and nothing else. A pinned box with an
+/// ordinary one after it is not a foot - lifting it would jump it over its
+/// neighbours - so it stays in the flow and this returns the ends.
+fn foot_of(sections: &[SectionShape], out: &Placement) -> (usize, usize) {
+    let from = match sections.iter().rposition(|s| !s.pinned) {
+        Some(last) => last + 1,
+        // Every section pinned. Nothing to scroll, so nothing to pin against.
+        None => return (out.tiles.len(), out.bands.len()),
+    };
+    if from == sections.len() {
+        return (out.tiles.len(), out.bands.len());
+    }
+    let tile = sections[..from].iter().map(|s| s.count).sum();
+    let band = out.bands.iter().position(|b| b.section >= from).unwrap_or(out.bands.len());
+    (tile, band)
 }
 
 /// How far down the content actually goes. The centre hangs below a short
@@ -1903,19 +1984,30 @@ mod tests {
 
     /// A section that says nothing about where it sits.
     fn shape(title: &str, count: usize) -> SectionShape {
-        SectionShape { title: title.into(), count, lane: Lane::Full, columns: 0, center: None }
+        SectionShape {
+            title: title.into(),
+            count,
+            lane: Lane::Full,
+            columns: 0,
+            center: None,
+            pinned: false,
+        }
+    }
+
+    /// The bar at the foot of the panel: a full-width box that does not scroll.
+    fn foot(count: usize) -> SectionShape {
+        SectionShape { pinned: true, ..shape("", count) }
     }
 
     /// A section in a named lane, spelled the way a config would spell it.
-    /// The old cut paths still read, which is what a config written before
-    /// lanes gets.
     fn at(title: &str, count: usize, spec: &str) -> SectionShape {
         SectionShape {
             title: title.into(),
             count,
-            lane: Lane::parse(spec).unwrap_or_else(|| Lane::from_at(spec)),
+            lane: Lane::parse(spec).unwrap_or_default(),
             columns: 0,
             center: None,
+            pinned: false,
         }
     }
 
@@ -1927,6 +2019,7 @@ mod tests {
             lane: Lane::Full,
             columns,
             center: Some(half),
+            pinned: false,
         }
     }
 
@@ -2122,6 +2215,31 @@ mod tests {
         assert_eq!(menu, from_commands);
     }
 
+    #[test]
+    fn a_short_last_row_is_centred_under_the_full_ones() {
+        let panel = Rect { x: 0.0, y: 0.0, w: 1376.0, h: 632.0 };
+        let nine = centred_grid(panel, 9, 140.0, 100.0, 10.0);
+
+        // The lone square's centre is the full row's centre, not its left edge.
+        let row = (nine[0].x, nine[3].x + nine[3].w);
+        let last = nine[8];
+        assert_eq!(last.x + last.w / 2.0, (row.0 + row.1) / 2.0);
+        assert!(last.x > nine[0].x, "the last row was left-aligned");
+    }
+
+    #[test]
+    fn a_full_last_row_is_where_it_always_was() {
+        // Eight and four are what the three existing surfaces use. Centring a
+        // short row must not move a row that was never short.
+        let panel = Rect { x: 0.0, y: 0.0, w: 1376.0, h: 632.0 };
+        for count in [4, 8] {
+            let laid = centred_grid(panel, count, 140.0, 100.0, 10.0);
+            for (n, rect) in laid.iter().enumerate() {
+                assert_eq!(rect.x, laid[n % 4].x, "square {n} of {count} moved sideways");
+            }
+        }
+    }
+
     // --- which options apply ---
 
     /// A box in the left lane, with a box above it and one below.
@@ -2208,7 +2326,7 @@ mod tests {
 
     #[test]
     fn the_block_grows_in_both_directions_apart() {
-        // A block is a shape. Three columns of favorites with one row of them
+        // A block is a shape. Three columns of center with one row of them
         // is a real answer, and one Bigger/Smaller pair walking a list of
         // presets could not give it.
         let thin = BoxState {
@@ -2354,23 +2472,11 @@ mod tests {
         assert_eq!(Lane::parse("  RIGHT "), Some(Lane::Right));
     }
 
-    #[test]
-    fn an_old_cut_path_reads_as_the_lane_it_meant() {
-        // Only the first cut ever said anything about the x axis. The rest
-        // ordered boxes within it, which the order in the file does now.
-        assert_eq!(Lane::from_at("left"), Lane::Left);
-        assert_eq!(Lane::from_at("left@35"), Lane::Left);
-        assert_eq!(Lane::from_at("right/top"), Lane::Right);
-        assert_eq!(Lane::from_at("right/bottom"), Lane::Right);
-        assert_eq!(Lane::from_at("bottom"), Lane::Full);
-        assert_eq!(Lane::from_at("top"), Lane::Full);
-    }
 
     #[test]
     fn nonsense_in_a_lane_costs_one_section_its_place_not_the_panel() {
         assert!(Lane::parse("sideways").is_none());
         assert!(Lane::parse("").is_none());
-        assert_eq!(Lane::from_at("sideways"), Lane::Full);
         // The section still shows up; it just takes the default lane.
         let l = Layout::compute(&[shape("A", 4), shape("B", 4)], metrics(), WORK);
         assert_eq!(l.bands().len(), 2);
@@ -2491,7 +2597,7 @@ mod tests {
 
     #[test]
     fn a_header_names_the_section_whose_tiles_are_under_it() {
-        let sections = [shape("First", 3), at("Placed", 2, "right@30"), shape("Last", 4)];
+        let sections = [shape("First", 3), at("Placed", 2, "right"), shape("Last", 4)];
         let l = Layout::compute(&sections, metrics(), WORK);
         let bands = l.bands();
 
@@ -2521,8 +2627,8 @@ mod tests {
         // shape the cut paths were kept for, and lanes say it in three words.
         let sections = [
             at("Side", 6, "left"),
-            at("Top", 4, "right/top"),
-            at("Bottom", 4, "right/bottom"),
+            at("Top", 4, "right"),
+            at("Bottom", 4, "right"),
         ];
         let l = Layout::compute(&sections, metrics(), WORK);
         let (side, top, bottom) = (&l.bands()[0], &l.bands()[1], &l.bands()[2]);
@@ -2583,8 +2689,8 @@ mod tests {
         // Two boxes claiming the same pixel means a click belongs to both, and
         // whichever the scan happened to find first wins.
         let sections = [
-            at("Side", 6, "left@40"),
-            at("Top", 3, "right/top"),
+            at("Side", 6, "left"),
+            at("Top", 3, "right"),
             shape("Rest", 5),
         ];
         let l = Layout::compute(&sections, metrics(), WORK);
@@ -2604,8 +2710,8 @@ mod tests {
         // The band is what a click resolves to, so a tile drawn outside its own
         // band is a tile that cannot be clicked.
         let sections = [
-            at("Side", 6, "left@40"),
-            at("Top", 3, "right/top"),
+            at("Side", 6, "left"),
+            at("Top", 3, "right"),
             shape("Rest", 5),
         ];
         let l = Layout::compute(&sections, metrics(), WORK);
@@ -2645,8 +2751,8 @@ mod tests {
         // A click anywhere has to mean some box, whatever shape the tree is.
         let sections = [
             at("Side", 6, "left"),
-            at("Top", 4, "right/top"),
-            at("Bottom", 4, "right/bottom"),
+            at("Top", 4, "right"),
+            at("Bottom", 4, "right"),
         ];
         let l = Layout::compute(&sections, metrics(), WORK);
         for across in 0..50 {
@@ -2833,9 +2939,9 @@ mod tests {
         let m = Metrics { section_gap: 20.0, ..metrics() };
         let l = Layout::compute(
             &[
-                at("Apps", 14, "left@50"),
-                at("Bookmarks", 12, "right/top"),
-                at("Browsing", 3, "right/bottom"),
+                at("Apps", 14, "left"),
+                at("Bookmarks", 12, "right"),
+                at("Browsing", 3, "right"),
                 shape("Active", 2),
                 middle(0, 9, 3),
                 middle(1, 9, 3),
@@ -2966,8 +3072,8 @@ mod tests {
         let m = metrics();
         let l = Layout::compute(
             &[
-                at("Apps", 24, "left@50"),
-                at("Browsing", 24, "right@50"),
+                at("Apps", 24, "left"),
+                at("Browsing", 24, "right"),
                 middle(0, 4, 2),
                 middle(1, 4, 2),
             ],
@@ -3055,7 +3161,7 @@ mod tests {
         // way out would land in the same pixel - which was fine while every box
         // wore one faint colour, and reads as a fringe now that they do not.
         let m = metrics();
-        let l = Layout::compute(&[at("Apps", 8, "left@50"), at("Web", 8, "right@50")], m, WORK);
+        let l = Layout::compute(&[at("Apps", 8, "left"), at("Web", 8, "right")], m, WORK);
         let right_of = |band| {
             l.band_ring(band, 0.0)[0].iter().map(|p| p.0).fold(f32::MIN, f32::max)
         };
@@ -3085,8 +3191,8 @@ mod tests {
         let m = metrics();
         let l = Layout::compute(
             &[
-                at("Apps", 24, "left@50"),
-                at("Browsing", 24, "right@50"),
+                at("Apps", 24, "left"),
+                at("Browsing", 24, "right"),
                 middle(0, 4, 2),
                 middle(1, 4, 2),
             ],
@@ -3113,8 +3219,8 @@ mod tests {
         let m = metrics();
         let l = Layout::compute(
             &[
-                at("Apps", 24, "left@50"),
-                at("Browsing", 17, "right@50"),
+                at("Apps", 24, "left"),
+                at("Browsing", 17, "right"),
                 middle(0, 4, 2),
                 middle(1, 4, 2),
             ],
@@ -3249,6 +3355,99 @@ mod tests {
         for y in 30..l.panel.h as i32 {
             assert!(band_at(&l, 5.0, y as f32).is_some(), "no band at y={y}");
         }
+    }
+
+    /// A long grid with the modes bar under it: what a real panel looks like
+    /// once there is enough on it to scroll.
+    fn with_a_foot(items: usize) -> Layout {
+        Layout::compute(&[shape("Launch", items), foot(4)], metrics(), WORK)
+    }
+
+    #[test]
+    fn the_foot_stays_on_the_panel_when_the_grid_scrolls() {
+        let l = with_a_foot(500);
+        assert!(l.max_scroll > 0.0, "the test needs a grid that scrolls");
+
+        // The bar is the last four tiles. Wherever the grid is scrolled to,
+        // they are in the same place - which is what they are aimed at as.
+        let bar = l.tile_count() - 4;
+        let at_top: Vec<f32> = (bar..l.tile_count()).map(|i| l.tile_rect(i, 0.0).y).collect();
+        let scrolled: Vec<f32> =
+            (bar..l.tile_count()).map(|i| l.tile_rect(i, l.max_scroll).y).collect();
+        assert_eq!(at_top, scrolled, "the foot scrolled with the grid");
+
+        // And on the panel, not below it, which is where it used to end up.
+        for y in at_top {
+            assert!(y >= 0.0 && y + metrics().tile_h <= l.panel.h, "the foot is off the panel");
+        }
+        // The grid above it still moves.
+        assert!(l.tile_rect(0, l.max_scroll).y < l.tile_rect(0, 0.0).y);
+    }
+
+    #[test]
+    fn a_foot_on_a_panel_that_fits_is_where_it_always_was() {
+        // The lift is the panel's shortfall against the content, which is zero
+        // when everything fits. Nothing may move in the common case.
+        let short = with_a_foot(4);
+        assert_eq!(short.max_scroll, 0.0, "the test needs a grid that fits");
+
+        let same = Layout::compute(&[shape("Launch", 4), shape("", 4)], metrics(), WORK);
+        let foot_tiles: Vec<Rect> = (4..8).map(|i| short.tile_rect(i, 0.0)).collect();
+        let flowed: Vec<Rect> = (4..8).map(|i| same.tile_rect(i, 0.0)).collect();
+        assert_eq!(foot_tiles, flowed, "pinning moved a bar that was already in place");
+    }
+
+    #[test]
+    fn the_foot_is_hit_where_it_is_drawn() {
+        let l = with_a_foot(500);
+        let bar = l.tile_count() - 4;
+        let rect = l.tile_rect(bar, l.max_scroll);
+        let (x, y) = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
+        assert_eq!(l.hit_test(x, y, l.max_scroll), Some(bar));
+        // And at rest, where nothing has moved at all.
+        assert_eq!(l.hit_test(x, y, 0.0), Some(bar));
+    }
+
+    #[test]
+    fn only_the_trailing_run_is_a_foot() {
+        // A pinned box with an ordinary one after it is not a foot. Lifting it
+        // would jump it over its neighbours, so it stays where it was written.
+        let l = Layout::compute(
+            &[shape("Launch", 200), foot(4), shape("Active", 200)],
+            metrics(),
+            WORK,
+        );
+        assert!(l.max_scroll > 0.0);
+        assert!(
+            l.tile_rect(200, l.max_scroll).y < l.tile_rect(200, 0.0).y,
+            "a bar in the middle of the grid was pinned",
+        );
+    }
+
+    #[test]
+    fn a_border_moves_with_the_grid_it_surrounds() {
+        // The ring is the box's border. Left where it was drawn, the grid
+        // scrolls out of its own box.
+        let l = with_a_foot(500);
+        let at_top = l.band_ring(0, 0.0);
+        let scrolled = l.band_ring(0, l.max_scroll);
+        assert!(!at_top.is_empty(), "the test needs a box with a ring");
+
+        for (before, after) in at_top.iter().flatten().zip(scrolled.iter().flatten()) {
+            assert_eq!(after.0, before.0, "a ring moved sideways");
+            assert_eq!(after.1, before.1 - l.max_scroll, "a ring did not follow the grid");
+        }
+    }
+
+    #[test]
+    fn the_foots_own_border_stays_with_the_foot() {
+        let l = with_a_foot(500);
+        let band = l.bands().len() - 1;
+        assert_eq!(
+            l.band_ring(band, 0.0),
+            l.band_ring(band, l.max_scroll),
+            "the bar's own ring scrolled away from the bar",
+        );
     }
 
     #[test]
@@ -3610,10 +3809,10 @@ mod tests {
         let m = live();
         let l = Layout::compute(
             &[
-                at("Browsing", 3, "right/bottom"),
+                at("Browsing", 3, "right"),
                 shape("Apps", 14),
                 shape("Active", 2),
-                at("Bookmarks", 12, "right/top"),
+                at("Bookmarks", 12, "right"),
                 at("", 4, "bottom"),
                 middle(0, 9, 3),
                 middle(1, 9, 3),
@@ -3649,10 +3848,10 @@ mod tests {
         let m = live();
         let l = Layout::compute(
             &[
-                at("Browsing", 3, "right/bottom"),
+                at("Browsing", 3, "right"),
                 shape("Apps", 14),
                 shape("Active", 2),
-                at("Bookmarks", 12, "right/top"),
+                at("Bookmarks", 12, "right"),
                 at("", 4, "bottom"),
                 middle(0, 9, 3),
                 middle(1, 9, 3),
@@ -3916,7 +4115,7 @@ mod tests {
         // A header would spend a row of the most valuable space on the panel
         // saying what the icons already say.
         let mut titled = middle(0, 4, 2);
-        titled.title = "Favorites".into();
+        titled.title = "Center".into();
         let sections = vec![shape("Apps", 12), titled];
         let l = Layout::compute(&sections, metrics(), WORK);
         assert_eq!(l.headers(0.0).count(), 1, "the centre drew a header");
@@ -3926,7 +4125,7 @@ mod tests {
     fn the_centre_never_takes_a_place_in_the_tree() {
         // Placed by hand after the tree, so its bands come last and `stretch`
         // - which walks the tree by leaf order - can never reach them.
-        let sections = vec![at("Left", 8, "left@30"), shape("Rest", 20), middle(0, 4, 2)];
+        let sections = vec![at("Left", 8, "left"), shape("Rest", 20), middle(0, 4, 2)];
         let l = Layout::compute(&sections, metrics(), WORK);
         let bands = l.bands();
         assert!(bands.last().is_some_and(|band| band.center));
