@@ -47,7 +47,7 @@ pub enum Mode {
     /// Clicking picks a box and the options rearrange the bento.
     Layout,
     /// Clicking adds a tile to the centre block, or takes one out of it.
-    Favorites,
+    Center,
     /// Clicking closes the window behind a tile.
     Close,
     /// Arranging windows. Holds the panel open, points it at the window you
@@ -84,7 +84,7 @@ impl Mode {
         match self {
             Mode::Grid => None,
             Mode::Layout => Some("Stop editing"),
-            Mode::Favorites => Some("Done \u{00B7} favorites"),
+            Mode::Center => Some("Done \u{00B7} center"),
             Mode::Close => Some("Done \u{00B7} closing"),
             Mode::Move => Some("Done \u{00B7} moving"),
             Mode::AllApps => Some("Done \u{00B7} all apps"),
@@ -95,7 +95,7 @@ impl Mode {
     /// Whether this mode takes the clicks the grid would otherwise treat as
     /// launches.
     pub fn takes_clicks(self) -> bool {
-        matches!(self, Mode::Layout | Mode::Favorites | Mode::Close)
+        matches!(self, Mode::Layout | Mode::Center | Mode::Close)
     }
 
     /// The name on the tile that turns this mode on, and the tile's id.
@@ -103,7 +103,7 @@ impl Mode {
         match self {
             Mode::Grid => "Done",
             Mode::Layout => "Edit layout",
-            Mode::Favorites => "Favorites",
+            Mode::Center => "Center",
             Mode::Close => "Close apps",
             Mode::Move => "Move window",
             Mode::AllApps => "All apps",
@@ -141,7 +141,7 @@ pub enum Target {
     ///
     /// Drawn rather than left out, because the block's whole worth is that it
     /// is the same shape in the same place every summon. Taking it opens
-    /// favorites mode, so the empty square says what it is for by doing it.
+    /// center mode, so the empty square says what it is for by doing it.
     Slot,
     /// Turn a mode on, or off if it is the one already on.
     ///
@@ -268,7 +268,7 @@ impl Item {
             Target::Arrange(mv) => format!("move the target window {}", mv.key()),
             Target::Stay => "hold the panel open".to_owned(),
             Target::NewTab { .. } => "open a new tab".to_owned(),
-            Target::Slot => "fill an empty favorite".to_owned(),
+            Target::Slot => "fill an empty center slot".to_owned(),
             Target::Mode(mode) => format!("turn on {} mode", mode.label()),
         }
     }

@@ -12,7 +12,7 @@ use windows::UI::Color;
 use windows::UI::Composition::Desktop::DesktopWindowTarget;
 use windows::UI::Composition::{
     CompositionColorBrush, CompositionDrawingSurface, CompositionSpriteShape, Compositor,
-    ContainerVisual, ShapeVisual, SpriteVisual,
+    ContainerVisual, ShapeVisual, SpriteVisual, Visual,
 };
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
@@ -101,7 +101,7 @@ struct Tile {
     /// This tile wants an icon that has not arrived yet.
     awaiting_icon: bool,
     /// The ring saying the next favorite lands here. Built on the block's empty
-    /// squares while favorites mode is on, and shown or hidden as the pointer
+    /// squares while center mode is on, and shown or hidden as the pointer
     /// moves - built once rather than rebuilt, because the grid under the
     /// pointer must not be torn down while it is being pointed at.
     landing: Option<ShapeVisual>,
@@ -198,7 +198,7 @@ pub struct Panel {
     /// mode is on but nothing is chosen yet, which is where it starts: the
     /// options belong to a box, so there is nothing to show until one is.
     edit: Option<usize>,
-    /// The half of the centre block favorites mode was aimed at, which is the
+    /// The half of the centre block center mode was aimed at, which is the
     /// empty square that was clicked to get into it. `None` when the mode was
     /// entered from its own square instead, and both halves are then waiting.
     ///
@@ -215,6 +215,13 @@ pub struct Panel {
     /// box's cells, which can be an L or a C, and composition has rectangle
     /// geometry and nothing else.
     box_faces: Vec<BoxFace>,
+    /// Content-space chrome that is not a tile: the ring round each box, the
+    /// plate behind it, the frame round the centre block.
+    ///
+    /// Kept because a scroll moves them. `reposition` walked the tiles and the
+    /// headers and nothing else, so the borders stayed where they were drawn
+    /// while the grid slid past underneath them.
+    scrolled: Vec<Scrolled>,
     /// The option tiles, their hit rects and their fills. Rebuilt whenever the
     /// selected box changes, repainted in place on hover.
     options: Vec<(Control, GridRect, CompositionColorBrush)>,
@@ -243,6 +250,30 @@ pub struct Panel {
     settings_open: bool,
     settings_items: Vec<(Setting, GridRect, CompositionColorBrush)>,
     hover_setting: Option<usize>,
+    /// The reset question is up, in place of the settings squares. Cleared
+    /// whenever the surface opens, so a question never waits across a close.
+    asking_reset: bool,
+}
+
+/// One piece of chrome that scrolls with the grid.
+struct Scrolled {
+    visual: Visual,
+    /// Which box it belongs to, so the foot's own ring stays put with it.
+    band: usize,
+    /// Where it sits with the grid at the top, which is what a scroll is
+    /// measured from.
+    rest: f32,
+}
+
+/// What the menu calls adding a tile: the box it will land in, named.
+///
+/// Falls back to the bare verb when the config cannot be read, which is the one
+/// case where nothing can be promised about where it goes.
+fn add_label() -> String {
+    match pins::destination() {
+        Some(title) if !title.is_empty() => format!("Add to {title}"),
+        _ => "Add this app".to_string(),
+    }
 }
 
 /// A pressed tile, which may still turn out to be either a click or a drag.
@@ -361,6 +392,7 @@ impl Panel {
             filling: None,
             hover_box: None,
             box_faces: Vec::new(),
+            scrolled: Vec::new(),
             options: Vec::new(),
             hover_option: None,
             options_plate: None,
@@ -371,6 +403,7 @@ impl Panel {
             menu_items: Vec::new(),
             hover_menu: None,
             settings_open: false,
+            asking_reset: false,
             settings_items: Vec::new(),
             hover_setting: None,
             press: None,
@@ -458,6 +491,7 @@ impl Panel {
                         lane: Lane::default(),
                         columns: s.columns,
                         center: s.center,
+                        pinned: false,
                     };
                 }
                 let placed = self.config.sections.iter().find(|c| c.title == s.title);
@@ -467,6 +501,13 @@ impl Panel {
                     lane: lane_of(placed),
                     columns: placed.map_or(0, |c| c.columns),
                     center: None,
+                    // The bar at the foot of the panel, by what it holds rather
+                    // than by what it is called: these are the squares aimed at
+                    // by position, and position is what scrolling takes away.
+                    pinned: !s.items.is_empty()
+                        && s.items
+                            .iter()
+                            .all(|i| matches!(i.origin, Source::Modes | Source::Moves)),
                 }
             })
             .collect()
@@ -694,6 +735,7 @@ impl Panel {
         }
         self.tiles.clear();
         self.headers.clear();
+        self.scrolled.clear();
         self.items.clear();
         self.sections.clear();
     }
@@ -728,7 +770,36 @@ impl Panel {
         let accent = d2d_color(&self.config.theme.tile_target);
         let mut built = Vec::with_capacity(self.items.len());
 
+        // Between the grid and the bar that does not scroll with it. Inserted
+        // here rather than after the loop, because everything goes in at the
+        // top: this is what puts it over the tiles already placed and under the
+        // ones still to come.
+        let foot_from = self.layout.foot_from();
+        let mut foot_chrome: Vec<Visual> = Vec::new();
         for (index, item) in self.items.iter().enumerate() {
+            if index == foot_from
+                && let Some(strip) = self.layout.foot_rect()
+            {
+                let (backing, _) = self.rounded_rect(
+                    Vector2 { X: strip.w, Y: strip.h },
+                    0.0,
+                    veil(color_of(&self.config.theme.panel), 1.0),
+                )?;
+                backing.SetOffset(Vector3 { X: strip.x, Y: strip.y, Z: 0.0 })?;
+                children.InsertAtTop(&backing)?;
+                // A line where the grid disappears under it. The bar is chrome
+                // now, and chrome that just floats over the content reads as a
+                // row that failed to scroll.
+                let (edge, _) = self.rounded_rect(
+                    Vector2 { X: strip.w, Y: 1.0 },
+                    0.0,
+                    color_of(&self.config.theme.box_edge),
+                )?;
+                edge.SetOffset(Vector3 { X: strip.x, Y: strip.y, Z: 0.0 })?;
+                children.InsertAtTop(&edge)?;
+                foot_chrome.push(backing.cast()?);
+                foot_chrome.push(edge.cast()?);
+            }
             let rect = self.layout.tile_rect(index, self.scroll);
             let root = self.compositor.CreateContainerVisual()?;
             root.SetSize(Vector2 { X: rect.w, Y: rect.h })?;
@@ -744,10 +815,10 @@ impl Panel {
             let (mark, relabel) = self.action_face(item);
             let colors = match self.inert(item) {
                 true => TextColors { title: muted, detail: muted },
-                // An empty square in favorites mode is the thing being aimed
+                // An empty square in center mode is the thing being aimed
                 // at, so its plus is drawn in the colour that means "this one",
                 // the same one the ring round the landing square is in.
-                false if self.mode == Mode::Favorites && matches!(item.target, Target::Slot) => {
+                false if self.mode == Mode::Center && matches!(item.target, Target::Slot) => {
                     TextColors { title: accent, detail: accent }
                 }
                 false => colors,
@@ -812,7 +883,7 @@ impl Panel {
             // One on every empty square, hidden until the state calls for it.
             // Which square is next changes with the pointer, and a rebuild to
             // move a ring would tear the grid down under the hand moving it.
-            let landing = match self.mode == Mode::Favorites
+            let landing = match self.mode == Mode::Center
                 && matches!(item.target, Target::Slot)
             {
                 true => {
@@ -840,6 +911,19 @@ impl Panel {
         // And the titles over the rings, because a title is a break in its
         // ring and a ring drawn afterwards would run straight through it.
         self.build_titles()?;
+
+        // The bar at the foot goes on last of all. Rings and titles are drawn
+        // over every tile, and the grid runs *under* the bar rather than
+        // stopping at it, so both would otherwise be drawn straight across it.
+        let children = self.content.Children()?;
+        for visual in &foot_chrome {
+            children.Remove(visual)?;
+            children.InsertAtTop(visual)?;
+        }
+        for tile in &self.tiles[foot_from.min(self.tiles.len())..] {
+            children.Remove(&tile.root)?;
+            children.InsertAtTop(&tile.root)?;
+        }
         // Over the tiles, which are no longer the thing being pointed at.
         self.build_box_scrims(radius)?;
         // After the tiles, so the grid scrolls underneath them.
@@ -929,6 +1013,7 @@ impl Panel {
     /// is exactly what the block is.
     fn build_edges(&mut self, radius: f32) -> Result<()> {
         let children = self.content.Children()?;
+        let mut keep: Vec<Scrolled> = Vec::new();
         let scale = self.scale();
         let hairline = (1.0 * scale).max(1.0);
 
@@ -983,8 +1068,11 @@ impl Panel {
                 sprite.SetOffset(Vector3 { X: bounds.x, Y: bounds.y, Z: 0.0 })?;
                 sprite.SetBrush(&self.compositor.CreateSurfaceBrushWithSurface(&surface)?)?;
                 children.InsertAtTop(&sprite)?;
+                let rest = bounds.y + self.layout.band_scroll(index, self.scroll);
+                keep.push(Scrolled { visual: sprite.cast()?, band: index, rest });
             }
         }
+        self.scrolled.append(&mut keep);
 
         let Some((block, seams)) = self.layout.center_frame() else {
             return Ok(());
@@ -1011,6 +1099,13 @@ impl Panel {
         )?;
         ring.SetOffset(Vector3 { X: frame.x, Y: frame.y, Z: 0.0 })?;
         children.InsertAtTop(&ring)?;
+        // The centre is not in the tree, so it answers to no band. It scrolls
+        // with the grid like everything else in content space.
+        self.scrolled.push(Scrolled {
+            visual: ring.cast()?,
+            band: 0,
+            rest: frame.y + self.scroll,
+        });
 
         // One container with a line down it, not two containers side by side.
         // Which half is which is the block's only rule, and a seam is what says
@@ -1035,13 +1130,15 @@ impl Panel {
     /// twice. `InsertAtBottom` rather than build order, so this stays
     /// independent of when the tiles go in.
     fn build_box_plates(&mut self, radius: f32) -> Result<()> {
-        let plates: Vec<(GridRect, Color)> = self
+        let plates: Vec<(usize, GridRect, Color)> = self
             .layout
             .bands()
             .iter()
-            .filter_map(|band| {
+            .enumerate()
+            .filter_map(|(index, band)| {
                 let color = self.sections.get(band.section)?.color.as_deref()?;
-                Some((band.rect.shifted_by(self.scroll), color_of(color)))
+                let rect = band.rect.shifted_by(self.layout.band_scroll(index, self.scroll));
+                Some((index, rect, color_of(color)))
             })
             .collect();
         if plates.is_empty() {
@@ -1049,11 +1146,13 @@ impl Panel {
         }
 
         let children = self.content.Children()?;
-        for (rect, color) in plates {
+        for (band, rect, color) in plates {
             let (face, _) =
                 self.rounded_rect(Vector2 { X: rect.w, Y: rect.h }, radius * 1.5, color)?;
             face.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 })?;
             children.InsertAtTop(&face)?;
+            let rest = rect.y + self.layout.band_scroll(band, self.scroll);
+            self.scrolled.push(Scrolled { visual: face.cast()?, band, rest });
         }
         Ok(())
     }
@@ -1191,7 +1290,7 @@ impl Panel {
                     // Says what the click does, not what the block is. A square
                     // reading "off" while the block is already off is a square
                     // nobody can read.
-                    Some(_) if control == Control::CenterOn => match self.config.favorites.on() {
+                    Some(_) if control == Control::CenterOn => match self.config.center.on() {
                         true => (control.glyph(), "Center off"),
                         false => (control.glyph(), "Center on"),
                     },
@@ -1402,9 +1501,14 @@ impl Panel {
         let scale = self.scale();
         let g = &self.config.grid;
         let panel = self.layout.panel;
+        // The question replaces the surface rather than sitting on it. Two
+        // squares where nine were is a change nobody can miss, which is the
+        // whole job a confirm has.
+        let squares: &[Setting] =
+            if self.asking_reset { &settings::CONFIRM_RESET } else { &SETTINGS };
         let placed = centred_grid(
             GridRect { x: 0.0, y: 0.0, w: panel.w, h: panel.h },
-            SETTINGS.len(),
+            squares.len(),
             g.tile_width * scale,
             g.tile_height * scale,
             g.gap * scale,
@@ -1430,7 +1534,7 @@ impl Panel {
         plate.SetOffset(Vector3 { X: bounds.x, Y: bounds.y, Z: 0.0 })?;
         children.InsertAtTop(&plate)?;
 
-        for (setting, rect) in SETTINGS.iter().copied().zip(placed) {
+        for (setting, rect) in squares.iter().copied().zip(placed) {
             let root = self.compositor.CreateContainerVisual()?;
             root.SetSize(Vector2 { X: rect.w, Y: rect.h })?;
             root.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 })?;
@@ -1516,6 +1620,46 @@ impl Panel {
             return;
         }
 
+        // The reset asks first, and the question takes the surface: the eight
+        // squares go and two answers arrive. A message box is the usual answer
+        // and it is the wrong one here - small buttons, handed the focus, aimed
+        // at with a gaze pointer - but so was asking on the square itself,
+        // which changed a word on a tile and nothing else.
+        match setting {
+            Setting::Reset => {
+                self.asking_reset = true;
+                let _ = self.rebuild_visuals();
+                self.keep_focus();
+                return;
+            }
+            Setting::ResetNo => {
+                self.asking_reset = false;
+                let _ = self.rebuild_visuals();
+                self.keep_focus();
+                return;
+            }
+            Setting::ResetYes => {
+                self.asking_reset = false;
+                if pins::reset_layout() {
+                    self.reload_config();
+                    log_info!("layout reset to defaults");
+                } else {
+                    log_warn!("could not reset the layout");
+                    // The one place a message box is right: nothing happened,
+                    // so there is no change to read off the panel, and a click
+                    // with no visible result is the whole complaint.
+                    self.say(
+                        "Could not reset the layout",
+                        "The config file could not be written. It may be open in an editor,                          or not valid TOML. The log says which.",
+                    );
+                }
+                let _ = self.rebuild_visuals();
+                self.keep_focus();
+                return;
+            }
+            _ => {}
+        }
+
         let Some(change) = setting.next(&self.config) else { return };
         if !pins::set(change) {
             log_warn!("could not write the {} setting", setting.label(&self.config));
@@ -1540,7 +1684,7 @@ impl Panel {
         }
         match command {
             // Handled above; every mode square leaves through `Command::mode`.
-            Command::EditLayout | Command::Favorites | Command::CloseApps => return,
+            Command::EditLayout | Command::Center | Command::CloseApps => return,
             Command::AddApp => {
                 let picked = picker::pick_app(self.hwnd);
                 self.pin(picked);
@@ -1558,7 +1702,10 @@ impl Panel {
             }
             // The squares, not the file. `Open the file` is one of them, for
             // everything they do not cover.
-            Command::Settings => self.settings_open = true,
+            Command::Settings => {
+                self.settings_open = true;
+                self.asking_reset = false;
+            }
             Command::Close => {}
         }
         let _ = self.rebuild_visuals();
@@ -1572,6 +1719,14 @@ impl Panel {
             return;
         }
         // Backs out one surface at a time, the same order Escape unwinds in.
+        // The reset question is a surface of its own, so it is the first thing
+        // backing out undoes - and the way out of it that is not an answer.
+        if self.asking_reset {
+            self.asking_reset = false;
+            let _ = self.rebuild_visuals();
+            self.keep_focus();
+            return;
+        }
         if self.settings_open {
             self.settings_open = false;
             let _ = self.rebuild_visuals();
@@ -1782,6 +1937,13 @@ impl Panel {
         for (visual, (_, rect, _)) in self.headers.iter().zip(self.layout.headers(self.scroll)) {
             let _ = visual.SetOffset(Vector3 { X: rect.x, Y: rect.y, Z: 0.0 });
         }
+        // The borders move with what they surround. Without this they stayed
+        // where the last rebuild put them and the grid scrolled out of them.
+        for piece in &self.scrolled {
+            let Ok(at) = piece.visual.Offset() else { continue };
+            let y = piece.rest - self.layout.band_scroll(piece.band, self.scroll);
+            let _ = piece.visual.SetOffset(Vector3 { X: at.X, Y: y, Z: at.Z });
+        }
     }
 
     /// Hover beats selection: a tile that did not light up under the pointer
@@ -1819,10 +1981,10 @@ impl Panel {
         if let Target::Mode(mode) = item.target {
             return self.mode == mode;
         }
-        // Favorites mode: what the centre is already holding. The warm fill
+        // Center mode: what the centre is already holding. The warm fill
         // already means "this is switched on", and a tile that is a favorite is
         // exactly that - one more click takes it back out.
-        if self.mode == Mode::Favorites && item.origin == Source::Favorites {
+        if self.mode == Mode::Center && item.origin == Source::Center {
             return !matches!(item.target, Target::Slot);
         }
         item.target == Target::Stay && self.stay
@@ -1862,7 +2024,7 @@ impl Panel {
         // Pointing at a page rings the sites square and pointing at an app
         // rings the apps one, so where a tile is going is answered before it
         // is clicked.
-        if self.mode == Mode::Favorites {
+        if self.mode == Mode::Center {
             self.refresh_landing();
         }
     }
@@ -1916,12 +2078,12 @@ impl Panel {
         // The action tiles work the panel rather than leaving it.
         match item.target {
             // An empty square says what it is for by doing it: taking one is
-            // how favorites mode is found without knowing the menu exists. The
+            // how center mode is found without knowing the menu exists. The
             // square clicked is what the mode comes up aimed at, so the ring is
             // already round the square that was asked for.
             Target::Slot => {
                 let half = self.slot_half(index);
-                self.enter_mode(Mode::Favorites);
+                self.enter_mode(Mode::Center);
                 self.filling = half;
                 self.refresh_landing();
                 return;
@@ -2100,8 +2262,8 @@ impl Panel {
         match self.mode {
             // An empty square is never dim in this mode: it is what the mode
             // is aimed at, and clicking one aims it at that half.
-            Mode::Favorites => {
-                !matches!(item.target, Target::Slot) && self.favorite_would(item).is_none()
+            Mode::Center => {
+                !matches!(item.target, Target::Slot) && self.center_would(item).is_none()
             }
             // Nothing open behind it, so there is nothing to close.
             Mode::Close => self.window_for(item).is_none(),
@@ -2116,9 +2278,9 @@ impl Panel {
     ///
     /// A pick is written to the end of its list, so it appears in the first
     /// empty square of the half drawing that list. That square is the answer to
-    /// "where is this going", which is the one thing favorites mode never said.
+    /// "where is this going", which is the one thing center mode never said.
     fn landing_slots(&self) -> [Option<usize>; 2] {
-        let contents = self.config.favorites.contents;
+        let contents = self.config.center.contents;
         let mut out = [None, None];
         let mut base = 0;
         for section in &self.sections {
@@ -2145,7 +2307,7 @@ impl Panel {
     /// the first of them. Nothing is lost by that: both lists land in the same
     /// square, so both rings would be drawn round it anyway.
     fn slot_half(&self, index: usize) -> Option<pins::Half> {
-        let contents = self.config.favorites.contents;
+        let contents = self.config.center.contents;
         let mut base = 0;
         for section in &self.sections {
             if (base..base + section.items.len()).contains(&index)
@@ -2173,8 +2335,8 @@ impl Panel {
     fn landing_lit(&self) -> [bool; 2] {
         let mut lit = [false; 2];
         if let Some(item) = self.hover.and_then(|index| self.items.get(index))
-            && item.origin != Source::Favorites
-            && let Some((half, _)) = self.favorite_would(item)
+            && item.origin != Source::Center
+            && let Some((half, _)) = self.center_would(item)
         {
             lit[half.index()] = true;
             return lit;
@@ -2212,12 +2374,12 @@ impl Panel {
 
     /// The corner mark saying what a click does to this tile *right now*.
     ///
-    /// Only where a click destroys something. Favorites mode is one gesture
+    /// Only where a click destroys something. Center mode is one gesture
     /// both ways - the same click that put a tile in the block takes it back
     /// out - and a fill that says "this one is switched on" does not say which
     /// way the next click goes. The badge is the half the fill cannot say.
     fn badge(&self, item: &Item) -> Option<Badge> {
-        if self.mode != Mode::Favorites || item.origin != Source::Favorites {
+        if self.mode != Mode::Center || item.origin != Source::Center {
             return None;
         }
         // An empty slot has nothing to take out.
@@ -2238,12 +2400,12 @@ impl Panel {
             Target::NewTab { .. } => (Some(Mark::Plus), None),
             Target::Slot => (Some(Mark::Slot), None),
             // A picture of what the mode does to the panel, not an ornament.
-            // Move shows a window taking a side; favorites shows the middle of
+            // Move shows a window taking a side; center shows the middle of
             // the screen held; layout shows the bento being cut.
             Target::Mode(mode) => {
                 let mark = match mode {
                     Mode::Move => Mark::Half { left: 0.0, top: 0.0, right: 0.5, bottom: 1.0 },
-                    Mode::Favorites => {
+                    Mode::Center => {
                         Mark::Half { left: 0.28, top: 0.24, right: 0.72, bottom: 0.76 }
                     }
                     Mode::Close => Mark::Cross,
@@ -2517,7 +2679,10 @@ impl Panel {
             ESCAPE => {
                 // Menu first, then query, then the panel. Each Escape undoes
                 // one thing rather than throwing the whole panel away.
-                if self.settings_open {
+                if self.asking_reset {
+                    self.asking_reset = false;
+                    let _ = self.rebuild_visuals();
+                } else if self.settings_open {
                     self.settings_open = false;
                     let _ = self.rebuild_visuals();
                 } else if self.menu_open_big {
@@ -2828,7 +2993,7 @@ impl Panel {
             .collect();
         let at_lane = siblings.iter().position(|name| *name == title).unwrap_or(0);
         let center = self.editing_center().then(|| {
-            let f = &self.config.favorites;
+            let f = &self.config.center;
             CenterState {
                 columns: f.columns,
                 rows: f.rows,
@@ -2882,9 +3047,9 @@ impl Panel {
             // launches with it, which is the whole of what it is for.
             Mode::Grid | Mode::Move | Mode::AllApps | Mode::AllBookmarks => {}
             Mode::Layout => self.edit_click(x, y),
-            Mode::Favorites => {
+            Mode::Center => {
                 match self.layout.hit_test(x, y, self.scroll) {
-                    Some(tile) => self.toggle_favorite(tile),
+                    Some(tile) => self.toggle_center(tile),
                     None => return self.hide(true),
                 }
                 self.keep_focus();
@@ -2904,7 +3069,7 @@ impl Panel {
     /// A string the shell or the browser can be handed later, never a handle:
     /// a favorite outlives the window, the tab and the browser it came from,
     /// and a config file has nowhere to put an HWND.
-    fn favorite_target(&self, item: &Item) -> Option<String> {
+    fn center_target(&self, item: &Item) -> Option<String> {
         if matches!(item.target, Target::Slot) {
             return None;
         }
@@ -2924,13 +3089,13 @@ impl Panel {
     /// `None` when the block would not show it. A block set to apps only still
     /// keeps its site list, but writing to a list that is not on the panel is a
     /// click with no visible result - which reads as the panel ignoring you.
-    fn favorite_would(&self, item: &Item) -> Option<(pins::Half, String)> {
+    fn center_would(&self, item: &Item) -> Option<(pins::Half, String)> {
         let half = pins::Half::of(item.kind);
         // Already in the block, so it is on screen and has to be removable
         // however the block is set. Only what would be *added* to a half that
         // is not drawn is refused.
-        if item.origin != Source::Favorites
-            && !self.config.favorites.contents.shows(half.index())
+        if item.origin != Source::Center
+            && !self.config.center.contents.shows(half.index())
         {
             return None;
         }
@@ -2938,18 +3103,30 @@ impl Panel {
         // and nothing would be drawn - the block shows `slots` of a list and
         // keeps the rest - which is the same click with no visible result a
         // half that is not drawn at all would give.
-        if item.origin != Source::Favorites && self.landing_slots()[half.index()].is_none() {
+        //
+        // A block that is not drawn is not that case. There is no square to
+        // land on and there does not need to be: the write is what makes the
+        // block appear. Refusing here is what made an off block a dead end - no
+        // way in from the panel, and the way back on only in edit mode.
+        //
+        // Drawn, not `center.on()`: an empty block collapses whatever its
+        // shape says, so "on" is not the same question as "there".
+        let drawn = self.sections.iter().any(|section| section.center.is_some());
+        if item.origin != Source::Center
+            && drawn
+            && self.landing_slots()[half.index()].is_none()
+        {
             return None;
         }
-        Some((half, self.favorite_target(item)?))
+        Some((half, self.center_target(item)?))
     }
 
     /// Put a tile into the centre block, or take it back out.
     ///
     /// One gesture both ways. The block lights up what it is already holding,
     /// so the same click that added something is the click that removes it -
-    /// which is the whole of "manage favorites" without a second surface.
-    fn toggle_favorite(&mut self, tile: usize) {
+    /// which is the whole of "manage center" without a second surface.
+    fn toggle_center(&mut self, tile: usize) {
         let Some(item) = self.items.get(tile).cloned() else { return };
         // An empty square is not something to write down - it is where things
         // land. Clicking one aims the mode at that half, and clicking the
@@ -2965,17 +3142,17 @@ impl Panel {
             }
             return;
         }
-        let Some((half, target)) = self.favorite_would(&item) else {
-            log_info!("favorites: nothing to write down for \"{}\"", item.title);
+        let Some((half, target)) = self.center_would(&item) else {
+            log_info!("center: nothing to write down for \"{}\"", item.title);
             return;
         };
 
-        let changed = if item.origin == Source::Favorites {
-            log_info!("favorites: removing {target}");
-            pins::forget_favorite(&target)
+        let changed = if item.origin == Source::Center {
+            log_info!("center: removing {target}");
+            pins::forget_in_center(&target)
         } else {
-            log_info!("favorites: adding {target} to {}", half.key());
-            pins::add_favorite(half, &target)
+            log_info!("center: adding {target} to {}", half.key());
+            pins::add_to_center(half, &target)
         };
         if !changed {
             return;
@@ -3321,7 +3498,7 @@ impl Panel {
     fn draggable(&self, tile: usize) -> bool {
         self.query.is_empty()
             && self.items.get(tile).is_some_and(|i| {
-                matches!(i.origin, Source::Manual | Source::Taskbar | Source::Favorites)
+                matches!(i.origin, Source::Manual | Source::Taskbar | Source::Center)
                     // An empty slot is a place, not a tile. There is nothing to
                     // pick up and nothing to write down.
                     && !matches!(i.target, Target::Slot)
@@ -3473,7 +3650,7 @@ impl Panel {
         // What identifies an entry in config: manual sections list parsing
         // names, taskbar sections list pin names.
         let key = |item: &Item| match origin {
-            Source::Manual | Source::Favorites => item.shell_target().map(str::to_owned),
+            Source::Manual | Source::Center => item.shell_target().map(str::to_owned),
             _ => Some(item.title.clone()),
         };
         let Some(keys) = slots
@@ -3492,9 +3669,9 @@ impl Panel {
             Source::Taskbar => pins::set_order(&title, &keys),
             // Which half is being dragged in, so a drag inside the centre
             // rewrites that list and only that one.
-            Source::Favorites => match section.center {
-                Some(1) => pins::order_favorites(pins::Half::Sites, &keys),
-                _ => pins::order_favorites(pins::Half::Apps, &keys),
+            Source::Center => match section.center {
+                Some(1) => pins::order_center(pins::Half::Sites, &keys),
+                _ => pins::order_center(pins::Half::Apps, &keys),
             },
             // Ordered by the foreground hook and the browser, not by bentolaunch.
             Source::Windows | Source::Extra | Source::Running | Source::Tabs
@@ -3533,9 +3710,9 @@ impl Panel {
         match chosen {
             Some(menu::CMD_PIN_APP) => self.pin_app_of(tile),
             Some(menu::CMD_UNPIN) => self.unpin(tile),
-            Some(menu::CMD_FAVORITE | menu::CMD_UNFAVORITE) => {
+            Some(menu::CMD_CENTER | menu::CMD_UNCENTER) => {
                 if let Some(tile) = tile {
-                    self.toggle_favorite(tile);
+                    self.toggle_center(tile);
                 }
             }
             Some(menu::CMD_OPEN_LOCATION) => self.open_location(tile),
@@ -3568,14 +3745,24 @@ impl Panel {
                 // already on screen and bentolaunch already knows its path.
                 Target::Window(_) => {
                     if item.icon_source.is_some() {
-                        // Not "Pin <name>": the name available here is the
-                        // executable's stem, which reads as "Pin obs64".
-                        entries.push(Some(menu::Entry::new(menu::CMD_PIN_APP, "Pin this app")));
+                        // Named by where it goes, not by what it does to it.
+                        // "Pin" was one word for the write the tray calls "Add
+                        // app...", and neither said where the tile would turn
+                        // up. The name of the app is deliberately not in here:
+                        // what is available is the executable's stem, which
+                        // reads as "Pin obs64".
+                        entries.push(Some(menu::Entry::new(menu::CMD_PIN_APP, add_label())));
                     }
                 }
                 Target::Shell(_) => {
                     if self.removable(index) {
-                        entries.push(Some(menu::Entry::new(menu::CMD_UNPIN, "Unpin")));
+                        // The box it is actually in, which is not always the
+                        // box a new one would go to.
+                        let label = match self.section_of(index).map(|s| s.title.as_str()) {
+                            Some(title) if !title.is_empty() => format!("Remove from {title}"),
+                            _ => "Remove".to_string(),
+                        };
+                        entries.push(Some(menu::Entry::new(menu::CMD_UNPIN, label)));
                     }
                 }
                 // Bookmarking a tab arrives with the rest of Milestone 4.
@@ -3587,11 +3774,11 @@ impl Panel {
             // The centre block, as a second path to the mode. Same rule as
             // "Unpin": the gesture is a mode, and this is here for anyone who
             // reaches for a right-click first.
-            if self.config.favorites.on() && self.favorite_target(item).is_some() {
-                entries.push(Some(if item.origin == Source::Favorites {
-                    menu::Entry::new(menu::CMD_UNFAVORITE, "Remove from center")
+            if self.center_target(item).is_some() {
+                entries.push(Some(if item.origin == Source::Center {
+                    menu::Entry::new(menu::CMD_UNCENTER, "Remove from Center")
                 } else {
-                    menu::Entry::new(menu::CMD_FAVORITE, "Add to center")
+                    menu::Entry::new(menu::CMD_CENTER, "Add to Center")
                 }));
             }
             if self.locatable(index) {
@@ -3791,7 +3978,7 @@ impl Panel {
             self.bind_hotkey();
         }
 
-        store::reconfigure(&self.config.sections, &self.config.favorites);
+        store::reconfigure(&self.config.sections, &self.config.center);
         log_info!("config reloaded");
 
         if self.visible {
@@ -3985,7 +4172,7 @@ impl Panel {
                     return Some(LRESULT(0));
                 }
                 // A mode takes the click. Launching something from a layout
-                // editor, or while picking favorites, would be a click nobody
+                // editor, or while picking center, would be a click nobody
                 // meant.
                 if self.mode.takes_clicks() {
                     self.handled_down = true;
@@ -4317,15 +4504,12 @@ unsafe extern "system" fn wndproc(
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
 
-/// Which band across the panel a section asks for. `side` wins; the old `at`
-/// spelling is read for its first cut only, because order in the file is what
-/// orders boxes now.
+/// Which band across the panel a section asks for.
 fn lane_of(section: Option<&crate::config::SectionConfig>) -> Lane {
-    let Some(section) = section else { return Lane::default() };
-    if let Some(lane) = section.side.as_deref().and_then(Lane::parse) {
-        return lane;
-    }
-    section.at.as_deref().map(Lane::from_at).unwrap_or_default()
+    section
+        .and_then(|s| s.side.as_deref())
+        .and_then(Lane::parse)
+        .unwrap_or_default()
 }
 
 /// The rectangle a set of rings needs to be drawn in, with room for the stroke

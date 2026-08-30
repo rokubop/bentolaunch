@@ -18,7 +18,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     OBJID_WINDOW, PostMessageW, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP,
 };
 
-use crate::config::{Contents, Favorites, ManualItem, SectionConfig, Source, Sources};
+use crate::config::{Contents, Center, ManualItem, SectionConfig, Source, Sources};
 // Imported by name rather than as a module: `windows` would otherwise shadow the
 // `windows` crate throughout this file.
 use crate::model::taskbar;
@@ -80,14 +80,14 @@ fn claims(matches: &[String], window: &WindowInfo) -> bool {
 ///
 /// Resolved up front for the same reason manual entries are: working out what a
 /// parsing name is takes the disk, and show time is meant to be a read.
-struct Center {
-    shape: Favorites,
+struct Block {
+    shape: Center,
     /// Apps then sites. Two lists even when the block is not split, because
     /// they are still two lists; the block just draws them end to end.
     halves: [Vec<Item>; 2],
 }
 
-impl Center {
+impl Block {
     /// Everything the block holds, as the strings that identify the same thing
     /// elsewhere on the panel.
     ///
@@ -114,6 +114,18 @@ impl Center {
         }
         (targets, apps)
     }
+
+    /// Whether the block has anything to draw.
+    ///
+    /// A half that is not being shown does not count, the same way `held` does
+    /// not count it: `contents = "apps"` with sites full and apps empty is a
+    /// block with nothing in it, however much is written down.
+    fn draws_anything(&self) -> bool {
+        self.halves
+            .iter()
+            .enumerate()
+            .any(|(half, items)| self.shape.contents.shows(half) && !items.is_empty())
+    }
 }
 
 struct Store {
@@ -125,7 +137,7 @@ struct Store {
     /// bar that move mode brings out. Without a `modes` box there would be
     /// nothing left to turn the mode on with, so the old bar stays.
     has_modes: bool,
-    center: Center,
+    center: Block,
     /// bentolaunch's own panel, which must never appear in its own grid.
     exclude: Handle,
 }
@@ -140,7 +152,7 @@ fn store() -> &'static Mutex<Store> {
             windows: Vec::new(),
             groups: Vec::new(),
             has_modes: false,
-            center: build_center(&Favorites::default()),
+            center: build_block(&Center::default()),
             exclude: Handle::new(HWND(std::ptr::null_mut())),
         })
     })
@@ -191,7 +203,7 @@ fn build_groups(sections: &[SectionConfig]) -> Vec<Group> {
                     | Source::AllBookmarks
                     // Not fixed per section: the centre resolves them once and
                     // every list of them comes off that.
-                    | Source::Favorites => None,
+                    | Source::Center => None,
                 })
                 .collect(),
         })
@@ -200,24 +212,24 @@ fn build_groups(sections: &[SectionConfig]) -> Vec<Group> {
 
 /// Resolve the centre block's two lists, the same way manual entries are
 /// resolved: once, because both touch the disk.
-fn build_center(favorites: &Favorites) -> Center {
+fn build_block(center: &Center) -> Block {
     let resolve = |list: &[ManualItem]| -> Vec<Item> {
         list.iter()
             .filter_map(manual_item)
-            .map(|item| Item { origin: Source::Favorites, ..item })
+            .map(|item| Item { origin: Source::Center, ..item })
             .collect()
     };
-    Center {
-        halves: [resolve(&favorites.apps), resolve(&favorites.sites)],
-        shape: favorites.clone(),
+    Block {
+        halves: [resolve(&center.apps), resolve(&center.sites)],
+        shape: center.clone(),
     }
 }
 
 /// Rebuild sections after a config edit. Windows are left alone: the hooks have
 /// been keeping that list current and it does not depend on config.
-pub fn reconfigure(sections: &[SectionConfig], favorites: &Favorites) {
+pub fn reconfigure(sections: &[SectionConfig], center: &Center) {
     let groups = build_groups(sections);
-    let center = build_center(favorites);
+    let center = build_block(center);
     let has_modes = groups
         .iter()
         .any(|group| group.sources.iter().any(|spec| spec.source() == Source::Modes));
@@ -229,9 +241,9 @@ pub fn reconfigure(sections: &[SectionConfig], favorites: &Favorites) {
 }
 
 /// First and only full enumeration. Everything after this is incremental.
-pub fn init(exclude: HWND, sections: &[SectionConfig], favorites: &Favorites) {
+pub fn init(exclude: HWND, sections: &[SectionConfig], center: &Center) {
     let groups = build_groups(sections);
-    let center = build_center(favorites);
+    let center = build_block(center);
     let has_modes = groups
         .iter()
         .any(|group| group.sources.iter().any(|spec| spec.source() == Source::Modes));
@@ -543,7 +555,7 @@ fn all_bookmark_items() -> Vec<Item> {
 /// A fixed set in a fixed order, so the four squares are in the same four
 /// places every summon. `Move` leads because it is the one that used to be
 /// seven tiles of its own.
-pub const MODES: [Mode; 4] = [Mode::Move, Mode::Favorites, Mode::Close, Mode::Layout];
+pub const MODES: [Mode; 4] = [Mode::Move, Mode::Center, Mode::Close, Mode::Layout];
 
 fn mode_items() -> Vec<Item> {
     MODES
@@ -660,7 +672,7 @@ fn empty_slot(n: usize) -> Item {
         target: Target::Slot,
         icon_source: None,
         app: None,
-        origin: Source::Favorites,
+        origin: Source::Center,
         link: None,
         running: None,
         // A group of its own, which is what stops a drag inside the block from
@@ -717,14 +729,25 @@ fn wearing_favicon(item: &Item) -> Item {
     }
 }
 
-fn center_sections(center: &Center, mode: Mode) -> Vec<Section> {
+fn center_sections(center: &Block, mode: Mode) -> Vec<Section> {
     // Off, the block holds nothing and so is not a box on the panel at all -
     // and a square that switched it off would then have nowhere to be clicked
     // to switch it back on. Edit mode keeps one empty slot in the middle for
     // it, which is a box, which is somewhere to click.
-    if !center.shape.on() {
+    //
+    // Center mode keeps it for the same reason from the other end: off is
+    // the shipped state now, so the first favorite anyone ever adds is added to
+    // a block that is not there, and the mode has to show where it will land.
+    //
+    // Empty is the same as off here, whatever shape the file asks for. Nine
+    // squares a half holding nothing is the middle of the screen spent on
+    // nothing, and `rows` says how big the block gets, not that it has to be
+    // there before there is anything to put in it. Once it holds something it
+    // draws its whole shape, empty slots and all - those are where the next one
+    // lands, and they stay put as things come and go.
+    if !center.shape.on() || !center.draws_anything() {
         return match mode {
-            Mode::Layout => vec![Section {
+            Mode::Layout | Mode::Center => vec![Section {
                 title: String::new(),
                 items: vec![empty_slot(0)],
                 color: center.shape.color.clone(),
@@ -833,7 +856,7 @@ pub fn sections(mode: Mode) -> Vec<Section> {
         | Source::AllApps
         | Source::AllBookmarks
         // The list itself, wherever it is shown.
-        | Source::Favorites => false,
+        | Source::Center => false,
     };
 
     let mut claimed = vec![false; s.windows.len()];
@@ -919,7 +942,7 @@ pub fn sections(mode: Mode) -> Vec<Section> {
                 Source::Modes => items.extend(mode_items()),
                 // The centre's own lists, for anyone who would rather have
                 // them as an ordinary box than in the middle of the panel.
-                Source::Favorites => {
+                Source::Center => {
                     items.extend(s.center.halves.iter().flatten().cloned())
                 }
                 Source::Taskbar | Source::Manual => {
@@ -1270,19 +1293,19 @@ mod tests {
     /// what most of these are about, so it is stated rather than inherited:
     /// changing what a new install starts with must not rewrite the arithmetic
     /// these tests are checking.
-    fn favorites(apps: &[&str], sites: &[&str]) -> Favorites {
-        Favorites {
+    fn center(apps: &[&str], sites: &[&str]) -> Center {
+        Center {
             rows: 2,
             columns: 2,
             apps: apps.iter().map(|s| ManualItem::Plain((*s).into())).collect(),
             sites: sites.iter().map(|s| ManualItem::Plain((*s).into())).collect(),
-            ..Favorites::default()
+            ..Center::default()
         }
     }
 
     #[test]
     fn a_half_is_padded_out_to_its_slots_so_the_block_keeps_its_shape() {
-        let center = build_center(&favorites(&["ms-settings:display"], &[]));
+        let center = build_block(&center(&["ms-settings:display"], &[]));
         let out = center_sections(&center, Mode::Grid);
         assert_eq!(out.len(), 2, "split means two halves");
         // Two rows of two: four slots, one filled and three waiting.
@@ -1297,16 +1320,62 @@ mod tests {
 
     #[test]
     fn the_halves_are_numbered_left_to_right() {
-        let out = center_sections(&build_center(&favorites(&[], &[])), Mode::Grid);
+        // Something in it: an empty block is not drawn at all now.
+        let center = build_block(&center(&["ms-settings:display"], &[]));
+        let out = center_sections(&center, Mode::Grid);
         assert_eq!(out[0].center, Some(0));
         assert_eq!(out[1].center, Some(1));
     }
 
     #[test]
+    fn an_empty_block_is_not_drawn_however_big_it_is_set() {
+        // `rows` says how big the block gets, not that it has to be there
+        // before there is anything to put in it.
+        let center = build_block(&Center { rows: 3, columns: 3, ..center(&[], &[]) });
+        assert!(center_sections(&center, Mode::Grid).is_empty());
+    }
+
+    #[test]
+    fn an_empty_block_still_shows_where_a_favorite_would_land() {
+        // Collapsed is not gone. Both modes that put something in it have to
+        // show the square it goes to, or there is no way back to a block.
+        let center = build_block(&Center { rows: 3, columns: 3, ..center(&[], &[]) });
+        for mode in [Mode::Center, Mode::Layout] {
+            let out = center_sections(&center, mode);
+            assert_eq!(out.len(), 1, "no landing square in {mode:?}");
+            assert!(out[0].items.iter().all(|i| i.target == Target::Slot));
+        }
+    }
+
+    #[test]
+    fn a_half_that_is_not_shown_does_not_keep_the_block_open() {
+        // Apps only, with sites full and apps empty. The block draws nothing,
+        // so it is empty however much is written down.
+        let center = build_block(&Center {
+            contents: Contents::Apps,
+            ..center(&[], &["https://example.com"])
+        });
+        assert!(center_sections(&center, Mode::Grid).is_empty());
+    }
+
+    #[test]
+    fn one_favorite_still_draws_the_whole_shape() {
+        // Collapsing is about empty, not about fitting. The slots either side
+        // of a favorite are where the next one lands and must not move.
+        let center = build_block(&Center {
+            rows: 3,
+            columns: 3,
+            ..center(&["ms-settings:display"], &[])
+        });
+        let out = center_sections(&center, Mode::Grid);
+        assert_eq!(out[0].items.len(), 9, "the block shrank to fit its contents");
+    }
+
+    #[test]
     fn an_unsplit_block_is_one_box_holding_both_lists_in_turn() {
-        let center = build_center(&Favorites {
+        let center = build_block(&Center {
             contents: Contents::One,
-            ..favorites(&["ms-settings:display"], &["https://example.com"])
+            ..center(&["ms-settings:display"], &["https://example.com"])
         });
         let out = center_sections(&center, Mode::Grid);
         assert_eq!(out.len(), 1);
@@ -1323,9 +1392,9 @@ mod tests {
         for (contents, held) in
             [(Contents::Apps, "ms-settings:display"), (Contents::Sites, "https://example.com")]
         {
-            let center = build_center(&Favorites {
+            let center = build_block(&Center {
                 contents,
-                ..favorites(&["ms-settings:display"], &["https://example.com"])
+                ..center(&["ms-settings:display"], &["https://example.com"])
             });
             let out = center_sections(&center, Mode::Grid);
             assert_eq!(out.len(), 1, "{contents:?} drew more than one box");
@@ -1355,9 +1424,9 @@ mod tests {
         // Set to apps only, the sites are still written down and still come
         // back when the setting does. Taking them out of `Browsing` as well
         // would be a tile that is on no part of the panel at all.
-        let center = build_center(&Favorites {
+        let center = build_block(&Center {
             contents: Contents::Apps,
-            ..favorites(&["ms-settings:display"], &["https://example.com"])
+            ..center(&["ms-settings:display"], &["https://example.com"])
         });
         let (targets, _) = center.held();
         assert!(targets.contains(&"ms-settings:display".to_owned()));
@@ -1366,14 +1435,14 @@ mod tests {
 
     #[test]
     fn a_block_turned_off_is_no_sections_at_all() {
-        let center = build_center(&Favorites { rows: 0, ..favorites(&["x"], &["y"]) });
+        let center = build_block(&Center { rows: 0, ..center(&["x"], &["y"]) });
         assert!(center_sections(&center, Mode::Grid).is_empty());
     }
 
     #[test]
-    fn more_favorites_than_slots_are_cut_rather_than_growing_the_block() {
+    fn more_center_items_than_slots_are_cut_rather_than_growing_the_block() {
         let many: Vec<&str> = vec!["a:1", "b:2", "c:3", "d:4", "e:5", "f:6"];
-        let center = build_center(&favorites(&many, &[]));
+        let center = build_block(&center(&many, &[]));
         let out = center_sections(&center, Mode::Grid);
         assert_eq!(out[0].items.len(), 4);
         // And the section still says how many there really were, which is what
@@ -1383,7 +1452,7 @@ mod tests {
 
     #[test]
     fn what_the_block_holds_is_named_by_target_and_by_app() {
-        let center = build_center(&favorites(&["ms-settings:display"], &["https://example.com"]));
+        let center = build_block(&center(&["ms-settings:display"], &["https://example.com"]));
         let (targets, _) = center.held();
         assert!(targets.contains(&"ms-settings:display".to_owned()));
         assert!(targets.contains(&"https://example.com".to_owned()));
@@ -1391,7 +1460,7 @@ mod tests {
 
     #[test]
     fn an_empty_slot_is_its_own_group_so_a_drag_cannot_run_into_one() {
-        let out = center_sections(&build_center(&favorites(&["ms-settings:display"], &[])), Mode::Grid);
+        let out = center_sections(&build_block(&center(&["ms-settings:display"], &[])), Mode::Grid);
         let filled = &out[0].items[0];
         let empty = &out[0].items[1];
         assert_ne!(filled.group, empty.group);
@@ -1420,7 +1489,7 @@ mod tests {
     fn a_site_favorite_keeps_the_shell_icon_until_a_favicon_turns_up() {
         // Nothing paired in a test, so this is the no-browser case: the URL
         // itself, which the shell answers with the default browser's logo.
-        let center = build_center(&favorites(&[], &["https://example.com"]));
+        let center = build_block(&center(&[], &["https://example.com"]));
         let out = center_sections(&center, Mode::Grid);
         assert_eq!(out[1].items[0].icon_source.as_deref(), Some("https://example.com"));
     }

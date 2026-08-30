@@ -42,7 +42,7 @@ fn main() {
     let config = Config::load();
     let sections = config.sections.clone();
     let bridge = config.browser.clone();
-    let favorites = config.favorites.clone();
+    let center = config.center.clone();
     log_info!(
         "bentolaunch starting — dry_run={}, hotkey={}",
         config.dry_run,
@@ -62,7 +62,7 @@ fn main() {
     let hwnd = panel.hwnd();
 
     // Enumerate once, then stay current from hooks. Never scan on the hotkey.
-    store::init(hwnd, &sections, &favorites);
+    store::init(hwnd, &sections, &center);
     store::install_hooks(hwnd);
     icons::start(hwnd);
     apps::start(hwnd);

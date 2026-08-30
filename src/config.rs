@@ -23,7 +23,7 @@ pub struct Config {
     pub grid: Grid,
     pub theme: Theme,
     pub browser: Browser,
-    pub favorites: Favorites,
+    pub center: Center,
 }
 
 /// The block held in the middle of the panel.
@@ -45,7 +45,7 @@ pub struct Config {
 /// not there; the boxes wrap around it. See `ui::grid::Layout::compute`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct Favorites {
+pub struct Center {
     /// Rows of tiles in the block. **0 turns it off**, the same way
     /// `max_columns = 0` means no cap: how much centre you want and whether you
     /// want any are one question, and one settings square answers it.
@@ -58,32 +58,30 @@ pub struct Favorites {
     /// apart. Four answers to one question, so the square that steps through
     /// them cannot leave the block in a state no square can name.
     pub contents: Contents,
-    /// Legacy, and never written back: `contents` says all of this and more.
-    /// `true` becomes `split`, `false` becomes `one`, and the key is dropped
-    /// the next time anything writes the block's settings.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub split: Option<bool>,
     /// Tint behind the block, "#AARRGGBB" or "#RRGGBB". This is the one box
     /// that is always in the same place, so it is the one worth marking out.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
     /// Shell parsing names, the same strings a manual section's `items` takes.
-    /// Written by favorites mode; hand-editable like everything else here.
+    /// Written by center mode; hand-editable like everything else here.
     pub apps: Vec<ManualItem>,
     /// URLs, and anything else the shell opens. Same form as `apps`.
     pub sites: Vec<ManualItem>,
 }
 
-impl Default for Favorites {
+impl Default for Center {
     fn default() -> Self {
         Self {
-            // Nine slots a side. Enough that what you put there stops being a
-            // shortlist you re-pick every week, and still inside the four each
-            // way `validated` allows.
-            rows: 3,
+            // Off. A block nobody has put anything in is eighteen empty
+            // squares in the middle of the screen, which is the most expensive
+            // place on the panel spent on nothing. The first favorite turns it
+            // on at a shape that fits - see `Center::shape_for`.
+            //
+            // A width is still named, so the block that comes back when it is
+            // switched on by hand is a block rather than a column of one.
+            rows: 0,
             columns: 3,
             contents: Contents::Split,
-            split: None,
             // Warm, low alpha. It sits over a translucent panel, so anything
             // opaque would punch a hole in it.
             color: Some("#38FFC24B".into()),
@@ -127,7 +125,7 @@ impl Contents {
 
     /// Whether this half is on the panel at all. Favoriting something the block
     /// would not show is a click that writes to a list nobody can see, so this
-    /// is also what greys those tiles out in favorites mode.
+    /// is also what greys those tiles out in center mode.
     pub fn shows(self, half: usize) -> bool {
         match self {
             Contents::Split | Contents::One => true,
@@ -152,7 +150,32 @@ impl Contents {
     }
 }
 
-impl Favorites {
+impl Center {
+    /// The most tiles the block may take either way. Past this the grid around
+    /// it has nowhere to wrap to, and `validated` clamps to the same number.
+    pub const MOST: usize = 4;
+
+    /// The smallest shape with room for `slots` in a half.
+    ///
+    /// Every rectangle up to the cap, not a ladder of chosen ones: adding a
+    /// favorite should cost the block the room that favorite needs and no more,
+    /// and a ladder stepping 2 x 2 to 3 x 2 hands back two empty squares for
+    /// one tile. A rectangle cannot fit every count exactly - five is 3 x 2 or
+    /// nothing - but this is always the least that holds them.
+    ///
+    /// Wider before taller when the area ties, because a block is read along
+    /// its rows: four are 4 x 1, not 2 x 2.
+    ///
+    /// Only ever bigger. A block that shrank as it emptied would be moving
+    /// targets, so coming back down stays an edit-mode click.
+    pub fn shape_for(slots: usize) -> (usize, usize) {
+        (1..=Self::MOST)
+            .flat_map(|rows| (1..=Self::MOST).map(move |columns| (columns, rows)))
+            .filter(|(columns, rows)| columns * rows >= slots)
+            .min_by_key(|&(columns, rows)| (columns * rows, Self::MOST - columns))
+            .unwrap_or((Self::MOST, Self::MOST))
+    }
+
     /// Whether the block is drawn at all.
     pub fn on(&self) -> bool {
         self.rows > 0 && self.columns > 0
@@ -176,16 +199,6 @@ pub struct Browser {
     pub enabled: bool,
     /// Loopback only. Never bound on any other interface.
     pub port: u16,
-    /// Legacy. Paired browsers now live in `%LOCALAPPDATA%\bentolaunch\peers.json`,
-    /// one token each, added by "Pair a browser..." in the tray. Origins left
-    /// here are carried over on startup and this is blanked.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub allow: Vec<String>,
-    /// Legacy, and never repopulated: a token in a file beside the exe is
-    /// readable by every account on the machine. Anything left here is carried
-    /// into the peer store on startup and this is blanked.
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub token: String,
 }
 
 impl Default for Browser {
@@ -193,8 +206,6 @@ impl Default for Browser {
         Self {
             enabled: false,
             port: 8777,
-            allow: Vec::new(),
-            token: String::new(),
         }
     }
 }
@@ -257,20 +268,20 @@ pub enum Source {
     /// want and nothing about it stopped working.
     #[serde(rename = "move")]
     Moves,
-    /// One tile per mode: move a window, favorites, close apps, edit layout.
+    /// One tile per mode: move a window, center, close apps, edit layout.
     ///
     /// A fixed set in a fixed order, like `move`. This is the bar that replaces
     /// the move bar: four squares that are always the same four in the same
     /// places, each one turning on a mode and each one turning it off again.
     Modes,
-    /// What `[favorites]` holds, apps then sites.
+    /// What `[center]` holds, apps then sites.
     ///
     /// The centre block is where these normally appear, and it is not a
     /// section. This is here so the one list has one name wherever it turns up:
     /// it is what tags a tile as belonging to the centre, which is how a
     /// favorite is left out of the list it came from and how removing one knows
     /// where to write.
-    Favorites,
+    Center,
 }
 
 /// One group of tiles inside a section: where they come from, and for windows
@@ -415,15 +426,6 @@ pub struct SectionConfig {
     /// stopped meaning left the moment nothing was on the right.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub side: Option<String>,
-    /// Legacy, and read only when `side` is absent: the first cut is taken as
-    /// the lane and the rest is dropped, because order in this file is what
-    /// orders boxes now.
-    ///
-    /// `"left"` is the whole left side. `"right/top"` is the top of what is
-    /// left after that cut. `"left@35"` pins it to 35% of the width. Sections
-    /// that say nothing fill whatever the cuts left over.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub at: Option<String>,
     /// Tile columns inside this box. 0 fits as many as its rectangle takes.
     #[serde(default)]
     pub columns: usize,
@@ -472,7 +474,7 @@ impl ManualItem {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Grid {
     /// Tile size is fixed and never changes with item count — that stability is
@@ -597,7 +599,6 @@ fn section(title: &str, sources: &[SourceSpec]) -> SectionConfig {
         color: None,
         edge: None,
         side: None,
-        at: None,
         columns: 0,
         max_items: 0,
         items: Vec::new(),
@@ -692,7 +693,7 @@ impl Default for Config {
                 placed("", &[SourceSpec::Plain(Source::Modes)], "full"),
             ],
             grid: Grid::default(),
-            favorites: Favorites::default(),
+            center: Center::default(),
             theme: Theme::default(),
             browser: Browser::default(),
         }
@@ -754,18 +755,8 @@ impl Config {
         Some(Self::path_in(std::env::current_exe().ok()?.parent()?))
     }
 
-    /// Renamed from BentoPick. A move, so comments and ordering survive. A
-    /// failed move keeps the old file: two names would drop edits.
     fn path_in(dir: &Path) -> PathBuf {
-        let path = dir.join("bentolaunch.toml");
-        if path.exists() {
-            return path;
-        }
-        let legacy = dir.join("bentopick.toml");
-        if legacy.is_file() && std::fs::rename(&legacy, &path).is_err() {
-            return legacy;
-        }
-        path
+        dir.join("bentolaunch.toml")
     }
 
     /// Never fails: a broken or absent config falls back to defaults rather than
@@ -864,26 +855,19 @@ impl Config {
         // The centre is held in the middle of the panel and everything else
         // wraps around it, so a block bigger than the panel would leave the
         // grid nowhere to wrap to. Four each way is already half a screen.
-        let f = &mut self.favorites;
-        // The old two-value key. Read once, then it is nobody's business but
-        // `contents`: a config carrying both would have two answers to one
-        // question and no way to tell which was meant last.
-        if let Some(split) = f.split.take() {
-            f.contents = if split { Contents::Split } else { Contents::One };
-            log_info!("favorites.split read as contents = \"{}\"", f.contents.key());
+        let f = &mut self.center;
+        if f.rows > Center::MOST {
+            log_warn!("center.rows {} is more than {}; clamped", f.rows, Center::MOST);
+            f.rows = Center::MOST;
         }
-        if f.rows > 4 {
-            log_warn!("favorites.rows {} is more than 4; using 4", f.rows);
-            f.rows = 4;
-        }
-        if f.columns > 4 {
-            log_warn!("favorites.columns {} is more than 4; using 4", f.columns);
-            f.columns = 4;
+        if f.columns > Center::MOST {
+            log_warn!("center.columns {} is more than {}; clamped", f.columns, Center::MOST);
+            f.columns = Center::MOST;
         }
         // Rows alone says whether the block is on. A width of zero with rows
         // asked for is a typo, not a way to turn it off.
         if f.rows > 0 && f.columns == 0 {
-            f.columns = Favorites::default().columns;
+            f.columns = Center::default().columns;
         }
 
         if self.sections.is_empty() {
@@ -1063,51 +1047,56 @@ mod tests {
         // Four of content, then the two bars along the bottom.
         assert_eq!(back.sections.len(), 6);
         assert!(back.sections[0].source.contains(Source::Taskbar));
-        assert_eq!(back.favorites.rows, Config::default().favorites.rows);
-        assert_eq!(back.favorites.columns, Config::default().favorites.columns);
-        assert_eq!(back.favorites.contents, Config::default().favorites.contents);
-        // The legacy key is not written, so a fresh config has nothing to fold.
-        // `contents = "split"` is the value, not the key it replaced. Asked of
-        // the parse rather than of the text: `[grid]` has a `split` of its own
-        // now, and it is a different question entirely.
-        assert!(back.favorites.split.is_none(), "the default config still writes favorites.split");
+        assert_eq!(back.center.rows, Config::default().center.rows);
+        assert_eq!(back.center.columns, Config::default().center.columns);
+        assert_eq!(back.center.contents, Config::default().center.contents);
     }
 
-    #[test]
-    fn the_old_split_key_still_reads_and_becomes_contents() {
-        // A config written before `contents` existed. It has to keep working:
-        // the file is hand-edited, and a parse error falls all the way back to
-        // defaults, which would look like every setting being forgotten.
-        let one: Config = toml::from_str("[favorites]
-split = false
-").unwrap();
-        assert_eq!(one.validated().favorites.contents, Contents::One);
-        let split: Config = toml::from_str("[favorites]
-split = true
-").unwrap();
-        assert_eq!(split.validated().favorites.contents, Contents::Split);
-    }
+
 
     #[test]
-    fn the_old_key_still_answers_while_it_is_in_the_file() {
-        // Both keys at once is only reachable by hand-editing `split` back in.
-        // Nothing in the file says which was written last, so the legacy key
-        // answers and the next write of the block's settings takes it out -
-        // which is the only way this can be ambiguous twice.
-        let cfg: Config =
-            toml::from_str("[favorites]
-split = true
-contents = \"apps\"
-").unwrap();
-        assert_eq!(cfg.validated().favorites.contents, Contents::Split);
-    }
-
-    #[test]
-    fn the_block_starts_three_by_three_a_side_and_empty() {
-        let f = Config::default().favorites;
-        assert_eq!((f.rows, f.columns, f.slots()), (3, 3, 9));
+    fn the_block_starts_off_and_empty() {
+        let f = Config::default().center;
+        assert!(!f.on(), "a fresh panel should not be holding empty squares");
+        assert_eq!(f.slots(), 0);
         assert_eq!(f.contents, Contents::Split);
         assert!(f.apps.is_empty() && f.sites.is_empty());
+        // A width is still named. Switching the block on by hand has to give
+        // back a block rather than a column of one.
+        assert_eq!(f.columns, 3);
+    }
+
+    #[test]
+    fn the_block_grows_by_what_it_needs_and_no_more() {
+        // Off holds nothing, so the first favorite is what turns it on - and it
+        // costs one square, not a shape with spares in it.
+        assert_eq!(Center::shape_for(1), (1, 1));
+        assert_eq!(Center::shape_for(2), (2, 1));
+        assert_eq!(Center::shape_for(3), (3, 1));
+        // Wider before taller on a tie: a block is read along its rows.
+        assert_eq!(Center::shape_for(4), (4, 1));
+        // A rectangle cannot hold five exactly. Six is the least that does.
+        assert_eq!(Center::shape_for(5), (3, 2));
+        assert_eq!(Center::shape_for(6), (3, 2));
+        assert_eq!(Center::shape_for(9), (3, 3));
+        assert_eq!(Center::shape_for(16), (4, 4));
+        // Past the biggest it stops rather than wrapping or refusing.
+        assert_eq!(Center::shape_for(999), (4, 4));
+    }
+
+    #[test]
+    fn no_shape_it_picks_is_wasteful_or_out_of_range() {
+        let mut area = 0;
+        for count in 1..=16 {
+            let (columns, rows) = Center::shape_for(count);
+            assert!(columns * rows >= count, "{count} does not fit {columns}x{rows}");
+            assert!(columns <= Center::MOST && rows <= Center::MOST, "{columns}x{rows} is past the cap");
+            // Never more than one row of slack, and never smaller than the last
+            // answer: the block only grows.
+            assert!(columns * rows < count + columns, "{count} got {columns}x{rows}, a row of spares");
+            assert!(columns * rows >= area, "the block shrank between {} and {count}", count - 1);
+            area = columns * rows;
+        }
     }
 
     #[test]
@@ -1326,32 +1315,7 @@ items = [{ title = "Display", target = "ms-settings:display" }]
         dir
     }
 
-    #[test]
-    fn a_bentopick_config_is_carried_over_with_its_comments() {
-        let dir = scratch("carried");
-        let original = "# hand written
-hotkey = \"ctrl+alt+q\"
-";
-        std::fs::write(dir.join("bentopick.toml"), original).unwrap();
 
-        let path = Config::path_in(&dir);
-
-        assert_eq!(path, dir.join("bentolaunch.toml"));
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
-        assert!(!dir.join("bentopick.toml").exists(), "moved, not copied");
-    }
-
-    #[test]
-    fn an_existing_bentolaunch_config_wins_and_the_old_one_is_left_alone() {
-        let dir = scratch("existing");
-        std::fs::write(dir.join("bentolaunch.toml"), "current").unwrap();
-        std::fs::write(dir.join("bentopick.toml"), "stale").unwrap();
-
-        let path = Config::path_in(&dir);
-
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "current");
-        assert!(dir.join("bentopick.toml").exists(), "nothing is deleted");
-    }
 
     #[test]
     fn a_fresh_install_names_the_new_config() {
