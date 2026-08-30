@@ -142,7 +142,7 @@ hit the right square without reading it.
 **An empty block draws nothing**, whatever `rows` and `columns` say. Eighteen
 empty squares in the middle of the screen is the one place on the panel worth
 reserving spent on nothing. Right-click anything and choose **Add to center**,
-or use Center mode, and the block appears around the first one. Add one that would not
+or use **Edit center**, and the block appears around the first one. Add one that would not
 fit and the block grows to the least rectangle that holds them: one favorite is
 one square, two are 2 x 1, four are 4 x 1, five are 3 x 2. Up to 4 x 4 a half.
 
@@ -150,16 +150,16 @@ Holding something, it draws its whole shape — empty slots included. Those are
 where the next one lands, and they stay put as things come and go: a block that
 shrank to fit would move every square you had learned the position of. Empty it
 completely and it collapses again. Coming back down a size is a click in edit
-mode, or **Center** in Settings.
+mode.
 
 Empty squares are drawn, not left out. A block that shrank as it emptied would
 be a set of moving targets, which is the one thing a gaze pointer cannot use.
-Click an empty one and Center mode opens.
+Click an empty one and **Edit center** opens.
 
 | Do | Get |
 |---|---|
-| Click **Center**, then a tile | It moves into the center |
-| Click **Center**, then a center tile | It comes back out |
+| Click **Edit center**, then a tile | It moves into the center |
+| Click **Edit center**, then a center tile | It comes back out |
 | Drag inside a half | Reorder it |
 | Right-click a tile | **Add to center**, **Remove from center** |
 
@@ -232,8 +232,8 @@ apps first; `apps` and `sites` are one list alone. The other list is still kept
 and still comes back when the setting does. While it is not being shown it stays
 in the box it came from, rather than vanishing off the panel entirely.
 
-Two squares in Settings say the same thing: **Center** steps the shape, `off`
-included, and **Center · apps + sites** steps what it holds.
+**Center holds · apps + sites** in Settings steps what it holds. The shape is in
+**Edit layout**, on the block itself.
 
 ## Modes
 
@@ -248,7 +248,7 @@ is a mode you can be stuck in.
 | Square | While it is on |
 |---|---|
 | **Move window** | The six moves appear, and clicking a tile picks the window to move |
-| **Center** | Clicking fills and empties the center |
+| **Edit center** | Clicking fills and empties the center |
 | **Close apps** | Clicking closes the window behind a tile |
 | **Edit layout** | Clicking picks a box and the options rearrange the bento |
 
@@ -298,12 +298,15 @@ Launch**, **Add to Center**, **Remove from Launch**. One verb, and the half
 worth reading is the destination. The box named is the one it will actually
 land in, read from the config rather than assumed.
 
-**Settings** opens eight more squares. Each one is a value and each click steps
-it to the next: tile size, whether tiles show a second line, how many columns,
-whether the browser bridge listens, the center block's shape and what it holds.
-They write straight into `bentolaunch.toml` and your comments survive.
-**Open the file** is one of the eight, for the hotkey, the theme and the
-sections, which need typing.
+**Settings** opens eight more squares. Each says its own name and where it
+stands - **Tiles · medium**, **Columns · 9**, **Center holds · apps + sites**
+- and each click steps it to the next value. They write straight into
+`bentolaunch.toml` and your comments survive. **Open the file** is one of the
+eight, for the hotkey, the theme and the sections, which need typing.
+
+The block's *size* is not here. It has four squares in **Edit layout**, where
+the block is on screen next to them: a shape needs two directions, and a surface
+covering the thing you are sizing can give neither.
 
 A square that would do nothing where the config stands is greyed rather than
 removed — **Center · apps + sites** with no center block, for instance — so the
@@ -311,7 +314,8 @@ squares never reshuffle under the pointer.
 
 ### Reset layout
 
-A ninth square sits on its own under the other eight. **Reset layout** puts the
+**Reset layout** is one of the eight, one square away from **Done** so the two
+worst to confuse are not neighbours. It puts the
 boxes back in their stock lanes and order, the grid back to stock tiles and
 columns, and the center block back to the shape that fits what it holds.
 
@@ -320,10 +324,10 @@ and two arrive — **Keep my layout** and **Reset the layout**. Neither is where
 the square you clicked was, so a second click cannot answer by accident. Escape
 or the corner button backs out of the question without answering it.
 
-Then it says what it did. The square reads **Layout · stock** and greys
-out, the same way every other square here says where its setting stands, and
-stays that way until something moves a box again. A box you wrote yourself does
-not count against that — a reset keeps it, so it is stock with it there.
+Afterwards the square greys out, which is how this surface says a click would
+do nothing, and stays grey until something moves a box again. A box you wrote
+yourself does not count against that — a reset keeps it, so it is stock with it
+there.
 
 It only touches layout. Your hotkey, theme, browser switch, hand-added apps and
 files, dragged pin order, and the center block's own contents all come through
@@ -588,7 +592,7 @@ sites = [
 ```
 
 Both lists take the same entries a manual section's `items` does: a path, a
-`.lnk`, `shell:AppsFolder\<AppUserModelID>`, or a URI. Center mode writes
+`.lnk`, `shell:AppsFolder\<AppUserModelID>`, or a URI. **Edit center** writes
 them; hand-editing works the same as everywhere else here.
 
 A site wears its own favicon when a paired browser has sent one for that site,

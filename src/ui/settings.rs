@@ -30,30 +30,11 @@ const TILE_SIZES: [(f32, f32, f32, &str); 4] = [
 
 /// Column caps. 0 is the config's "no cap beyond what fits the screen".
 const COLUMNS: [(usize, &str); 5] = [
-    (5, "5 across"),
-    (7, "7 across"),
-    (9, "9 across"),
-    (12, "12 across"),
-    (0, "As many as fit"),
-];
-
-/// The centre block's shape, in tiles a half: across, then down.
-///
-/// Off is the first step rather than a square of its own. "Do I want a centre
-/// block" and "how big" are the same question asked twice, and answering it
-/// with two squares means two places for them to disagree. Both numbers on the
-/// one square for the same reason: a block is a shape, and a height and a width
-/// set apart is a file that briefly says 3 x 1 - which the watcher lays out.
-///
-/// Stops at four each way, which is where `Config::validated` stops: a block
-/// wider than that leaves the grid around it nowhere to wrap to.
-const CENTER_SIZES: [(usize, usize, &str); 6] = [
-    (0, 0, "Center \u{00B7} off"),
-    (2, 1, "Center \u{00B7} 2 \u{00D7} 1"),
-    (2, 2, "Center \u{00B7} 2 \u{00D7} 2"),
-    (3, 2, "Center \u{00B7} 3 \u{00D7} 2"),
-    (3, 3, "Center \u{00B7} 3 \u{00D7} 3"),
-    (4, 4, "Center \u{00B7} 4 \u{00D7} 4"),
+    (5, "Columns \u{00B7} 5"),
+    (7, "Columns \u{00B7} 7"),
+    (9, "Columns \u{00B7} 9"),
+    (12, "Columns \u{00B7} 12"),
+    (0, "Columns \u{00B7} as many as fit"),
 ];
 
 /// What the block holds, and whether the two lists are kept apart. One square
@@ -61,10 +42,10 @@ const CENTER_SIZES: [(usize, usize, &str); 6] = [
 /// The settings square says the whole thing; the edit-layout square has the
 /// block right there beside it and only needs the answer.
 const CENTER_CONTENTS: [(Contents, &str, &str); 4] = [
-    (Contents::Split, "Center \u{00B7} apps + sites", "Apps + sites"),
-    (Contents::One, "Center \u{00B7} one block", "One block"),
-    (Contents::Apps, "Center \u{00B7} apps only", "Apps only"),
-    (Contents::Sites, "Center \u{00B7} sites only", "Sites only"),
+    (Contents::Split, "Center holds \u{00B7} apps + sites", "Apps + sites"),
+    (Contents::One, "Center holds \u{00B7} one block", "One block"),
+    (Contents::Apps, "Center holds \u{00B7} apps only", "Apps only"),
+    (Contents::Sites, "Center holds \u{00B7} sites only", "Sites only"),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,8 +53,6 @@ pub enum Setting {
     Tiles,
     Labels,
     Columns,
-    /// The centre block's shape, off included.
-    Center,
     /// Which lists the block holds: apps and sites apart, both in one block,
     /// or one of them alone.
     CenterHolds,
@@ -102,24 +81,27 @@ pub enum Setting {
 /// was, so a second click cannot land on an answer by accident.
 pub const CONFIRM_RESET: [Setting; 2] = [Setting::ResetNo, Setting::ResetYes];
 
-/// Two full rows of four, then the one square that is not a setting at all.
-/// The shape settings first, then the centre, then the one switch, then the
-/// two squares that are not values - and reset alone underneath.
+/// Two rows of four: the four values, then what the block holds, the two
+/// escape hatches and the way out.
 ///
-/// Alone on purpose. It is the only square here that throws anything away,
-/// and a ninth in the corner of the block is one you can hit on the way to
-/// the eighth. `centred_grid` puts a short row under the middle of the full
-/// ones, so it reads as its own thing rather than as a row missing three.
-pub const SETTINGS: [Setting; 9] = [
+/// The block's *size* is not here. It has four squares in edit mode, where the
+/// block is on screen beside them - a shape needs two directions and a surface
+/// that covers the thing being sized cannot give either. One square stepping a
+/// list of shapes also disagreed with the shapes a favorite grows the block
+/// into, and stepping off that list turned the block off.
+///
+/// Reset is one square away from Done, not beside it. It is the only square
+/// here that throws anything away, and the two worst to confuse are "throw my
+/// layout away" and "I am finished".
+pub const SETTINGS: [Setting; 8] = [
     Setting::Tiles,
     Setting::Labels,
     Setting::Columns,
     Setting::Browser,
-    Setting::Center,
     Setting::CenterHolds,
+    Setting::Reset,
     Setting::OpenFile,
     Setting::Done,
-    Setting::Reset,
 ];
 
 impl Setting {
@@ -141,10 +123,6 @@ impl Setting {
             // the two shape settings and they sit next to each other.
             Setting::Labels => "\u{25A4}",
             Setting::Columns => "\u{25A5}",
-            // A square with its middle filled: the block, and the panel around
-            // it. Then the same square cut down the middle, which is what the
-            // split does to it.
-            Setting::Center => "\u{25FB}",
             Setting::CenterHolds => "\u{25EB}",
             Setting::Browser => "\u{25EF}",
             // The same mark the menu puts on "Add file". It is the same kind of
@@ -184,10 +162,6 @@ impl Setting {
                 // setting the user chose deliberately.
                 None => "Columns \u{00B7} as set",
             },
-            Setting::Center => match center_now(config) {
-                Some(index) => CENTER_SIZES[index].2,
-                None => "Center \u{00B7} as set",
-            },
             Setting::CenterHolds => CENTER_CONTENTS[holds_now(config)].1,
             Setting::Browser => {
                 if config.browser.enabled {
@@ -200,11 +174,6 @@ impl Setting {
             // The question is asked on the square, not in a dialog. A
             // message box is two small buttons handed the focus, which is
             // the one shape nothing pointing with gaze can use.
-            // Said the way every other square here says itself: the
-            // setting, then where it stands. Greyed and still reading
-            // "Reset layout" is what made a click that did nothing look
-            // like one that worked.
-            Setting::Reset if layout_is_stock(config) => "Layout \u{00B7} stock",
             Setting::Reset => "Reset layout",
             Setting::ResetYes => "Reset the layout",
             Setting::ResetNo => "Keep my layout",
@@ -226,11 +195,6 @@ impl Setting {
                 // which neighbour the user meant.
                 let index = columns_now(config).map_or(0, |i| (i + 1) % COLUMNS.len());
                 Some(Change::MaxColumns(COLUMNS[index].0))
-            }
-            Setting::Center => {
-                let index = center_now(config).map_or(0, |i| (i + 1) % CENTER_SIZES.len());
-                let (columns, rows, _) = CENTER_SIZES[index];
-                Some(Change::CenterSize { columns, rows })
             }
             Setting::CenterHolds => {
                 let index = (holds_now(config) + 1) % CENTER_CONTENTS.len();
@@ -390,15 +354,6 @@ pub fn center_holds_said(config: &Config) -> &'static str {
     CENTER_CONTENTS[holds_now(config)].2
 }
 
-fn center_now(config: &Config) -> Option<usize> {
-    let f = &config.center;
-    if !f.on() {
-        return Some(0);
-    }
-    CENTER_SIZES
-        .iter()
-        .position(|(cols, rows, _)| *cols == f.columns && *rows == f.rows)
-}
 
 fn holds_now(config: &Config) -> usize {
     CENTER_CONTENTS
@@ -413,6 +368,56 @@ mod tests {
 
     fn config() -> Config {
         Config::default()
+    }
+
+    #[test]
+    fn every_value_square_names_its_own_setting() {
+        // "5 across" said nothing about which square it was, and two squares
+        // both opening "Center \" said different things - the shape and what
+        // it holds. The prefix has to name the setting, and name only it.
+        let c = config();
+        let mut seen: Vec<&str> = Vec::new();
+        for setting in SETTINGS {
+            let label = setting.label(&c);
+            let Some(_) = setting.next(&c) else {
+                assert!(
+                    !label.contains('\u{00B7}'),
+                    "{setting:?} does nothing on a click, so it is not a value: {label}",
+                );
+                continue;
+            };
+            let name = label
+                .split_once(" \u{00B7} ")
+                .unwrap_or_else(|| panic!("{setting:?} does not say its setting: {label}"))
+                .0;
+            assert!(!seen.contains(&name), "two squares both call themselves {name:?}");
+            seen.push(name);
+        }
+    }
+
+    #[test]
+    fn the_reset_square_says_one_thing_whether_it_applies_or_not() {
+        // It is an action, not a value. Saying "Layout \ stock" when it would
+        // do nothing borrowed the value squares' grammar for the one square
+        // that has no value - and greying already says "this would do nothing"
+        // everywhere else on the surface.
+        let mut moved = config();
+        moved.grid.max_columns = 12;
+        let stock = Config::default();
+        assert!(!layout_is_stock(&moved));
+        assert!(layout_is_stock(&stock));
+
+        assert_eq!(Setting::Reset.label(&moved), Setting::Reset.label(&stock));
+        assert!(Setting::Reset.applies(&moved));
+        assert!(!Setting::Reset.applies(&stock));
+    }
+
+    #[test]
+    fn reset_does_not_sit_beside_done() {
+        // The two worst squares to confuse: throw my layout away, and I am
+        // finished. A mis-aim between them costs a trip through the question.
+        let at = |want| SETTINGS.iter().position(|s| *s == want).unwrap();
+        assert!(at(Setting::Done) - at(Setting::Reset) > 1);
     }
 
     #[test]
@@ -465,70 +470,22 @@ mod tests {
         assert_eq!(Setting::Done.next(&config()), None);
     }
 
-    #[test]
-    fn the_centre_square_steps_through_its_shapes_and_wraps_to_off() {
-        let mut c = config();
-        c.center.columns = 4;
-        c.center.rows = 4;
-        assert_eq!(Setting::Center.label(&c), "Center \u{00B7} 4 \u{00D7} 4");
-        assert_eq!(
-            Setting::Center.next(&c),
-            Some(Change::CenterSize { columns: 0, rows: 0 })
-        );
 
-        c.center.columns = 0;
-        c.center.rows = 0;
-        assert_eq!(Setting::Center.label(&c), "Center \u{00B7} off");
-        assert_eq!(
-            Setting::Center.next(&c),
-            Some(Change::CenterSize { columns: 2, rows: 1 })
-        );
-    }
 
-    #[test]
-    fn the_default_block_is_a_shape_the_square_can_name() {
-        // Off is one of the shapes, and the one it ships on.
-        assert_eq!(Setting::Center.label(&config()), "Center \u{00B7} off");
-    }
 
-    #[test]
-    fn a_block_switched_off_with_a_width_still_set_reads_as_off() {
-        // How the square leaves it: turning the block off writes both numbers,
-        // and a hand-edited `rows = 0` beside a width has to mean the same
-        // thing or the square takes two clicks to turn anything back on.
-        let mut c = config();
-        c.center.rows = 0;
-        assert_eq!(Setting::Center.label(&c), "Center \u{00B7} off");
-        assert_eq!(
-            Setting::Center.next(&c),
-            Some(Change::CenterSize { columns: 2, rows: 1 })
-        );
-    }
-
-    #[test]
-    fn a_centre_shape_off_the_list_is_named_not_snapped() {
-        let mut c = config();
-        c.center.columns = 1;
-        c.center.rows = 4;
-        assert_eq!(Setting::Center.label(&c), "Center \u{00B7} as set");
-        assert_eq!(
-            Setting::Center.next(&c),
-            Some(Change::CenterSize { columns: 0, rows: 0 })
-        );
-    }
 
     #[test]
     fn what_the_centre_holds_steps_through_all_four_and_wraps() {
         let mut c = config();
         c.center.contents = Contents::Split;
-        assert_eq!(Setting::CenterHolds.label(&c), "Center \u{00B7} apps + sites");
+        assert_eq!(Setting::CenterHolds.label(&c), "Center holds \u{00B7} apps + sites");
         assert_eq!(
             Setting::CenterHolds.next(&c),
             Some(Change::CenterContents(Contents::One))
         );
 
         c.center.contents = Contents::Sites;
-        assert_eq!(Setting::CenterHolds.label(&c), "Center \u{00B7} sites only");
+        assert_eq!(Setting::CenterHolds.label(&c), "Center holds \u{00B7} sites only");
         assert_eq!(
             Setting::CenterHolds.next(&c),
             Some(Change::CenterContents(Contents::Split))
@@ -593,37 +550,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn every_shape_the_block_can_grow_into_is_one_this_square_can_name() {
-        // The square steps a short list; growth picks the least rectangle that
-        // fits, which is a bigger set. A shape off the list is named "as set"
-        // rather than snapped - what must never happen is one out of range,
-        // which `Config::validated` would quietly move under the square.
-        for count in 1..=16 {
-            let (columns, rows) = Center::shape_for(count);
-            let mut c = config();
-            c.center.columns = columns;
-            c.center.rows = rows;
-            let checked = c.validated().center;
-            assert_eq!(
-                (checked.columns, checked.rows),
-                (columns, rows),
-                "growing to {columns}x{rows} would be clamped back",
-            );
-        }
-    }
 
-    #[test]
-    fn every_centre_shape_survives_the_configs_own_range_check() {
-        for (columns, rows, label) in CENTER_SIZES {
-            let mut c = config();
-            c.center.columns = columns;
-            c.center.rows = rows;
-            let checked = c.validated();
-            assert_eq!(checked.center.rows, rows, "{label} lost its height");
-            assert_eq!(checked.center.columns, columns, "{label} lost its width");
-        }
-    }
 
     #[test]
     fn each_toggle_says_the_state_it_is_in_and_writes_the_other_one() {
