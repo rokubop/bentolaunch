@@ -1145,7 +1145,11 @@ impl Command {
     pub fn label(self) -> &'static str {
         match self {
             Command::EditLayout => "Edit layout",
-            Command::Center => "Center",
+            // A verb, like every other square here that turns a mode on.
+            // "Center" named the place and left you to guess what a click
+            // would do to it. Its pair is "Edit layout", and it is the
+            // same kind of thing: the panel becomes an editor for one.
+            Command::Center => "Edit center",
             Command::CloseApps => "Close apps",
             Command::AddApp => "Add app",
             Command::AddFolder => "Add folder",
