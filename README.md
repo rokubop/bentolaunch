@@ -21,7 +21,7 @@ browser extension for tabs and bookmarks.
 
 ## Build from source
 
-If you instead what to build yourself instead of download from the releases, requires [Rust](https://rustup.rs) and **PowerShell, not WSL**.
+If you want to build it yourself instead of downloading from the releases: requires [Rust](https://rustup.rs) and **PowerShell, not WSL**.
 
 ```powershell
 git clone https://github.com/rokubop/bentolaunch
