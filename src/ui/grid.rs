@@ -14,6 +14,8 @@
 //! that list minus the scroll offset. Cheaper to reason about than recovering a
 //! row and column from a point across variable-height sections.
 
+use std::ops::Range;
+
 use crate::model::Mode;
 
 
@@ -249,14 +251,14 @@ pub struct Layout {
     tiles: Vec<Rect>,
     headers: Vec<Header>,
     bands: Vec<Band>,
-    /// Where the foot begins. Tiles and bands from here on are panel space and
-    /// do not scroll; both are `len()` when there is no foot, so every accessor
-    /// compares against them without a special case.
+    /// The foot: panel space, and no scroll. Empty when there is no foot.
     ///
-    /// One index each rather than a set: the foot is the trailing run of
-    /// sections, and tiles and bands both follow section order.
-    foot_tile: usize,
-    foot_band: usize,
+    /// A range rather than "from here on", because the centre's sections come
+    /// after every other one - so the bar is not the end of the list even when
+    /// it is the bottom of the panel. Bands are answered by their section
+    /// rather than their own order, which the tree decides.
+    foot_tiles: Range<usize>,
+    foot_sections: Range<usize>,
     metrics: Metrics,
 }
 
@@ -405,17 +407,25 @@ impl Layout {
         // Up by exactly what the panel is shorter than the content, so its
         // bottom edge lands on the panel's - and so this does nothing at all
         // when everything fits, which is the case it is drawn in nearly always.
-        let (foot_tile, foot_band) = foot_of(sections, &out);
+        let (foot_tiles, foot_sections) = foot_of(sections);
         let lift = panel_h - content_h;
         if lift < 0.0 {
-            for tile in &mut out.tiles[foot_tile..] {
+            for tile in &mut out.tiles[foot_tiles.clone()] {
                 tile.y += lift;
             }
-            for band in &mut out.bands[foot_band..] {
+            let feet: Vec<usize> = out
+                .bands
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| foot_sections.contains(&b.section))
+                .map(|(index, _)| index)
+                .collect();
+            for index in &feet {
+                let band = &mut out.bands[*index];
                 band.rect.y += lift;
                 band.cells.y += lift;
             }
-            for header in out.headers.iter_mut().filter(|h| h.band >= foot_band) {
+            for header in out.headers.iter_mut().filter(|h| feet.contains(&h.band)) {
                 header.rect.y += lift;
             }
         }
@@ -425,8 +435,8 @@ impl Layout {
             panel,
             content_h,
             max_scroll: (content_h - panel_h).max(0.0),
-            foot_tile,
-            foot_band,
+            foot_tiles,
+            foot_sections,
             tiles: out.tiles,
             headers: out.headers,
             bands: out.bands,
@@ -444,13 +454,19 @@ impl Layout {
     /// How much scroll applies to a tile. None at the foot: it is already in
     /// panel space, and shifting it again is what would carry it off.
     fn tile_scroll(&self, index: usize, scroll: f32) -> f32 {
-        if index >= self.foot_tile { 0.0 } else { scroll }
+        if self.foot_tiles.contains(&index) { 0.0 } else { scroll }
     }
 
     /// How much scroll applies to a band. None at the foot, which is chrome.
     /// Public so the panel can move a ring it drew earlier by the same rule.
+    ///
+    /// Answered by the band's section, not its own index: the tree decides the
+    /// order bands are placed in, and it is not section order.
     pub fn band_scroll(&self, band: usize, scroll: f32) -> f32 {
-        if band >= self.foot_band { 0.0 } else { scroll }
+        match self.bands.get(band) {
+            Some(band) if self.foot_sections.contains(&band.section) => 0.0,
+            _ => scroll,
+        }
     }
 
     pub fn tile_rect(&self, index: usize, scroll: f32) -> Rect {
@@ -476,13 +492,16 @@ impl Layout {
         }
         // The foot first, and unscrolled. It is drawn over whatever the body
         // scrolled under it, so it has to be hit before it too.
-        if let Some(hit) = self.tiles[self.foot_tile..].iter().position(|t| t.contains(x, y)) {
-            return Some(self.foot_tile + hit);
+        let foot = self.foot_tiles.clone();
+        if let Some(hit) = self.tiles[foot.clone()].iter().position(|t| t.contains(x, y)) {
+            return Some(foot.start + hit);
         }
         let content_y = y + scroll;
-        self.tiles[..self.foot_tile]
+        self.tiles
             .iter()
-            .position(|tile| tile.contains(x, content_y))
+            .enumerate()
+            .find(|(index, tile)| !foot.contains(index) && tile.contains(x, content_y))
+            .map(|(index, _)| index)
     }
 
     pub fn clamp_scroll(&self, scroll: f32) -> f32 {
@@ -539,7 +558,12 @@ impl Layout {
     /// Where the foot begins in the flat tile run. `tile_count()` when there is
     /// no foot, so a loop comparing against it never needs a special case.
     pub fn foot_from(&self) -> usize {
-        self.foot_tile
+        self.foot_tiles.start
+    }
+
+    /// The foot's tiles, for drawing them last: the grid runs under the bar.
+    pub fn foot_tiles(&self) -> Range<usize> {
+        self.foot_tiles.clone()
     }
 
     /// The strip the foot occupies, panel-local. `None` when there is no foot,
@@ -549,10 +573,13 @@ impl Layout {
     /// gaps between its tiles, so without something opaque behind it the grid
     /// is watched going past through the bar's own gaps.
     pub fn foot_rect(&self) -> Option<Rect> {
-        if self.max_scroll <= 0.0 || self.foot_tile >= self.tiles.len() {
+        if self.max_scroll <= 0.0 || self.foot_tiles.is_empty() {
             return None;
         }
-        let top = self.tiles[self.foot_tile..].iter().map(|t| t.y).fold(f32::MAX, f32::min)
+        let top = self.tiles[self.foot_tiles.clone()]
+            .iter()
+            .map(|t| t.y)
+            .fold(f32::MAX, f32::min)
             - self.metrics.gap;
         Some(Rect { x: 0.0, y: top, w: self.panel.w, h: (self.panel.h - top).max(0.0) })
     }
@@ -1398,18 +1425,31 @@ fn lay_out(
 /// The trailing run of pinned sections and nothing else. A pinned box with an
 /// ordinary one after it is not a foot - lifting it would jump it over its
 /// neighbours - so it stays in the flow and this returns the ends.
-fn foot_of(sections: &[SectionShape], out: &Placement) -> (usize, usize) {
-    let from = match sections.iter().rposition(|s| !s.pinned) {
-        Some(last) => last + 1,
-        // Every section pinned. Nothing to scroll, so nothing to pin against.
-        None => return (out.tiles.len(), out.bands.len()),
-    };
-    if from == sections.len() {
-        return (out.tiles.len(), out.bands.len());
+fn foot_of(sections: &[SectionShape]) -> (Range<usize>, Range<usize>) {
+    let none = 0..0;
+    // The centre is not in this reckoning. It is not in the tree, and its
+    // sections are appended after every other one - so "the run at the end"
+    // found nothing at all the moment the block had anything in it, or the
+    // moment edit or center mode put a placeholder there. The bar came
+    // unpinned, scrolled, and was pushed half off the bottom.
+    let mut end = sections.len();
+    while end > 0 && sections[end - 1].center.is_some() {
+        end -= 1;
     }
-    let tile = sections[..from].iter().map(|s| s.count).sum();
-    let band = out.bands.iter().position(|b| b.section >= from).unwrap_or(out.bands.len());
-    (tile, band)
+    let mut start = end;
+    while start > 0 {
+        let before = &sections[start - 1];
+        if !before.pinned || before.center.is_some() {
+            break;
+        }
+        start -= 1;
+    }
+    if start == end {
+        return (none.clone(), none);
+    }
+    let before: usize = sections[..start].iter().map(|s| s.count).sum();
+    let held: usize = sections[start..end].iter().map(|s| s.count).sum();
+    (before..before + held, start..end)
 }
 
 /// How far down the content actually goes. The centre hangs below a short
@@ -3446,6 +3486,52 @@ mod tests {
         }
         // The grid above it still moves.
         assert!(l.tile_rect(0, l.max_scroll).y < l.tile_rect(0, 0.0).y);
+    }
+
+    #[test]
+    fn the_foot_stays_pinned_with_the_centre_after_it() {
+        // The centre's sections are appended after every other one, so "the
+        // run at the end of the list" found nothing the moment the block held
+        // anything - or the moment a mode drew a placeholder there. The bar
+        // came unpinned and was pushed half off the bottom of the panel.
+        let l = Layout::compute(
+            &[shape("Launch", 500), foot(4), middle(0, 1, 1), middle(1, 1, 1)],
+            metrics(),
+            WORK,
+        );
+        assert!(l.max_scroll > 0.0, "the test needs a grid that scrolls");
+
+        for i in 500..504 {
+            assert_eq!(
+                l.tile_rect(i, 0.0).y,
+                l.tile_rect(i, l.max_scroll).y,
+                "the bar scrolled with the block in place",
+            );
+            let rect = l.tile_rect(i, l.max_scroll);
+            assert!(
+                rect.y + rect.h <= l.panel.h + 0.01,
+                "the bar hangs off the bottom of the panel",
+            );
+        }
+        // And the grid above it still moves, block and all.
+        assert!(l.tile_rect(0, l.max_scroll).y < l.tile_rect(0, 0.0).y);
+    }
+
+    #[test]
+    fn the_centre_is_not_mistaken_for_the_foot() {
+        // It is not pinned and it must not be lifted: it is content, and it is
+        // only at the end of the list because that is where it is appended.
+        let l = Layout::compute(
+            &[shape("Launch", 500), foot(4), middle(0, 1, 1), middle(1, 1, 1)],
+            metrics(),
+            WORK,
+        );
+        for i in 504..506 {
+            assert!(
+                l.tile_rect(i, l.max_scroll).y < l.tile_rect(i, 0.0).y,
+                "a centre tile was pinned to the foot",
+            );
+        }
     }
 
     #[test]

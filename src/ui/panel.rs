@@ -912,7 +912,7 @@ impl Panel {
             children.Remove(visual)?;
             children.InsertAtTop(visual)?;
         }
-        for tile in &self.tiles[foot_from.min(self.tiles.len())..] {
+        for tile in &self.tiles[self.layout.foot_tiles()] {
             children.Remove(&tile.root)?;
             children.InsertAtTop(&tile.root)?;
         }
