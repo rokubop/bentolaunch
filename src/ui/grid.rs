@@ -851,20 +851,20 @@ impl Control {
             Control::Left => "\u{258C}",
             Control::Right => "\u{2590}",
             Control::FullWidth => "\u{2588}",
-            Control::MoveUp => "\u{2191}",
-            Control::MoveDown => "\u{2193}",
-            Control::Fewer => "\u{2212}",
-            Control::More => "+",
+            Control::MoveUp => "\u{E70E}",
+            Control::MoveDown => "\u{E70D}",
+            Control::Fewer => "\u{E738}",
+            Control::More => "\u{E710}",
             Control::CenterNarrower => "\u{2192}\u{2190}",
-            Control::CenterWider => "\u{2194}",
+            Control::CenterWider => "\u{2190}\u{2192}",
             Control::CenterShorter => "\u{2193}\u{2191}",
-            Control::CenterTaller => "\u{2195}",
+            Control::CenterTaller => "\u{2191}\u{2193}",
             // On or off, read the way a radio button is - the same mark the
             // move bar's own latch wears.
             Control::CenterOn => "\u{25C9}",
             // The same mark the settings square for this wears.
-            Control::CenterHolds => "\u{25EB}",
-            Control::Done => "\u{2713}",
+            Control::CenterHolds => "\u{E745}",
+            Control::Done => "\u{E73E}",
         }
     }
 
@@ -1126,19 +1126,21 @@ pub const COMMANDS: [Command; 8] = [
 impl Command {
     pub fn glyph(self) -> &'static str {
         match self {
-            Command::EditLayout => "\u{25A6}",
-            // A star, in its text presentation. Every mark on these squares is
-            // a line drawing from the UI font; one coloured pictogram among
-            // them reads as the odd one out rather than as a set.
-            Command::Center => "\u{2605}",
-            // A crossed circle, not the plain cross: the plain one already
-            // means "close this menu" two squares along.
-            Command::CloseApps => "\u{2297}",
-            Command::AddApp => "+",
-            Command::AddFolder => "\u{1F5C0}",
-            Command::AddFile => "\u{1F5CE}",
-            Command::Settings => "\u{2699}",
-            Command::Close => "\u{2715}",
+            // A grid: the bento, and a picture of what editing it does.
+            Command::EditLayout => "\u{E80A}",
+            // An outline star. The block is the Center, but what goes in it is
+            // still a favorite, and that is the word a star says.
+            Command::Center => "\u{E734}",
+            // A cross, the same mark the modes bar draws for this mode. This
+            // square is the second path to it and has to look like it.
+            Command::CloseApps => "\u{E711}",
+            Command::AddApp => "\u{E710}",
+            Command::AddFolder => "\u{E8F4}",
+            Command::AddFile => "\u{E8A5}",
+            Command::Settings => "\u{E713}",
+            // Not a cross: that is the mode two squares along, and this one
+            // only puts the menu away. A chevron says folded up.
+            Command::Close => "\u{E70E}",
         }
     }
 
@@ -2030,6 +2032,49 @@ mod tests {
     // --- edit options ---
 
     const PANEL: Rect = Rect { x: 0.0, y: 0.0, w: 1376.0, h: 660.0 };
+
+    #[test]
+    fn a_mode_is_called_the_same_thing_on_the_bar_and_in_the_menu() {
+        // Two ways in, two labels: the bar said "Center" while the menu said
+        // "Edit center", for the one mode. The bar is the first way to reach
+        // one and the menu is the second, so they have to agree.
+        for command in COMMANDS {
+            let Some(mode) = command.mode() else { continue };
+            assert_eq!(command.label(), mode.label(), "{command:?} is called two things");
+        }
+    }
+
+    #[test]
+    fn the_command_squares_wear_the_icon_font_and_no_mark_twice() {
+        // The folder and the file were the same blank rectangle out of Segoe
+        // UI Symbol, and the plus beside them was ASCII out of the UI face.
+        let mut seen: Vec<&str> = Vec::new();
+        for command in COMMANDS {
+            let mark = command.glyph();
+            for c in mark.chars() {
+                assert!(
+                    ('\u{E000}'..='\u{F8FF}').contains(&c),
+                    "{command:?} reaches outside the icon font: {mark:?}",
+                );
+            }
+            assert!(!seen.contains(&mark), "{command:?} wears a mark already taken");
+            seen.push(mark);
+        }
+    }
+
+    #[test]
+    fn growing_and_shrinking_the_block_are_marks_of_the_same_width() {
+        // Two arrows against one is two optical sizes, and these are meant to
+        // read as two pairs.
+        use Control::*;
+        for (grow, shrink) in [(CenterWider, CenterNarrower), (CenterTaller, CenterShorter)] {
+            assert_eq!(
+                grow.glyph().chars().count(),
+                shrink.glyph().chars().count(),
+                "{grow:?} and {shrink:?} are drawn at different widths",
+            );
+        }
+    }
 
     #[test]
     fn every_option_gets_a_tile_sized_square() {

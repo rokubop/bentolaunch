@@ -569,10 +569,15 @@ impl Renderer {
         paint: OptionPaint<'_>,
     ) -> Result<()> {
         let OptionPaint { width, height, glyph, mark, label, colors, icon } = paint;
-        let glyph_format = text_format(
+        // Icons are drawn at one weight by design, and asking for semi-bold
+        // synthesises a smear. They also fill their em box where a letter does
+        // not, so they are set a little smaller to come out the same size.
+        let icon_face = is_icon(glyph);
+        let glyph_format = font_format(
             &self.dwrite,
-            DWRITE_FONT_WEIGHT_SEMI_BOLD,
-            (height * 0.30).clamp(14.0, 48.0),
+            if icon_face { ICON_FONT } else { UI_FONT },
+            if icon_face { DWRITE_FONT_WEIGHT_NORMAL } else { DWRITE_FONT_WEIGHT_SEMI_BOLD },
+            (height * if icon_face { 0.26 } else { 0.30 }).clamp(14.0, 48.0),
             DWRITE_TEXT_ALIGNMENT_CENTER,
         )?;
         let label_format = text_format(
@@ -695,7 +700,7 @@ impl Renderer {
         )?;
         let glyph_format = font_format(
             &self.dwrite,
-            w!("Segoe MDL2 Assets"),
+            ICON_FONT,
             DWRITE_FONT_WEIGHT_NORMAL,
             (height * 0.38).clamp(10.0, 48.0),
             DWRITE_TEXT_ALIGNMENT_CENTER,
@@ -1162,6 +1167,22 @@ unsafe fn create_bitmap(context: &ID2D1DeviceContext, icon: &IconPixels) -> Resu
 /// Windows 11's own UI face. DirectWrite falls back to Segoe UI on a machine
 /// that somehow lacks it.
 const UI_FONT: windows::core::PCWSTR = w!("Segoe UI Variable Text");
+
+/// The marks on the squares.
+///
+/// A font of its own, because the UI face has almost none of them. Of the marks
+/// this app used to reach for, eight were in `Segoe UI Variable Text` and the
+/// other eighteen came back out of Segoe UI Symbol - so two typefaces sat on
+/// every surface at two stroke weights, and the folder and the file were the
+/// same blank rectangle in both. One set, drawn together, monoline.
+const ICON_FONT: windows::core::PCWSTR = w!("Segoe MDL2 Assets");
+
+/// Whether a mark belongs to the icon font. The private use area is where the
+/// icons live and nothing else does, so the two never have to be told apart by
+/// hand.
+fn is_icon(glyph: &str) -> bool {
+    !glyph.is_empty() && glyph.chars().all(|c| ('\u{E000}'..='\u{F8FF}').contains(&c))
+}
 
 fn text_format(
     dwrite: &IDWriteFactory,
