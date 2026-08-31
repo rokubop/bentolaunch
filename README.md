@@ -239,7 +239,11 @@ in the box it came from, rather than vanishing off the panel entirely.
 
 Four squares in a row that never moves — including when the grid is long
 enough to scroll. The bar is pinned to the foot of the panel and the grid slides
-under it. Each turns on a mode. Clicking it
+under it. Each turns on a mode.
+
+**Move window** brings six squares of its own, and they take this row rather
+than stacking a second bar under it. The corner button reads **Done** in every
+mode, so there is always a square to leave by. Clicking it
 again, another mode's square, the corner button, or Escape turns it off, and
 clicking off the panel dismisses it, in a mode exactly as out of one. A mode
 square is never greyed and never swallows its own click: a mode with one way out
@@ -465,7 +469,8 @@ items = [
 ]
 
 # Empty until move mode brings the six out, so it costs a row only while it is
-# being used. Listed above the modes bar, which is the one row that never moves.
+# being used. Takes the modes bar's row while it is out: the foot of the
+# panel is one row, and the two take turns.
 [[sections]]
 title  = ""
 source = "move"

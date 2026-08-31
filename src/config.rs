@@ -683,10 +683,9 @@ impl Default for Config {
                 // it is being used - which is the whole reason the moves
                 // stopped being a bar of their own.
                 //
-                // Listed first of the two so it stacks above the modes bar:
-                // that bar is the one row whose position never changes, and a
-                // box appearing under it would push it off the place it is
-                // aimed at.
+                // It does not stack above the modes bar, it replaces it: the
+                // two take turns, so the foot of the panel is one row whichever
+                // is holding it. See `store::bar_shows`.
                 placed("", &[SourceSpec::Plain(Source::Moves)], "full"),
                 // Untitled: four squares that each say what they are, under a
                 // header that would only say it again.
@@ -1108,9 +1107,10 @@ mod tests {
     }
 
     #[test]
-    fn the_modes_bar_is_the_bottom_row_and_the_moves_stack_above_it() {
-        // The modes bar is the one row whose place never changes. A box that
-        // came and went underneath it would push it off the spot it is aimed at.
+    fn both_foot_bars_are_full_width_so_the_row_is_the_same_row() {
+        // They take turns - see `store::bar_shows` - so whichever holds the
+        // foot has to land in the same place as the other. Same lane, and the
+        // moves first, which is the order they were stacked in.
         let sections = Config::default().sections;
         let bar = |source| {
             sections

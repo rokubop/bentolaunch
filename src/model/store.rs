@@ -729,6 +729,27 @@ fn wearing_favicon(item: &Item) -> Item {
     }
 }
 
+/// Whether a bar at the foot of the panel draws its squares now.
+///
+/// The two never share the row. The moves take it in move mode and the modes
+/// have it the rest of the time: stacked, move mode spent two rows of the foot
+/// on chrome, and the row that never moves was pushed off the place it is
+/// aimed at by a box that comes and goes.
+///
+/// Nothing is lost by the modes standing down. The corner button reads "Done"
+/// in every mode, so there is always a square to leave by - which is the whole
+/// of what keeping the modes bar up was holding open.
+///
+/// A `move` box listed with no `modes` box anywhere is the old always-on bar
+/// and stays on, because then nothing else would ever draw the row.
+fn bar_shows(source: Source, mode: Mode, has_modes: bool) -> bool {
+    match source {
+        Source::Moves => mode == Mode::Move || !has_modes,
+        Source::Modes => mode != Mode::Move,
+        _ => true,
+    }
+}
+
 fn center_sections(center: &Block, mode: Mode) -> Vec<Section> {
     // Off, the block holds nothing and so is not a box on the panel at all -
     // and a square that switched it off would then have nowhere to be clicked
@@ -932,14 +953,16 @@ pub fn sections(mode: Mode) -> Vec<Section> {
                 // as the browser does.
                 Source::Tabs => items.extend(tab_items()),
                 Source::Bookmarks => items.extend(bookmark_items()),
-                // Only while they apply. A `move` box listed alongside no
-                // `modes` box anywhere is the old always-on bar and stays on.
                 Source::Moves => {
-                    if mode == Mode::Move || !s.has_modes {
+                    if bar_shows(Source::Moves, mode, s.has_modes) {
                         items.extend(move_items());
                     }
                 }
-                Source::Modes => items.extend(mode_items()),
+                Source::Modes => {
+                    if bar_shows(Source::Modes, mode, s.has_modes) {
+                        items.extend(mode_items());
+                    }
+                }
                 // The centre's own lists, for anyone who would rather have
                 // them as an ordinary box than in the middle of the panel.
                 Source::Center => {
@@ -1325,6 +1348,49 @@ mod tests {
         let out = center_sections(&center, Mode::Grid);
         assert_eq!(out[0].center, Some(0));
         assert_eq!(out[1].center, Some(1));
+    }
+
+    const EVERY_MODE: [Mode; 7] = [
+        Mode::Grid,
+        Mode::Layout,
+        Mode::Center,
+        Mode::Close,
+        Mode::Move,
+        Mode::AllApps,
+        Mode::AllBookmarks,
+    ];
+
+    #[test]
+    fn exactly_one_bar_holds_the_foot_in_every_mode() {
+        // Two full-width bars stacked is move mode spending two rows of the
+        // panel's foot on chrome, and the row that never moves being pushed
+        // off its place by a box that comes and goes.
+        for mode in EVERY_MODE {
+            let showing: Vec<Source> = [Source::Moves, Source::Modes]
+                .into_iter()
+                .filter(|s| bar_shows(*s, mode, true))
+                .collect();
+            assert_eq!(showing.len(), 1, "{mode:?} draws {showing:?} at the foot");
+        }
+    }
+
+    #[test]
+    fn the_moves_take_the_row_in_move_mode_and_nowhere_else() {
+        for mode in EVERY_MODE {
+            assert_eq!(
+                bar_shows(Source::Moves, mode, true),
+                mode == Mode::Move,
+                "the moves bar is wrong in {mode:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn a_move_box_with_no_modes_box_is_still_the_old_always_on_bar() {
+        // Nothing else would ever draw the row, so it keeps it.
+        for mode in EVERY_MODE {
+            assert!(bar_shows(Source::Moves, mode, false), "{mode:?} lost the bar");
+        }
     }
 
     #[test]
