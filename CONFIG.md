@@ -18,8 +18,8 @@ Order here is order on screen. Empty sections do not render.
 
 Out of the box the panel is split down the middle: **`Browsing` down the whole
 right side, everything else down the left**, with the modes bar across the
-bottom. Two halves and one question each — what is open on the web, and what is
-on this machine — and a panel split that way is answered by looking at one half
+bottom. Two halves and one question each - what is open on the web, and what is
+on this machine - and a panel split that way is answered by looking at one half
 of it, which no stack of full-width rows manages. It also gives the center block
 a half to sit in on either side of it.
 
@@ -203,7 +203,7 @@ Both lists take the same entries a manual section's `items` does: a path, a
 them; hand-editing works the same as everywhere else here.
 
 A site wears its own favicon when a paired browser has sent one for that site,
-and the shell's icon for the URL otherwise — which is the default browser's
+and the shell's icon for the URL otherwise - which is the default browser's
 logo, the same for every site. Four identical logos in the middle of the screen
 is the block failing at the only thing it is for, so the favicon is asked for
 every time the grid is built: connect a browser and they arrive on the next
@@ -213,7 +213,7 @@ summon.
 you want any are the same question, so one settings square answers it.
 
 Turning `split` off gives one box, `columns` wide, holding the apps and then the
-sites. It is narrower, not the same block merged — the width is what `columns`
+sites. It is narrower, not the same block merged - the width is what `columns`
 says either way.
 
 `rows` and `columns` are capped at four each. The block is held in the middle

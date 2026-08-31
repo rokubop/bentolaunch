@@ -1,18 +1,11 @@
-//! Grid layout. Pure arithmetic, no Windows types, so the sizing rules are
-//! testable without a monitor.
+//! Grid layout. Pure arithmetic, no Windows types, so it is testable without a
+//! monitor.
 //!
-//! The rule (DESIGN.md "Resolved"): tile size is fixed and never changes. The
-//! panel grows outward from the center of the work area as items are added,
-//! until it reaches `max_screen_fraction` of that work area. Past that it stops
-//! widening, and further rows scroll.
+//! Tile size never changes. The panel grows outward from the centre of the work
+//! area until it hits `max_screen_fraction`, then stops widening and scrolls.
 //!
-//! Sections stack top to bottom, each under its own header, and all of them
-//! share one column count so tiles line up down the whole panel.
-//!
-//! Tile rectangles are computed once, up front, in *content space* (the full
-//! scrollable height). Everything else — drawing, hit-testing, scrolling — is
-//! that list minus the scroll offset. Cheaper to reason about than recovering a
-//! row and column from a point across variable-height sections.
+//! Tiles are placed once in *content space*, the full scrollable height.
+//! Drawing, hit-testing and scrolling are all that list minus the scroll.
 
 use std::ops::Range;
 
@@ -61,18 +54,13 @@ enum Axis {
     Down,
 }
 
-/// Which band across the panel a box sits in.
+/// Which band across the panel a box sits in: the whole of its x axis, and a
+/// property of that box rather than of its neighbours. The cut paths this
+/// replaced collapsed when the other side emptied, so a box changed shape
+/// because a browser disconnected.
 ///
-/// The one decision about a box's x axis, and a property of that box rather
-/// than of its neighbours. The cut paths this replaced said "left" by cutting
-/// the panel in two and taking the near half, so "left" stopped meaning left
-/// the moment nothing was on the right: the cut collapsed and the box took the
-/// whole width. A box that changes shape because a browser disconnected is not
-/// a box anyone can learn the position of.
-///
-/// Height is not a choice - a box is as tall as what it holds - so the only
-/// other thing to say about a box is where it comes in its lane, which is the
-/// order it is listed in.
+/// Height is not a choice, so the only other thing to say is where it comes in
+/// its lane - the order it is listed in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Lane {
     Left,
@@ -144,19 +132,12 @@ pub struct SectionShape {
     pub lane: Lane,
     /// Tile columns inside this box. 0 fits as many as its rectangle takes.
     pub columns: usize,
-    /// This box is held in the middle of the panel instead of taking a place in
-    /// the tree. `Some(n)` is where it sits in the centre block, left to right.
+    /// Held in the middle of the panel instead of taking a place in the tree.
+    /// `Some(n)` is which half. Every cut in the tree runs edge to edge, so the
+    /// centre claims its rectangle first and the boxes wrap around it.
     ///
-    /// The centre of the screen is where a gaze pointer is most accurate, so
-    /// one block is nailed there and the bento is laid out around it. The tree
-    /// cannot say this: every cut runs edge to edge, so a centred box would
-    /// drag its lines across the whole panel. Instead the centre claims a
-    /// rectangle up front and every other box flows around it — the tree is
-    /// planned as if the centre were not there, and the wrapping is what makes
-    /// it true. See `Layout::compute`.
-    ///
-    /// A centre box needs `columns`: nothing can derive it, because the box is
-    /// a fixed number of slots rather than a list that grew.
+    /// It needs `columns`: it is a fixed number of slots, not a list that grew,
+    /// so nothing can derive one.
     pub center: Option<usize>,
     /// This box is the bar at the foot of the panel: chrome, not content, so it
     /// does not scroll.
@@ -167,16 +148,11 @@ pub struct SectionShape {
 }
 
 
-/// The cells one box's ring encloses, on that box's own tile grid.
+/// The cells one box's ring encloses. Not `Band::rect`, which is stretched to
+/// tile the panel so a drop beside a box means that box. This is what the box
+/// occupies, bite and all where the centre stands - an L, or a C.
 ///
-/// Not `Band::rect`. That one is stretched to tile the panel with no gaps,
-/// because a drop landing beside a box has to mean *that* box, and it stays a
-/// rectangle for exactly as long as dropping exists. This is what the box
-/// actually occupies, and it is allowed to have a bite out of it where the
-/// centre block stands - which is what turns a ring into an L or a C.
-///
-/// Ragged ends are filled in: a box whose last row is half full still gets a
-/// squared-off ring. The shape follows the centre block, which never moves, and
+/// Ragged ends are squared off: the ring follows the block, which never moves,
 /// not the item count, which changes every time a window opens.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Cells {
@@ -214,7 +190,7 @@ pub struct Header {
 ///
 /// Bands tile the panel with no gaps: each one runs from where the previous
 /// ended down to its own last row, so every point in the panel belongs to
-/// exactly one section. Dropping needs that — something landing in the gap above
+/// exactly one section. Dropping needs that - something landing in the gap above
 /// a section should still mean *that* section, not nothing.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Band {
@@ -320,18 +296,13 @@ impl Layout {
 
         let panel_w = cols as f32 * m.tile_w + (cols - 1) as f32 * m.gap + 2.0 * m.padding;
 
-        // Where the centre sits depends on how tall the panel is, and how tall
-        // the panel is depends on what the centre pushed out of its way.
+        // Where the centre sits depends on the panel's height, which depends
+        // on what the centre pushed out of the way. Wrapping is a step
+        // function, so the two trade places forever and no fixed point exists.
         //
-        // There is no settling this. Wrapping is a step function - move the
-        // hole down half a tile and a whole row of the grid comes free, which
-        // shortens the panel, which moves the hole back up - so the two can and
-        // do trade places forever. Repeated once to get the hole somewhere
-        // sensible in the content, and then the panel is *positioned* to put it
-        // on the middle of the screen rather than the hole being nudged to the
-        // middle of the panel. The screen is what the centre is measured
-        // against; the panel is only what happens to be drawn on it, and it is
-        // free to sit wherever it has to.
+        // Settled once for a sensible hole, then the *panel* is positioned to
+        // put it on the middle of the screen. The screen is what the centre is
+        // measured against; the panel is free to sit wherever it has to.
         let mut reserve = None;
         let mut home = None;
         let mut align = None;
@@ -395,18 +366,12 @@ impl Layout {
             h: panel_h.round(),
         };
 
-        // The foot of the panel is chrome. "Four squares in a row that never
-        // moves" is what the modes bar is aimed at as, and a bar carried off
-        // the bottom the moment the grid got long is a bar that moves.
+        // The foot is chrome: a bar carried off the bottom the moment the grid
+        // got long is a bar that moves.
         //
-        // Lifted out after the tree placed it, not kept out of the tree: it is
-        // a full-width box at the end, so the tree already got its width, its
-        // wrapping and the corner it leaves the app's own button right. All
-        // that is left is which space its y is measured in.
-        //
-        // Up by exactly what the panel is shorter than the content, so its
-        // bottom edge lands on the panel's - and so this does nothing at all
-        // when everything fits, which is the case it is drawn in nearly always.
+        // Lifted after the tree placed it, so the tree still got its width and
+        // its wrapping right. Up by exactly what the panel is shorter than the
+        // content, which is nothing at all when everything fits.
         let (foot_tiles, foot_sections) = foot_of(sections);
         let lift = panel_h - content_h;
         if lift < 0.0 {
@@ -516,7 +481,7 @@ impl Layout {
     /// halves. Content space. `None` when there is no block.
     ///
     /// The halves are separate boxes with separate tiles, and they have to read
-    /// as one container with a line down it — a border round each half would say
+    /// as one container with a line down it - a border round each half would say
     /// they were two things that happened to be next to each other, which is
     /// the opposite of what the block is.
     pub fn center_frame(&self) -> Option<(Rect, Vec<f32>)> {
@@ -584,17 +549,11 @@ impl Layout {
         Some(Rect { x: 0.0, y: top, w: self.panel.w, h: (self.panel.h - top).max(0.0) })
     }
 
-    /// The panel's own button: always there, bottom right, one cell of the grid.
+    /// The panel's own button: bottom right, one cell of the grid, always in
+    /// the same place - which is what makes it findable by eye.
     ///
-    /// So the panel can be worked without knowing a right-click menu exists. It
-    /// is the one control that is always in the same place, which is what makes
-    /// it findable by someone pointing with their eyes.
-    ///
-    /// A cell, and the layout keeps that cell clear - `home_reserve`. Panel
-    /// local rather than content space, because chrome that scrolled off the
-    /// top of a long grid would not be always in the same place at all. The two
-    /// are the same rectangle whenever the content fits, which is the case the
-    /// button is drawn in nearly always.
+    /// `home_reserve` keeps the cell clear. Panel local, not content space:
+    /// chrome that scrolled away would not be always in the same place.
     pub fn home_rect(&self) -> Rect {
         let m = self.metrics;
         Rect {
@@ -665,21 +624,12 @@ impl Layout {
     }
 }
 
-/// The boundary of a box's cells, as closed rings in content space.
+/// A box's cells as closed rings in content space: one outside, one more per
+/// hole strictly inside it. Every corner is a right angle.
 ///
-/// One ring for the outside, and one more for every hole strictly inside it -
-/// the centre block standing in the middle of a box rather than against an edge
-/// of it. Every corner is a right angle; rounding them is the drawing's job.
-///
-/// Points sit a quarter of a gap outside the tiles - half the gutter, so two
-/// boxes side by side leave the other half of it clear between their rings.
-///
-/// Not the whole half-gap. Boxes tile the panel, so a ring drawn the full way
-/// out would land in the same pixel as its neighbour's, and one faint seam
-/// shared by two boxes was fine while every box wore the same colour. Two
-/// colours in one line read as a fringe. It also keeps the ring clear of the
-/// centre block's own frame, which does sit at the full half-gap - the block is
-/// in front of the layout, and a sliver of panel between them says so.
+/// Points sit a quarter of a gap out, not the full half. Boxes tile the panel,
+/// so the full way out lands in the neighbour's pixel - one line, two colours,
+/// which reads as a fringe. It also clears the block's own frame.
 fn ring_of(cells: &Cells, m: &Metrics) -> Vec<Vec<(f32, f32)>> {
     // Cell corner `k` in pixels: the middle of the gutter, which is the one
     // place a boundary can sit and mean the same thing from both sides. Uniform
@@ -750,16 +700,11 @@ fn ring_of(cells: &Cells, m: &Metrics) -> Vec<Vec<(f32, f32)>> {
     rings
 }
 
-/// Pull a closed ring in off the gutter's middle, so two boxes side by side
-/// leave the other half of the gutter clear between their rings.
+/// Pull a closed ring in off the gutter's middle. Every edge moves `d` inward
+/// and corners go back where the moved edges cross; per point instead would
+/// push a reflex corner the wrong way and close the notch over the block.
 ///
-/// Every edge moves `d` toward the inside and the corners are put back where
-/// the moved edges cross. Doing it per point instead would push a reflex
-/// corner - the inside of a C, where the centre block bit into the box - the
-/// wrong way, and the notch would close over the block.
-///
-/// The rings arrive wound so the inside is always on the right of travel, which
-/// is what makes one rule work for the outer ring and for a hole alike.
+/// Rings arrive wound inside-on-the-right, so one rule serves holes too.
 fn inset(ring: &[(f32, f32)], d: f32) -> Vec<(f32, f32)> {
     let n = ring.len();
     // Where each edge lands once moved. Edges are axis aligned, so an edge is
@@ -810,18 +755,9 @@ fn corners_only(ring: &[(usize, usize)]) -> Vec<(usize, usize)> {
         .collect()
 }
 
-/// One option offered for the box being edited.
-///
-/// Three ideas, kept apart because mixing them is what made this confusing:
-///
-/// 1. **Claim a side.** The box becomes the whole of it, full height or full
-///    width, and whatever was there is moved off.
-/// 2. **Arrange.** Move up and down the stack that fills whatever the claimed
-///    sides left over.
-/// 3. **Size.** How much of its cut the box takes, and how many tiles it shows.
-///
-/// The verbs a tiling window manager uses, because the layout is the same
-/// structure.
+/// One option for the box being edited. Three ideas kept apart, because mixing
+/// them is what made this confusing: which lane, where in it, how much it
+/// shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Control {
     /// The x axis, which is the only thing there is to decide about it.
@@ -1024,18 +960,9 @@ impl Control {
     }
 }
 
-/// Reading order, four to a row.
-/// Reading order, five to a row.
-/// Reading order, four to a row.
-/// The centre block's own squares.
-///
-/// It is not in the tree - it claims the middle of the screen and the boxes
-/// wrap around it - so there is no lane to pick and nowhere to move it to.
-/// What is left is a shape, what it holds, and whether it is there at all.
-///
-/// The two directions are stepped apart. A block is a shape, and three columns
-/// of center with one row of them is a real answer that one Bigger/Smaller
-/// pair walking a list of presets could not give.
+/// The centre block's own squares. It is not in the tree, so there is no lane
+/// to pick and nowhere to move it to: a shape, what it holds, and whether it is
+/// there at all. The two directions step apart, because a block is a shape.
 pub const CENTER_CONTROLS: [Control; 7] = [
     Control::CenterNarrower,
     Control::CenterWider,
@@ -1070,18 +997,12 @@ pub const CONTROLS: [Control; 8] = [
 /// How many big squares sit in one row.
 const MENU_COLS: usize = 4;
 
-/// A grid of big squares, centred in the panel.
+/// A grid of big squares, centred in the panel: the middle of the screen is
+/// the cheapest place for a gaze pointer to reach, and a strip of small buttons
+/// is the one shape it cannot use.
 ///
-/// Centred and tile-sized on purpose: this app is pointed at, sometimes by
-/// gaze, and the middle of the screen is the cheapest place to reach. A strip
-/// of small buttons is the one shape that cannot be used that way.
-///
-/// Panel-local, and deliberately not in content space: menus are overlays and
-/// must not scroll away from under the pointer.
-///
-/// A short last row is centred under the full ones. Left-aligned, the one
-/// square of a nine-square surface hangs off the corner of the block and reads
-/// as a row that lost the rest of itself, rather than as the odd square out.
+/// Panel-local, never content space: menus must not scroll away under the
+/// pointer. A short last row is centred, or it reads as a row missing squares.
 pub fn centred_grid(panel: Rect, count: usize, tile_w: f32, tile_h: f32, gap: f32) -> Vec<Rect> {
     if count == 0 {
         return Vec::new();
@@ -1356,20 +1277,13 @@ fn straddles(holes: &[Rect], x: f32, y: f32, cols: usize, m: &Metrics) -> bool {
     blocked > 0 && (blocked..cols).any(free)
 }
 
-/// Where the box stacked under one ending at `bottom` starts: the next row of
-/// the panel's one lattice, plus whatever whole rows of clearance were asked
-/// for.
+/// Where the box under one ending at `bottom` starts: the next row of the
+/// panel's one lattice, plus whole rows of clearance.
 ///
-/// Every tile in every box sits on that lattice - `search_h + padding`, then a
-/// tile and a gap over and over - and it is measured from the top of the
-/// content, never from the box a tile happens to be in. A box that started
-/// where its neighbour ended plus a few pixels put its rows a fraction off
-/// every other box's, and a row that is ten pixels out does not read as two
-/// boxes being apart. It reads as the grid being crooked.
-///
-/// This is the same rule the centre block already lives by, and for the same
-/// reason: on the lattice it is part of the grid, and off it every row it
-/// grazes is spent on nothing.
+/// Every tile sits on that lattice - `search_h + padding`, then tile and gap -
+/// measured from the top of the content. A box starting where its neighbour
+/// ended plus a few pixels reads as the grid being crooked, not as two boxes
+/// being apart.
 fn next_row(bottom: f32, m: &Metrics) -> f32 {
     let origin = m.search_h + m.padding;
     let pitch = m.tile_h + m.gap;
@@ -1471,17 +1385,12 @@ fn clearance(reserve: Rect, gap: f32) -> Rect {
     Rect { y: reserve.y - gap / 2.0, h: reserve.h + gap, ..reserve }
 }
 
-/// The row grid the centre lines up with: where the first box's tiles start,
-/// and how far apart its rows are.
+/// The row grid the centre lines up with. On whole cells the block is the
+/// middle few squares *of* the grid, outlined; off them it costs every row it
+/// grazes.
 ///
-/// Landing the hole on whole cells is what makes the block *part* of the grid -
-/// the middle few squares of it, outlined - rather than something dropped on
-/// top of it. Off the grid it costs every row it grazes, and the panel fills
-/// with space that is not holding anything.
-///
-/// The first box, because boxes side by side start at the same y and share a
-/// row grid, and side by side is the arrangement the centre lives in. A box
-/// stacked below has a phase of its own and takes the loose fit.
+/// The first box, because boxes side by side share a row grid and that is the
+/// arrangement the centre lives in.
 fn row_grid(out: &Placement, m: &Metrics) -> Option<(f32, f32)> {
     let band = out.bands.iter().find(|band| band.count > 0)?;
     let first = out.tiles.get(band.first)?;
@@ -1499,17 +1408,12 @@ fn settled(before: Option<Rect>, after: Option<Rect>) -> bool {
     }
 }
 
-/// The cell the app's own button holds: bottom right of the grid, one tile.
+/// The cell the app's own button holds, reserved the way the centre is: a box
+/// drawing behind it is a click landing on the wrong thing, and a box ringing
+/// it says the button is one of that box's items.
 ///
-/// Reserved the way the centre block is, and for the same reason. The button is
-/// the one control that is always in the same place - that is the whole of what
-/// it is for - so a box drawing a tile behind it is a click that lands on the
-/// wrong thing, and a box drawing its ring around it says the button is one of
-/// that box's items.
-///
-/// On the grid, not `gap` in from the panel's corner. Off the grid it was eight
-/// pixels adrift of the column and the row it sits in, which on a panel where
-/// everything else lines up is the one thing that looks broken.
+/// On the grid, not `gap` in from the corner - that put it eight pixels adrift
+/// of the column it sits in.
 fn home_reserve(cols: usize, bottom: f32, m: &Metrics) -> Option<Rect> {
     (cols > 0 && bottom > m.tile_h).then(|| Rect {
         x: m.padding + (cols - 1) as f32 * (m.tile_w + m.gap),
@@ -1531,18 +1435,12 @@ fn center_boxes(sections: &[SectionShape]) -> Vec<usize> {
     found
 }
 
-/// How many columns each half of the centre gets, given what the panel has.
+/// How many columns each half of the centre gets. Normally what it asked for,
+/// so the block is the same width on every panel. Too narrow and the halves
+/// give up a column each from the widest, because half a block is worse.
 ///
-/// Normally each half gets what it asked for, and the block is the same width
-/// on every panel - which is the whole of its worth. The budget only bites on a
-/// panel too narrow to hold it, and there the halves give up a column each from
-/// the widest rather than one of them disappearing: half a block in the middle
-/// of the screen is worse than a smaller one.
-///
-/// The one place the block's width is decided. Both the rectangle it reserves
-/// and the tiles laid into it come off this, so they cannot disagree - and a
-/// disagreement is a hole the grid wraps around with nothing in it, or a block
-/// hanging off the edge of the panel.
+/// The one place the width is decided: the rectangle reserved and the tiles
+/// laid into it both come off this, so they cannot disagree.
 fn center_widths(sections: &[SectionShape], order: &[usize], budget: usize) -> Vec<usize> {
     let mut want: Vec<usize> = order
         .iter()
@@ -1655,16 +1553,10 @@ fn divide(budget: usize, near: usize, far: usize, share: f32) -> usize {
 }
 
 /// The panel as its lanes: full-width bands above, the left/right split, then
-/// full-width bands below.
+/// full-width bands below. Built outright, not by cutting over and over: a lane
+/// is a property of one box, so nothing another box does can move this one.
 ///
-/// Built outright rather than by cutting the panel over and over. A lane is a
-/// property of one box, so nothing another box does - emptying, being listed
-/// first, being deleted - can move this one. The cut paths this replaced were a
-/// relationship between boxes, and a relationship changes when the other end of
-/// it goes away.
-///
-/// Order in the file is order down the lane. That is the whole of the vertical
-/// question, because a box is as tall as what it holds.
+/// Order in the file is order down the lane.
 fn plan(sections: &[SectionShape], split: f32) -> Option<Node> {
     // The centre is placed by hand afterwards. The tree is planned as if it
     // were not there, which is exactly what makes the rest wrap around it
@@ -1820,17 +1712,11 @@ fn place_box(
         }
     }
 
-    // The title rides the ring's top edge rather than taking a row above it.
-    // A section costs a header plus a whole row even for one tile, and that
-    // row is what stopped the panel being split into the boxes it wants to be
-    // - so the title stops costing one. It is a mark on the ring now, in the
-    // ring's own colour, and the colour is what says which box this is.
+    // The title rides the ring rather than taking a row above it, so a box
+    // costs no header. The ring's colour is what says which box this is.
     //
-    // After the tiles are placed, because a bar slides down past the hole and
-    // the label goes where the tiles ended up.
-    //
-    // The centre block never wears one. It is the most valuable space on the
-    // panel, and a title would spend it saying what the icons already say.
+    // After the tiles, because a bar slides past the hole and the label goes
+    // where the tiles ended up. The centre never wears one.
     if !section.title.is_empty() && m.header_h > 0.0 && section.center.is_none() {
         // On the ring's own top left corner, which is not the box's: the block
         // can take the whole start of a box's first row, and a title left at
@@ -1952,7 +1838,7 @@ pub fn reordered(count: usize, from: usize, to: usize) -> Vec<usize> {
 /// `(band_first, band_count)` that share the dragged tile's origin.
 ///
 /// A merged section holds tiles from more than one source, and no config can
-/// express a taskbar pin sitting between two manual ones — those two orders are
+/// express a taskbar pin sitting between two manual ones - those two orders are
 /// separate lists. So a drag rearranges its own run and stops at the seam.
 ///
 /// Here for the same reason as `reordered`: pure index arithmetic, and an

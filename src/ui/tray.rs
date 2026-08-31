@@ -1,5 +1,5 @@
 //! Tray icon. bentolaunch has no taskbar presence and no window of its own most of the
-//! time, so this is the only affordance proving it is running — and the only way
+//! time, so this is the only affordance proving it is running - and the only way
 //! to quit it without the Task Manager.
 
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};

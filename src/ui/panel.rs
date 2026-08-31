@@ -427,7 +427,7 @@ impl Panel {
             return;
         };
         // SAFETY: process-scoped registration, released by the OS on exit even
-        // if we crash (safety rule 4 — this is why it is not a keyboard hook).
+        // if we crash (safety rule 4 - this is why it is not a keyboard hook).
         match unsafe { RegisterHotKey(Some(self.hwnd), HOTKEY_ID, hk.modifiers, hk.vk) } {
             Ok(()) => {
                 self.hotkey_bound = true;
@@ -522,17 +522,11 @@ impl Panel {
         self.fit_window();
     }
 
-    /// Size the window to the layout it now has.
+    /// Size the window to the layout it now has. Every path that recomputes
+    /// the layout while the panel is up needs it, or the bottom row is drawn
+    /// off the edge of the window.
     ///
-    /// Every path that recomputes the layout while the panel is up needs this.
-    /// A mode adds a box on the way in and takes it away on the way out, and
-    /// the panel is positioned from its own height, so both the size and the
-    /// place change. Without it the grid is drawn for a panel taller than the
-    /// window and the bottom row is clipped off the edge - which is the modes
-    /// bar, and the corner button with it.
-    ///
-    /// Only while visible: `show` calls this before it has a window on screen,
-    /// and does its own `SWP_SHOWWINDOW` afterwards.
+    /// Only while visible: `show` calls this before it has a window on screen.
     fn fit_window(&self) {
         if !self.visible {
             return;
@@ -1279,16 +1273,9 @@ impl Panel {
                     Some(_) if control == Control::CenterHolds => {
                         (control.glyph(), settings::center_holds_said(&self.config))
                     }
-                    // Says what the click does, not what the block is. A square
-                    // reading "off" while the block is already off is a square
-                    // nobody can read.
-                    //
-                    // A verb, because every other square here is one -
-                    // "Narrower", "What it holds". "Center off" read as a
-                    // statement about the block as easily as an instruction to
-                    // it, which is the one thing a switch must not do. It does
-                    // not name the block either: nothing else here does, and
-                    // the block is the thing being edited.
+                    // What the click does, not what the block is, and a verb
+                    // like its neighbours. "Center off" read as a statement
+                    // about the block as easily as an instruction to it.
                     Some(_) if control == Control::CenterOn => match self.config.center.on() {
                         true => (control.glyph(), "Turn off"),
                         false => (control.glyph(), "Turn on"),
@@ -1829,16 +1816,9 @@ impl Panel {
         !self.query.is_empty() && y >= 0.0 && y < self.layout.search_rect().h
     }
 
-    /// The colour of one section's ring, and of the title riding it.
-    ///
-    /// A box says which one it is by the colour of the line round it, which is
-    /// what lets the title shrink to a mark on that line instead of taking a
-    /// row above it. Off the section's own `edge` when it names one, and
-    /// otherwise off a palette dealt out in section order - so a panel nobody
-    /// has configured still comes out with its boxes told apart.
-    ///
-    /// An empty palette falls back to `box_edge` for every box, which is the
-    /// old one-colour panel and the way to turn this off.
+    /// The colour of one section's ring, and of the title riding it. The
+    /// section's own `edge`, or the palette dealt in section order. An empty
+    /// palette falls back to `box_edge`, which is how to turn this off.
     fn section_edge(&self, section: usize) -> D2D1_COLOR_F {
         let Some(section) = self.sections.get(section) else {
             return d2d_color(&self.config.theme.box_edge);
@@ -2013,7 +1993,7 @@ impl Panel {
     }
 
     /// Merging cost the groups their headers. Alternating the fill is what is
-    /// left to say "these belong together and those do not" — browser windows
+    /// left to say "these belong together and those do not" - browser windows
     /// and the tabs after them read as one block, the rest as another.
     ///
     /// Banded by parity of the group's position, not by source: two groups can
@@ -3074,18 +3054,12 @@ impl Panel {
         {
             return None;
         }
-        // Nor when that list has no empty square left. The write would be taken
-        // and nothing would be drawn - the block shows `slots` of a list and
-        // keeps the rest - which is the same click with no visible result a
-        // half that is not drawn at all would give.
+        // Nor with no empty square left: the write lands and nothing is drawn.
+        // A block that is not drawn is the opposite case - the write is what
+        // makes it appear, and refusing made an off block a dead end.
         //
-        // A block that is not drawn is not that case. There is no square to
-        // land on and there does not need to be: the write is what makes the
-        // block appear. Refusing here is what made an off block a dead end - no
-        // way in from the panel, and the way back on only in edit mode.
-        //
-        // Drawn, not `center.on()`: an empty block collapses whatever its
-        // shape says, so "on" is not the same question as "there".
+        // Drawn, not `center.on()`: an empty block collapses whatever its shape
+        // says, so "on" is not the same question as "there".
         let drawn = self.sections.iter().any(|section| section.center.is_some());
         if item.origin != Source::Center
             && drawn
@@ -3522,7 +3496,7 @@ impl Panel {
             }
             press.dragging = true;
             // Past the threshold on a tile bentolaunch cannot rearrange: nothing to
-            // drag, and no activation either — this was not a click.
+            // drag, and no activation either - this was not a click.
             if press.band.is_none() {
                 self.press = Some(press);
                 return;
@@ -4206,7 +4180,7 @@ impl Panel {
                 self.show_menu(lparam);
                 Some(LRESULT(0))
             }
-            // Capture lost to something else — an alt-tab, a system dialog.
+            // Capture lost to something else - an alt-tab, a system dialog.
             WM_CAPTURECHANGED => {
                 if let Some(press) = self.press.take() {
                     self.cancel_press(&press);
@@ -4230,21 +4204,13 @@ impl Panel {
                 self.on_char(wparam.0 as u32);
                 Some(LRESULT(0))
             }
-            // Clicking away, or anything else stealing focus, dismisses — unless
-            // a menu of ours is up.
+            // Losing focus dismisses, unless a menu of ours is up.
             //
-            // The three modes that take clicks off the grid do not dismiss on
-            // the spot: each of them writes the config or closes a window, and
-            // both of those hand focus somewhere else for a moment. A panel
-            // that vanished on its own write would be one click of work per
-            // summon. They ask again a moment later instead - see
-            // `settle_focus` - because a mode that will not go away when you
-            // click off it is the thing that reads as a frozen PC, and holding
-            // the panel open through *every* loss was doing exactly that.
-            //
-            // Move mode is deliberately not among them. Nothing it does needs
-            // the panel to survive losing focus - `arranging` already covers the
-            // window it raises.
+            // The three modes that write config or close a window ask again a
+            // moment later instead - see `settle_focus` - because their own
+            // work hands focus away and takes it straight back. Holding through
+            // *every* loss reads as a frozen PC, so they only get the one
+            // question. Move mode does not need it; `arranging` covers it.
             WM_ACTIVATE if (wparam.0 & 0xFFFF) as u32 == WA_INACTIVE && !self.menu_open => {
                 if self.arranging {
                     return Some(LRESULT(0));
@@ -4417,7 +4383,7 @@ fn mark_of(mv: arrange::Move) -> Mark {
     }
 }
 
-/// Work area of the monitor under the cursor — the panel should open where the
+/// Work area of the monitor under the cursor - the panel should open where the
 /// user is looking, not on the primary display.
 fn work_area() -> GridRect {
     // SAFETY: all out-params are stack locals sized by the API's own contract.

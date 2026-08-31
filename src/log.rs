@@ -1,6 +1,6 @@
 //! Minimal logger: appends to `%LOCALAPPDATA%\bentolaunch\bentolaunch.log` and mirrors to stderr.
 //!
-//! Milestone 1 is a dry run, so the log *is* the product — every action bentolaunch
+//! Milestone 1 is a dry run, so the log *is* the product - every action bentolaunch
 //! would have taken gets recorded here instead of executed.
 
 use std::fs::{self, OpenOptions};
@@ -12,7 +12,7 @@ use windows::Win32::System::SystemInformation::GetLocalTime;
 
 static SINK: OnceLock<Mutex<Option<std::fs::File>>> = OnceLock::new();
 
-/// `%LOCALAPPDATA%\bentolaunch` — the only directory bentolaunch writes to besides its own
+/// `%LOCALAPPDATA%\bentolaunch` - the only directory bentolaunch writes to besides its own
 /// config file (safety rule 2).
 pub fn cache_dir() -> Option<PathBuf> {
     cache_dir_in(&PathBuf::from(std::env::var_os("LOCALAPPDATA")?))

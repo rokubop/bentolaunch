@@ -8,7 +8,7 @@
 //!
 //! These are modal and run on the UI thread, which is the STA the dialog needs.
 //! Safe because they are only reachable from the tray menu, with the panel
-//! hidden — the watchdog only watches while the panel is visible, and the
+//! hidden - the watchdog only watches while the panel is visible, and the
 //! dialog's own message loop keeps dispatching to our window anyway.
 
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};

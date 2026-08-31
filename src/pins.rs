@@ -195,14 +195,9 @@ fn edit_center(path: &Path, half: Half, edit: impl FnOnce(&mut Array) -> bool) -
     write(path, &doc)
 }
 
-/// Grow the block to hold what the file says it holds.
-///
-/// Only up. Removing a favorite leaves the shape where it is, so the square you
-/// learned the position of is still that square - a block that shrank as it
-/// emptied would be moving targets. Coming back down is an edit-mode click.
-///
-/// A block that is off is a block of no slots, so this is also what the first
-/// favorite turns it on with.
+/// Grow the block to hold what the file holds. Only up: shrinking would move
+/// squares out from under the pointer. A block that is off has no slots, so
+/// this is also what the first favorite turns it on with.
 fn grow_to_fit(doc: &mut DocumentMut) {
     let count = |key: &str| {
         doc.get("center")
@@ -626,15 +621,9 @@ fn set_in(path: &Path, change: Change) -> bool {
     write(path, &doc)
 }
 
-/// Replace one key's value, keeping whatever was written around it.
-///
-/// `doc[table][key] = value(v)` is the obvious spelling and it throws the old
-/// value's decoration away with it - including the comment trailing the line.
-/// A settings square eating the note the user wrote beside a setting is the
-/// same failure as flattening the file, just one line at a time.
-///
-/// Missing tables and keys are created, so this works on a config that predates
-/// the key entirely.
+/// Replace one key's value, keeping its decor. `doc[table][key] = value(v)`
+/// throws that away, including the comment trailing the line. Missing tables
+/// and keys are created.
 fn set_key(doc: &mut DocumentMut, table: &str, key: &str, v: Value) {
     let entry = &mut doc[table][key];
     let mut v = v;
@@ -656,20 +645,12 @@ pub fn set_browser_enabled(enabled: bool) -> bool {
 }
 
 
-/// Put the layout back to stock, keeping everything the user put there by hand.
+/// Layout back to stock. The one write that cannot go a key at a time: a
+/// deleted box is layout too, so the section list is rebuilt outright.
 ///
-/// The one write that cannot be a key at a time. A box that was deleted and a
-/// box that was added are both layout, and neither is reachable by setting a
-/// value, so the section list is rebuilt from the defaults outright.
-///
-/// What is not layout is not touched: the hotkey, the theme, the browser
-/// switch, each section's `items` and `order`, and the block's two lists all
-/// come through, comments and all. Paired browsers were never in here - they
-/// live in `peers.json` - so a reset cannot unpair anything.
-///
-/// The old file is copied next to the log first. A reset that took something
-/// wanted is then one file copy from undone, which is the only reason it is
-/// safe to offer as a single click.
+/// The hotkey, theme, browser switch, `items`, `order` and the block's lists
+/// come through untouched. The old file is copied beside the log first, which
+/// is the only reason this is safe as a single click.
 pub fn reset_layout() -> bool {
     Config::path().is_some_and(|path| reset_layout_in(&path))
 }
@@ -761,14 +742,9 @@ fn reset_layout_in(path: &Path) -> bool {
     }
 }
 
-/// Drop the keys serde wrote out at their empty value.
-///
-/// A default is an absent key, not a zero - the same rule `set_placement_in`
-/// follows. This file is meant to be hand-edited, and `columns = 0` sitting
-/// under every box says less than nothing to whoever opens it.
-///
-/// `title` is left even when it is empty: the two untitled boxes are untitled
-/// on purpose, and the key is how that is said.
+/// Drop the keys serde wrote at their empty value. A default is an absent key,
+/// not a zero: this file is hand-edited. `title` stays even when empty, which
+/// is how the two untitled boxes say so.
 fn tidy(table: &mut Table) {
     let empty: Vec<String> = table
         .iter()
@@ -793,16 +769,11 @@ fn stock_doc() -> Option<DocumentMut> {
     toml::to_string_pretty(&Config::default()).ok()?.parse::<DocumentMut>().ok()
 }
 
-/// Copy the config beside the log before a reset overwrites it.
+/// Copy the config before a reset overwrites it. In the cache directory: a
+/// portable build in `Program Files` cannot write beside itself. One file, so
+/// it undoes the last reset rather than keeping a history.
 ///
-/// In the cache directory rather than beside the exe: that directory is already
-/// this app's, and a portable build dropped in `Program Files` cannot write to
-/// its own folder anyway. One file, overwritten each time - a reset is an undo
-/// of the last one, not a history.
-///
-/// A failed copy does not stop the reset. It is a courtesy, and refusing to
-/// reset because the backup could not be written would be the tool arguing with
-/// a click the user already made.
+/// A failed copy does not stop the reset.
 fn back_up(path: &Path) {
     let Some(dir) = backup_dir() else { return };
     let backup = dir.join("bentolaunch.toml.bak");
@@ -1159,7 +1130,7 @@ source = \"taskbar\"
     }
 
     /// A merged section is one header over two lists. Pins go in `items` and
-    /// taskbar order goes in `order`, and both have to find it — this file
+    /// taskbar order goes in `order`, and both have to find it - this file
     /// reads the raw TOML, where `source` is a list rather than a string.
     #[test]
     fn a_merged_section_takes_both_a_pin_and_a_taskbar_order() {

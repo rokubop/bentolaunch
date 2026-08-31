@@ -26,23 +26,13 @@ pub struct Config {
     pub center: Center,
 }
 
-/// The block held in the middle of the panel.
+/// The block held in the middle of the panel: the one place a gaze pointer is
+/// most accurate, so it is worth reserving. Chosen by hand, and the only part
+/// of the grid whose contents do not change with what is running.
 ///
-/// The centre of the screen is where a gaze pointer is most accurate, so it is
-/// the one piece of the panel worth reserving rather than letting the bento
-/// spend it on whatever happened to be listed first. What goes there is chosen
-/// by hand and stays put: it is the only part of the grid whose contents do not
-/// change with what is running.
-///
-/// Two halves, because the two things worth putting there answer different
-/// questions - an app to start and a page to open - and mixing them would cost
-/// the block the one thing it has over the rest of the grid, which is that you
-/// already know what is in it without reading.
-///
-/// The centre does not sit in the bento tree. Every cut in that tree runs edge
-/// to edge, so a box in the middle would drag its lines across the whole panel.
-/// Instead it claims its rectangle first and the tree is planned as if it were
-/// not there; the boxes wrap around it. See `ui::grid::Layout::compute`.
+/// Two halves, because an app to start and a page to open are different
+/// questions. Not in the bento tree - every cut there runs edge to edge, so it
+/// claims its rectangle first and the boxes wrap around it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Center {
@@ -155,19 +145,9 @@ impl Center {
     /// it has nowhere to wrap to, and `validated` clamps to the same number.
     pub const MOST: usize = 4;
 
-    /// The smallest shape with room for `slots` in a half.
-    ///
-    /// Every rectangle up to the cap, not a ladder of chosen ones: adding a
-    /// favorite should cost the block the room that favorite needs and no more,
-    /// and a ladder stepping 2 x 2 to 3 x 2 hands back two empty squares for
-    /// one tile. A rectangle cannot fit every count exactly - five is 3 x 2 or
-    /// nothing - but this is always the least that holds them.
-    ///
-    /// Wider before taller when the area ties, because a block is read along
-    /// its rows: four are 4 x 1, not 2 x 2.
-    ///
-    /// Only ever bigger. A block that shrank as it emptied would be moving
-    /// targets, so coming back down stays an edit-mode click.
+    /// The least rectangle holding `slots` in a half. Every shape up to the
+    /// cap, not a ladder: a favorite should cost the room it needs and no more.
+    /// Wider before taller on a tie, because a block is read along its rows.
     pub fn shape_for(slots: usize) -> (usize, usize) {
         (1..=Self::MOST)
             .flat_map(|rows| (1..=Self::MOST).map(move |columns| (columns, rows)))
@@ -231,15 +211,9 @@ pub enum Source {
     AllBookmarks,
     /// Every open window.
     Windows,
-    /// `windows`, minus the redundant half: only apps with more than one window
-    /// open.
-    ///
-    /// One window is already on the panel as an app tile, so repeating it by
-    /// title says nothing. Four windows is the opposite, since the app tile
-    /// reaches only the most recent and the titles are what pick the rest.
-    ///
-    /// Assumes apps come from `taskbar` and `running`. Alone it would leave
-    /// single-window apps unreachable.
+    /// `windows`, minus the redundant half: only apps with more than one open.
+    /// One window is already an app tile. Assumes apps come from `taskbar` and
+    /// `running`; alone it leaves single-window apps unreachable.
     Extra,
     /// One tile per open-but-unpinned app, after the pins and never among them.
     /// The taskbar's own rule: an app that comes and goes cannot hold a fixed
@@ -255,17 +229,9 @@ pub enum Source {
     /// The browser's bookmarks bar, from the extension. Read-only: bentolaunch
     /// never writes to a browser profile (safety rule 4).
     Bookmarks,
-    /// The six window moves. A fixed set, so nothing enumerates and the box is
-    /// the same shape every summon.
-    ///
-    /// Empty unless the panel is in move mode, when `modes` is also on the
-    /// panel. Six squares that only ever apply to one window at a time are a
-    /// row this app cannot afford to spend all the time; a `modes` box brings
-    /// them out on the click that needs them and puts them away after.
-    ///
-    /// Listed on its own, with no `modes` box anywhere, it is the old always-on
-    /// bar - `Stay open` and the six - because that is a bar some people will
-    /// want and nothing about it stopped working.
+    /// The six window moves. Empty unless the panel is in move mode: six
+    /// squares applying to one window at a time cannot hold a row all the time.
+    /// With no `modes` box anywhere it is the old always-on bar.
     #[serde(rename = "move")]
     Moves,
     /// One tile per mode: move a window, center, close apps, edit layout.
@@ -477,7 +443,7 @@ impl ManualItem {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Grid {
-    /// Tile size is fixed and never changes with item count — that stability is
+    /// Tile size is fixed and never changes with item count - that stability is
     /// what makes the grid learnable. See DESIGN.md "Resolved".
     pub tile_width: f32,
     pub tile_height: f32,
@@ -564,17 +530,11 @@ pub struct Theme {
     /// on the panel that is *in front of* the layout rather than part of it.
     /// The accent again, so nothing is picked out in a second hue.
     pub center_edge: String,
-    /// Ring colours dealt out to sections in order, when a section does not
-    /// name its own `edge`.
+    /// Ring colours dealt to sections in order, when one names no `edge`. The
+    /// ring is what says which box this is, so a title costs no row.
     ///
-    /// The ring is what says which box this is, which is what lets the title
-    /// shrink to a mark on it instead of taking a row above it. A panel nobody
-    /// has configured still comes out with its boxes told apart.
-    ///
-    /// No amber in here. That hue belongs to the centre block and the tile it
-    /// is pointed at, and a box ring wearing it would read as one of those.
-    /// Empty falls back to `box_edge` for every box, which is the old
-    /// one-colour panel.
+    /// No amber: that hue is the centre block and the tile it points at. Empty
+    /// falls back to `box_edge` for every box.
     pub section_edges: Vec<String>,
 }
 
@@ -622,42 +582,19 @@ impl Default for Config {
         Self {
             dry_run: false,
             hotkey: "alt+`".into(),
-            // Three sections, not six. A section costs a header plus a full row
-            // even for one tile, so the ones that stayed had to earn the row.
-            // The groups survive inside a section: still ordered, still tinted
-            // apart, no longer a header and a row each.
-            //
-            // Browsing earns its own header. Browser windows and tabs answer
-            // one question — get me back to a page — and there are enough of
-            // them on any real machine to fill the row a header costs, which is
-            // what the other splits could not do.
-            //
-            // Browsing down the whole right side, everything else down the
-            // left. Two halves and one question each: what is open on the web,
-            // and what is on this machine. A panel split that way is answered
-            // by looking at one half of it, which no stack of full-width rows
-            // ever manages - and it gives the centre block a half to sit in on
-            // either side of it.
-            //
-            // Fixed boxes lead each lane. Launch and Bookmarks hold their
-            // tiles still. Active and Browsing are as long as whatever is open,
-            // and a box that changes height walks the rest of its lane down.
+            // Browsing down the right, everything else down the left: one
+            // question per half, and a half for the block to sit in either
+            // side of. Fixed boxes lead each lane, because a box that changes
+            // height walks the rest of its lane down.
             sections: vec![
                 placed(
                     "Launch",
                     &[SourceSpec::Plain(Source::Taskbar), SourceSpec::Plain(Source::Manual)],
                     "left",
                 ),
-                // Bookmarks are a box of their own, above the tabs rather than
-                // merged in with them. Three groups under one header told
-                // apart only by an alternating tile fill said "these belong
-                // together" about two lists that answer different questions:
-                // somewhere you go, and somewhere you already are. The row a
-                // second box used to cost is what kept them merged, and a
-                // title costs no row now.
-                //
-                // Capped: 32 bookmarks ran the right lane off the bottom of
-                // the screen on the first summon.
+                // Their own box, above the tabs: somewhere to go and somewhere
+                // you already are are two questions. Capped, because 32 ran the
+                // right lane off the bottom on the first summon.
                 SectionConfig {
                     max_items: 10,
                     ..placed("Bookmarks", &[SourceSpec::Plain(Source::Bookmarks)], "right")
@@ -883,8 +820,7 @@ pub struct Hotkey {
     pub vk: u32,
 }
 
-/// Parse "ctrl+alt+space". Returns `None` if there is no modifier or no key —
-/// `RegisterHotKey` with no modifier would hijack a bare key system-wide.
+/// Parse "ctrl+alt+space". Returns `None` if there is no modifier or no key - /// `RegisterHotKey` with no modifier would hijack a bare key system-wide.
 pub fn parse_hotkey(spec: &str) -> Option<Hotkey> {
     let mut modifiers = HOT_KEY_MODIFIERS(0);
     let mut vk = None;

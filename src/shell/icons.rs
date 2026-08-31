@@ -5,7 +5,7 @@
 //! and a blocking COM call cannot be cancelled from outside. So the UI thread
 //! never calls it and never waits on it: it asks for an icon, gets `None`, draws
 //! the tile without one, and repaints when the worker delivers. The "timeout" is
-//! structural — there is no code path on which the UI can block at all.
+//! structural - there is no code path on which the UI can block at all.
 //!
 //! Requests use `SIIGBF_ICONONLY`. Real thumbnail extraction is the slow, risky
 //! half of the shell imaging API, and for apps and folders the icon is what a
@@ -43,7 +43,7 @@ pub const WM_ICON_READY: u32 = WM_APP + 3;
 const WORKERS: usize = 2;
 
 /// A request slower than this says something on the machine is misbehaving.
-/// Logged, not enforced — a blocking COM call cannot be cancelled.
+/// Logged, not enforced - a blocking COM call cannot be cancelled.
 const SLOW_REQUEST_MS: u128 = 2_000;
 
 /// Premultiplied BGRA, top-down, ready to hand to Direct2D.
@@ -143,7 +143,7 @@ pub fn put_favicon(key: &str, pixels: IconPixels) {
 }
 
 /// Non-blocking. Returns the icon if it is already cached, otherwise queues it
-/// and returns `None` — the caller draws without an icon and repaints on
+/// and returns `None` - the caller draws without an icon and repaints on
 /// `WM_ICON_READY`.
 pub fn request(parsing_name: &str, size: u32) -> Option<Arc<IconPixels>> {
     if let Some(key) = parsing_name.strip_prefix(FAVICON) {
@@ -207,7 +207,7 @@ fn worker(rx: Arc<Mutex<Receiver<Key>>>) {
         let elapsed = started.elapsed().as_millis();
         if elapsed > SLOW_REQUEST_MS {
             log_warn!(
-                "icon for {} took {elapsed}ms — a shell extension is slow on this target",
+                "icon for {} took {elapsed}ms - a shell extension is slow on this target",
                 key.name
             );
         }
@@ -269,8 +269,8 @@ fn fetch(key: &Key) -> Option<IconPixels> {
     // deleted on both the success and failure paths below.
     unsafe {
         // For a URI, ask the handler first. `SHCreateItemFromParsingName` does
-        // not reject `ms-settings:display` outright — it hands back a generic
-        // item whose icon is a blank page — so trying it first would always win
+        // not reject `ms-settings:display` outright - it hands back a generic
+        // item whose icon is a blank page - so trying it first would always win
         // and always look wrong. The app registered to open the scheme is the
         // one the tile will actually launch, so its icon is the honest one.
         let factory: IShellItemImageFactory = match protocol_handler(&key.name) {

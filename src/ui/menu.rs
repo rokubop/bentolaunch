@@ -1,7 +1,7 @@
 //! Right-click menus on the panel.
 //!
 //! Where managing a tile lives. This is the convention every comparable surface
-//! follows — the taskbar's jump list, the bookmarks bar, Quick Access — so it is
+//! follows - the taskbar's jump list, the bookmarks bar, Quick Access - so it is
 //! the first place a user looks, and it costs the grid no pixels at rest.
 //!
 //! Section layout is the one thing behind a mode instead, and this is where it
