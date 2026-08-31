@@ -17,8 +17,7 @@ browser extension for tabs and bookmarks.
 
 ## Build from source
 
-Needs [Rust](https://rustup.rs). From **PowerShell, not WSL**: the toolchain and
-the window are Windows-native.
+If you instead what to build yourself instead of download from the releases, requires [Rust](https://rustup.rs) and **PowerShell, not WSL**.
 
 ```powershell
 git clone https://github.com/rokubop/bentolaunch
@@ -29,7 +28,7 @@ target\release\bentolaunch.exe
 
 `cargo build` without `--release` keeps a console window, so the log is visible.
 
-The panel reads the config beside whichever exe started it, so an installed copy
+Reads the config next to the `exe` location, so an installed copy
 and `target\release\` have separate settings.
 
 ## Config
