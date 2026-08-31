@@ -408,7 +408,7 @@ unsafe fn read_bitmap(bitmap: HBITMAP) -> Option<IconPixels> {
         }
 
         // The shell returns straight alpha; Direct2D was asked for premultiplied.
-        for px in bgra.chunks_exact_mut(4) {
+        for px in bgra.as_chunks_mut::<4>().0 {
             let a = px[3] as u32;
             px[0] = ((px[0] as u32 * a) / 255) as u8;
             px[1] = ((px[1] as u32 * a) / 255) as u8;
