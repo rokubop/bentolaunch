@@ -242,8 +242,10 @@ enough to scroll. The bar is pinned to the foot of the panel and the grid slides
 under it. Each turns on a mode.
 
 **Move window** brings six squares of its own, and they take this row rather
-than stacking a second bar under it. The corner button reads **Done** in every
-mode, so there is always a square to leave by. Clicking it
+than stacking a second bar under it. Its own square leads them, lit while the
+mode is on: click it to finish, the same as every other mode square. The panel
+stays open the whole time, so a click picks the window to move rather than
+switching to it, and you can move one after another. Clicking it
 again, another mode's square, the corner button, or Escape turns it off, and
 clicking off the panel dismisses it, in a mode exactly as out of one. A mode
 square is never greyed and never swallows its own click: a mode with one way out

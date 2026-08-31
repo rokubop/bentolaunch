@@ -28,7 +28,7 @@ use windows::Win32::System::WinRT::{
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    RegisterHotKey, ReleaseCapture, SetActiveWindow, SetCapture, TME_LEAVE, VK_CONTROL,
+    RegisterHotKey, ReleaseCapture, SetActiveWindow, SetCapture, TME_LEAVE,
     TRACKMOUSEEVENT, TrackMouseEvent, UnregisterHotKey, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME,
     VK_LEFT, VK_RETURN, VK_RIGHT, VK_UP,
 };
@@ -161,12 +161,6 @@ pub struct Panel {
     /// and the panel dismisses on losing focus, so without this the first
     /// click on the bar would close the bar.
     arranging: bool,
-    /// Clicking a window picks it as the target instead of switching to it.
-    ///
-    /// A latch, not a held key. Nothing that points with gaze or noise can hold
-    /// a modifier, and the one control that does this has to be a square worth
-    /// aiming at. Ctrl is the second path, never the only one.
-    stay: bool,
 
     query: String,
     /// Held for the query's duration, from the unfiltered grid. 0 when idle.
@@ -382,7 +376,6 @@ impl Panel {
             spotlight: None,
             pending: None,
             arranging: false,
-            stay: false,
             hotkey_bound: false,
             query: String::new(),
             frozen_cols: 0,
@@ -708,7 +701,6 @@ impl Panel {
         self.target = None;
         self.pending = None;
         self.arranging = false;
-        self.stay = false;
         safety::mark_shown(false);
 
         // SAFETY: our own window, on our own thread.
@@ -2011,7 +2003,7 @@ impl Panel {
         if self.mode == Mode::Center && item.origin == Source::Center {
             return !matches!(item.target, Target::Slot);
         }
-        item.target == Target::Stay && self.stay
+        item.target == Target::Stay && self.mode == Mode::Move
     }
 
     /// The tile the move bar acts on, ringed so it is answerable at a glance.
@@ -2123,7 +2115,7 @@ impl Panel {
                 return;
             }
             Target::Stay => {
-                self.toggle_stay();
+                self.leave_mode();
                 return;
             }
             Target::Arrange(mv) => {
@@ -2137,7 +2129,7 @@ impl Panel {
             // Not a window, so holding the panel open has nothing to pick from
             // it. Falls through and opens, the way it would with stay off.
             Target::NewTab { .. } => {}
-            _ if self.stay => {
+            _ if self.mode == Mode::Move => {
                 self.pick(&item);
                 return;
             }
@@ -2157,22 +2149,8 @@ impl Panel {
         activate::activate(&item);
     }
 
-    /// Stay open mode, on or off. The tile and ctrl are two ways into the one
-    /// flag, so neither can disagree with the other about what is on.
-    fn toggle_stay(&mut self) {
-        self.stay = !self.stay;
-        if !self.stay {
-            self.target = None;
-            self.pending = None;
-        }
-        log_info!("stay open {}", if self.stay { "on" } else { "off" });
-        self.frame_target();
-        let _ = self.rebuild_visuals();
-    }
-
     /// Take a tile as the thing to move, without leaving for it.
     fn pick(&mut self, item: &Item) {
-        self.stay = true;
         if let Some(handle) = self.window_for(item) {
             self.target = Some(handle);
             self.pending = None;
@@ -2427,16 +2405,12 @@ impl Panel {
             // Move shows a window taking a side; center shows the middle of
             // the screen held; layout shows the bento being cut.
             Target::Mode(mode) => (Some(mode_mark(mode)), None),
-            Target::Stay => {
-                let name = self.stay.then(|| {
-                    self.target
-                        .and_then(|handle| {
-                            self.items.iter().find(|i| i.target == Target::Window(handle))
-                        })
-                        .map_or_else(|| "Pick a window".to_owned(), |i| i.title.clone())
-                });
-                (Some(Mark::Latch { on: self.stay }), name)
-            }
+            // Move mode's own square, on the bar that replaced the modes bar.
+            // Lit while the mode is on and clicking it turns the mode off, the
+            // same as every other mode square. It was a latch, and the latch
+            // had no useful off: turned off inside move mode you were in a mode
+            // that no longer did anything, and the way out was somewhere else.
+            Target::Stay => (Some(mode_mark(Mode::Move)), None),
             _ => (None, None),
         }
     }
@@ -2653,7 +2627,7 @@ impl Panel {
 
     /// `false` hands the key back to `DefWindowProcW`. Arrows and Enter work
     /// on the whole grid, filtered or not.
-    fn on_key(&mut self, vk: u16, repeat: bool) -> bool {
+    fn on_key(&mut self, vk: u16, _repeat: bool) -> bool {
         if self.editing() {
             return self.edit_key(vk);
         }
@@ -2665,7 +2639,6 @@ impl Panel {
             return true;
         }
 
-        const CTRL: u16 = VK_CONTROL.0;
         const ESCAPE: u16 = VK_ESCAPE.0;
         const ENTER: u16 = VK_RETURN.0;
         const LEFT: u16 = VK_LEFT.0;
@@ -2677,13 +2650,6 @@ impl Panel {
 
         let row = self.layout.cols.max(1) as isize;
         match vk {
-            // The keyboard's way into the same latch the tile is.
-            CTRL => {
-                if !repeat {
-                    self.toggle_stay();
-                }
-                true
-            }
             // Query first, panel second. Backspacing out of a long mistyped
             // filter is not what Escape is reached for.
             ESCAPE => {
@@ -2698,10 +2664,11 @@ impl Panel {
                 } else if self.menu_open_big {
                     self.menu_open_big = false;
                     let _ = self.rebuild_visuals();
-                } else if self.stay {
-                    self.stay = false;
-                    self.target = None;
-                    let _ = self.rebuild_visuals();
+                } else if self.in_mode() {
+                    // A mode before the panel. Escape used to unlatch move
+                    // mode and leave you in it, and to throw the whole panel
+                    // away from every other one.
+                    self.leave_mode();
                 } else if self.query.is_empty() {
                     self.hide(true);
                 } else {
@@ -2749,11 +2716,7 @@ impl Panel {
         if !self.query.is_empty() || self.sections.is_empty() {
             return;
         }
-        // Move mode is the stay latch plus the six squares it exists for.
-        // Turning it on here rather than making the user click "Stay open"
-        // first is the whole of what one button buys over seven.
         if mode == Mode::Move {
-            self.stay = true;
             self.frame_target();
         }
         // Asked on the way in, every time. The archive is only worth carrying
@@ -2828,10 +2791,12 @@ impl Panel {
     /// than dismissing it.
     fn leave_mode(&mut self) {
         log_info!("{:?} mode: off", self.mode);
-        // The latch came on with the mode, so it goes off with it. Leaving it
-        // on would be a panel that quietly no longer switches to what you click.
-        if self.mode == Mode::Move && self.stay {
-            self.toggle_stay();
+        // What the mode was aimed at goes with it. Held over, the next move
+        // mode would open already pointing at a window nobody picked.
+        if self.mode == Mode::Move {
+            self.target = None;
+            self.pending = None;
+            self.frame_target();
         }
         self.mode = Mode::Grid;
         self.edit = None;

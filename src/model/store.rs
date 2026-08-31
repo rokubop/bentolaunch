@@ -645,8 +645,10 @@ fn move_items() -> Vec<Item> {
         group: 0,
     };
 
-    // Stay first: it names what the rest act on, so it reads before them.
-    std::iter::once(action("stay", "Stay open", Target::Stay))
+    // Move mode's own square, first: the modes bar stood down to give this bar
+    // the row, so the square that turns the mode off comes with it. Every other
+    // mode is left by its own square and this is that square.
+    std::iter::once(action("stay", "Move window", Target::Stay))
         .chain(
             crate::shell::arrange::MOVES
                 .iter()
@@ -1359,6 +1361,18 @@ mod tests {
         Mode::AllApps,
         Mode::AllBookmarks,
     ];
+
+    #[test]
+    fn the_moves_bar_leads_with_the_square_that_turns_the_mode_off() {
+        // The modes bar stood down to give this bar the row, so the square
+        // that leaves the mode comes with it - every mode is left by its own
+        // square. It used to be a latch whose off state left you inside a
+        // mode that no longer did anything.
+        let items = move_items();
+        assert_eq!(items[0].target, Target::Stay);
+        assert_eq!(items[0].title, Mode::Move.label(), "the square is not named for its mode");
+        assert!(items[1..].iter().all(|i| matches!(i.target, Target::Arrange(_))));
+    }
 
     #[test]
     fn exactly_one_bar_holds_the_foot_in_every_mode() {
