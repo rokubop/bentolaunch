@@ -883,9 +883,10 @@ impl Control {
             Control::CenterWider => "Wider",
             Control::CenterShorter => "Shorter",
             Control::CenterTaller => "Taller",
-            // Replaced by what it will do: a square that says "off" while the
-            // block is already off is a square nobody can read.
-            Control::CenterOn => "Center off",
+            // The fallback. The panel swaps in "Turn on" or "Turn off" by
+            // what the click will do: a square saying "off" while the block is
+            // already off is a square nobody can read.
+            Control::CenterOn => "Turn off",
             Control::CenterHolds => "What it holds",
             Control::Done => "Done",
         }
@@ -2041,6 +2042,20 @@ mod tests {
         for command in COMMANDS {
             let Some(mode) = command.mode() else { continue };
             assert_eq!(command.label(), mode.label(), "{command:?} is called two things");
+        }
+    }
+
+    #[test]
+    fn a_mode_carries_its_own_picture_rather_than_a_glyph() {
+        // The bar draws a picture of what the mode does to the panel. The
+        // menu square is the same mode reached another way, so it draws the
+        // same picture - it used to wear an ornament instead, a star for the
+        // centre, which is the thing that comment rules out.
+        let modes: Vec<Mode> = COMMANDS.iter().filter_map(|c| c.mode()).collect();
+        assert_eq!(modes.len(), 3, "the menu should offer the three modes");
+        for command in COMMANDS {
+            let Some(mode) = command.mode() else { continue };
+            assert_eq!(command.label(), mode.label());
         }
     }
 
