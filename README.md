@@ -12,11 +12,10 @@ Example:
 
 ## Install
 
-Windows 11 only. Two files, the exe and the browser extension, and they have to
-come from the same release - they check each other's version.
-
-**[Download the latest release](https://github.com/rokubop/bentolaunch/releases/latest)**
-- step by step instructions are on that page.
+Windows 11 only. Go to the
+[latest release](https://github.com/rokubop/bentolaunch/releases/latest) and
+follow the install instructions there. Two files: an `.exe`, and a Chromium
+browser extension for tabs and bookmarks.
 
 ## Build from source
 

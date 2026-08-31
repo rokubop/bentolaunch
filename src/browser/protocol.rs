@@ -86,7 +86,7 @@ impl IconData {
         }
 
         let mut bgra = Vec::with_capacity(expected);
-        for px in rgba.chunks_exact(4) {
+        for px in rgba.as_chunks::<4>().0 {
             let (r, g, b, a) = (px[0] as u32, px[1] as u32, px[2] as u32, px[3]);
             let scale = |c: u32| ((c * a as u32 + 127) / 255) as u8;
             bgra.extend_from_slice(&[scale(b), scale(g), scale(r), a]);
