@@ -1290,9 +1290,16 @@ impl Panel {
                     // Says what the click does, not what the block is. A square
                     // reading "off" while the block is already off is a square
                     // nobody can read.
+                    //
+                    // A verb, because every other square here is one -
+                    // "Narrower", "What it holds". "Center off" read as a
+                    // statement about the block as easily as an instruction to
+                    // it, which is the one thing a switch must not do. It does
+                    // not name the block either: nothing else here does, and
+                    // the block is the thing being edited.
                     Some(_) if control == Control::CenterOn => match self.config.center.on() {
-                        true => (control.glyph(), "Center off"),
-                        false => (control.glyph(), "Center on"),
+                        true => (control.glyph(), "Turn off"),
+                        false => (control.glyph(), "Turn on"),
                     },
                     Some(state) => control.wording(state),
                     None => (control.glyph(), control.label()),
@@ -1463,7 +1470,10 @@ impl Panel {
                             width: rect.w,
                             height: rect.h,
                             glyph: command.glyph(),
-                            mark: None,
+                            // A mode's own picture, so the square behind the
+                            // corner button and the square on the bar are the
+                            // same square. The glyph is what the rest wear.
+                            mark: command.mode().map(mode_mark),
                             label: command.label(),
                             colors,
                             icon: None,
@@ -1966,9 +1976,7 @@ impl Panel {
         if self.items.get(index).is_some_and(|item| self.inert(item)) {
             return color_of(if self.alternating(index) { &theme.tile_alt } else { &theme.tile });
         }
-        color_of(if self.hover == Some(index) {
-            &theme.tile_hover
-        } else if self.lit(index) {
+        let base = color_of(if self.lit(index) {
             &theme.tile_drag
         } else if self.selected == Some(index) {
             &theme.tile_selected
@@ -1976,7 +1984,15 @@ impl Panel {
             &theme.tile_alt
         } else {
             &theme.tile
-        })
+        });
+        if self.hover != Some(index) {
+            return base;
+        }
+        // Hover lifts the fill it is over. It used to replace it, so a mode
+        // square went grey the moment it was switched on - the warm fill
+        // saying so only appeared once the pointer left, and a gaze pointer
+        // does not leave what it just clicked.
+        lift(base, color_of(&theme.tile), color_of(&theme.tile_hover))
     }
 
     /// The window the move tiles will act on, and the latch while it is
@@ -2410,21 +2426,7 @@ impl Panel {
             // A picture of what the mode does to the panel, not an ornament.
             // Move shows a window taking a side; center shows the middle of
             // the screen held; layout shows the bento being cut.
-            Target::Mode(mode) => {
-                let mark = match mode {
-                    Mode::Move => Mark::Half { left: 0.0, top: 0.0, right: 0.5, bottom: 1.0 },
-                    Mode::Center => {
-                        Mark::Half { left: 0.28, top: 0.24, right: 0.72, bottom: 0.76 }
-                    }
-                    Mode::Close => Mark::Cross,
-                    // Nine squares where the box under it shows a handful:
-                    // the same tiles, and the rest of them. One figure for both
-                    // squares, because they are one idea asked of two boxes.
-                    Mode::AllApps | Mode::AllBookmarks => Mark::All,
-                    Mode::Layout | Mode::Grid => Mark::Bento,
-                };
-                (Some(mark), None)
-            }
+            Target::Mode(mode) => (Some(mode_mark(mode)), None),
             Target::Stay => {
                 let name = self.stay.then(|| {
                     self.target
@@ -4377,6 +4379,44 @@ fn surround(placed: impl Iterator<Item = GridRect> + Clone, margin: f32) -> Grid
 /// The same colour at a chosen opacity. Edit mode is built out of sheets laid
 /// over the grid, and every one of them needs what is underneath to show
 /// through by a controlled amount.
+/// The picture on a mode's square: what the mode does to the panel, not an
+/// ornament. Move shows a window taking a side; center shows the middle of the
+/// screen held; layout shows the bento being cut.
+///
+/// One function, because a mode has two squares - the bar it lives on and the
+/// menu behind the corner button - and they have to carry the same picture for
+/// the same reason they carry the same words.
+fn mode_mark(mode: Mode) -> Mark {
+    match mode {
+        Mode::Move => Mark::Half { left: 0.0, top: 0.0, right: 0.5, bottom: 1.0 },
+        Mode::Center => Mark::Half { left: 0.28, top: 0.24, right: 0.72, bottom: 0.76 },
+        Mode::Close => Mark::Cross,
+        // Nine squares where the box under it shows a handful: the same tiles,
+        // and the rest of them. One figure for both squares, because they are
+        // one idea asked of two boxes.
+        Mode::AllApps | Mode::AllBookmarks => Mark::All,
+        Mode::Layout | Mode::Grid => Mark::Bento,
+    }
+}
+
+/// Move `base` by the distance the theme put between `from` and `to`.
+///
+/// The theme says how much brighter a tile under the pointer is by the gap it
+/// left between `tile` and `tile_hover`. Every other fill moves by that same
+/// gap, so hovering says "this one" without saying anything else - a plain tile
+/// still lands exactly on `tile_hover`, and a lit one stays lit.
+fn lift(base: Color, from: Color, to: Color) -> Color {
+    let step = |b: u8, f: u8, t: u8| {
+        (i16::from(b) + i16::from(t) - i16::from(f)).clamp(0, 255) as u8
+    };
+    Color {
+        A: base.A,
+        R: step(base.R, from.R, to.R),
+        G: step(base.G, from.G, to.G),
+        B: step(base.B, from.B, to.B),
+    }
+}
+
 fn veil(color: Color, alpha: f32) -> Color {
     Color { A: (alpha.clamp(0.0, 1.0) * 255.0) as u8, ..color }
 }
@@ -4558,4 +4598,54 @@ fn d2d_color_of(color: Color) -> D2D1_COLOR_F {
 /// the tiles; the words on it have to be read.
 fn opaque(color: D2D1_COLOR_F) -> D2D1_COLOR_F {
     D2D1_COLOR_F { a: 1.0, ..color }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Theme;
+
+    fn theme() -> Theme {
+        Theme::default()
+    }
+
+    #[test]
+    fn hovering_a_plain_tile_lands_exactly_on_the_hover_colour() {
+        // The common case has to come out unchanged, or every tile on the
+        // panel shifts colour for the sake of the four on the modes bar.
+        let t = theme();
+        let (tile, hot) = (color_of(&t.tile), color_of(&t.tile_hover));
+        let lifted = lift(tile, tile, hot);
+        assert_eq!((lifted.R, lifted.G, lifted.B), (hot.R, hot.G, hot.B));
+    }
+
+    #[test]
+    fn hovering_a_lit_tile_keeps_it_lit() {
+        // The bug: a mode square went grey the moment it was switched on,
+        // because hover replaced the warm fill that said so. A gaze pointer
+        // stays on what it clicked, so the on-state was never seen at all.
+        let t = theme();
+        let (tile, hot, lit) = (color_of(&t.tile), color_of(&t.tile_hover), color_of(&t.tile_drag));
+        let lifted = lift(lit, tile, hot);
+
+        assert_ne!((lifted.R, lifted.G, lifted.B), (hot.R, hot.G, hot.B), "hover ate the lit fill");
+        // Still warm: red well clear of blue, the way the lit colour is.
+        assert!(lit.R > lit.B && lifted.R > lifted.B + 20, "the lit tile lost its warmth");
+        // And brighter than at rest, so hover still says "this one".
+        assert!(lifted.R > lit.R && lifted.G > lit.G, "hover did not lift it");
+    }
+
+    #[test]
+    fn a_lift_stops_at_white_rather_than_wrapping() {
+        let bright = Color { A: 255, R: 250, G: 250, B: 250 };
+        let lifted = lift(bright, Color { A: 255, R: 0, G: 0, B: 0 }, Color { A: 255, R: 40, G: 40, B: 40 });
+        assert_eq!((lifted.R, lifted.G, lifted.B), (255, 255, 255));
+    }
+
+    #[test]
+    fn a_lift_keeps_the_alpha_it_was_given() {
+        let base = Color { A: 128, R: 10, G: 10, B: 10 };
+        let lifted = lift(base, Color { A: 255, R: 0, G: 0, B: 0 }, Color { A: 255, R: 5, G: 5, B: 5 });
+        assert_eq!(lifted.A, 128);
+    }
 }
