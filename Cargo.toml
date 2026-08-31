@@ -1,6 +1,6 @@
 [package]
 name = "bentolaunch"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2024"
 rust-version = "1.89"
 description = "Hotkey-summoned grid of everything worth switching to: windows, browser tabs, taskbar pins, folders, apps, settings pages, links"
