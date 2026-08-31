@@ -4,6 +4,8 @@
 
 A hotkey-triggered overlay in the center of your screen for all your running apps and browser tabs represented as big icons that are easily clickable. Type filtering also supported.
 
+![The BentoLaunch panel: taskbar pins and running windows down the left, bookmarks and browser tabs down the right, and the modes bar along the foot.](assets/preview.png)
+
 Example:
 1) Press `` Alt+` `` to immediately show BentoLaunch - See running apps, taskbar pins, and browser tabs in a grid of tiles.
 2) Click what you want to switch to, or type to filter the grid
