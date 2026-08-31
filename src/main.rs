@@ -1,4 +1,4 @@
-//! bentolaunch — a hotkey-summoned grid of everything worth switching to.
+//! bentolaunch - a hotkey-summoned grid of everything worth switching to.
 //!
 //! Milestone 1 is a **dry run**: it enumerates and renders the real system, but
 //! every activation is a no-op that logs what it would have done. See DESIGN.md.
@@ -44,7 +44,7 @@ fn main() {
     let bridge = config.browser.clone();
     let center = config.center.clone();
     log_info!(
-        "bentolaunch starting — dry_run={}, hotkey={}",
+        "bentolaunch starting - dry_run={}, hotkey={}",
         config.dry_run,
         config.hotkey
     );
@@ -72,7 +72,7 @@ fn main() {
     // After the bridge, so the tooltip can say what happened to it.
     tray::refresh(hwnd);
 
-    log_info!("ready — press the hotkey to summon, or use the tray icon");
+    log_info!("ready - press the hotkey to summon, or use the tray icon");
     pump();
 
     // Ordered teardown: stop the event feed, drop the tray, then the window.

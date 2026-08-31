@@ -91,7 +91,7 @@ fn new_tab(connection: u64) {
 /// Bring a window forward.
 ///
 /// `SetForegroundWindow` is normally restricted, but the process that received
-/// the last input event is allowed to call it — and `RegisterHotKey` delivers
+/// the last input event is allowed to call it - and `RegisterHotKey` delivers
 /// `WM_HOTKEY` as exactly that. So summoning bentolaunch by its hotkey grants the
 /// right that activation needs. See DESIGN.md "Focus model".
 /// `false` only when no window was left to focus, which is what lets a pin fall

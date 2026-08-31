@@ -1,16 +1,8 @@
-//! The settings surface: the config's clickable knobs, as squares.
+//! Settings as squares, because a dialog is small targets and this app is
+//! aimed at with a gaze pointer. Every click steps to the next value.
 //!
-//! Same squares as the edit options and the big menu, for the same reason. A
-//! settings dialog is checkboxes, dropdowns and a slider or two, and every one
-//! of those is a small target that has to be hit precisely. This app is aimed
-//! at with a gaze pointer, so every setting here is a full tile and every click
-//! means the same thing: step to the next value.
-//!
-//! Only what a click can say lives here. The hotkey, the theme colours and the
-//! sections themselves stay in the file: they need typing, and a square that
-//! opened a text field would be a worse text editor than the one the user
-//! already has. `Open the file` is one of the squares for exactly that reason -
-//! this surface is the common half, not a replacement.
+//! Only what a click can say. Anything needing typing stays in the file, which
+//! `Open the file` is here to reach.
 
 use crate::config::{Config, Contents, Center};
 use crate::pins::Change;
@@ -70,29 +62,14 @@ pub enum Setting {
     Done,
 }
 
-/// What the Reset square opens: the whole surface, replaced by the question.
-///
-/// Two squares and nothing else. Everything the eight said is gone, which is
-/// the part an in-place confirm could not do - there is no reading a small
-/// change against a surface that did not change.
-///
-/// Keeping it comes first. The answer that changes nothing is the one the
-/// pointer should meet on the way, and neither square is where the Reset square
-/// was, so a second click cannot land on an answer by accident.
+/// What Reset opens: the eight squares gone, two answers in their place. An
+/// in-place confirm changed one word and nobody saw it. Keeping it comes first,
+/// and neither answer stands where Reset did, so a stray second click misses.
 pub const CONFIRM_RESET: [Setting; 2] = [Setting::ResetNo, Setting::ResetYes];
 
-/// Two rows of four: the four values, then what the block holds, the two
-/// escape hatches and the way out.
-///
-/// The block's *size* is not here. It has four squares in edit mode, where the
-/// block is on screen beside them - a shape needs two directions and a surface
-/// that covers the thing being sized cannot give either. One square stepping a
-/// list of shapes also disagreed with the shapes a favorite grows the block
-/// into, and stepping off that list turned the block off.
-///
-/// Reset is one square away from Done, not beside it. It is the only square
-/// here that throws anything away, and the two worst to confuse are "throw my
-/// layout away" and "I am finished".
+/// Two rows of four. The block's size is not here: it needs two directions,
+/// and this surface covers the thing being sized. Reset sits one square from
+/// Done, the two worst to confuse.
 pub const SETTINGS: [Setting; 8] = [
     Setting::Tiles,
     Setting::Labels,
@@ -105,16 +82,10 @@ pub const SETTINGS: [Setting; 8] = [
 ];
 
 impl Setting {
-    /// The big mark on the square.
+    /// The mark on the square. Static: the value is said in words underneath.
     ///
-    /// Static, unlike the edit options': these say what the square is, and the
-    /// value is said in words underneath. A glyph that changed with the value
-    /// would be two things to read instead of one.
-    ///
-    /// From the icon font, never the UI face. Almost none of these exist in
-    /// `Segoe UI Variable Text`, so reaching for Unicode shapes silently mixed
-    /// two typefaces at two weights on one surface - and its folder and its
-    /// file were the same blank rectangle.
+    /// Icon font, never the UI face - almost none of these exist in it, so
+    /// Unicode shapes silently mixed two typefaces at two weights.
     pub fn glyph(self) -> &'static str {
         match self {
             // Few big cells against many small ones: the two shape settings,
@@ -217,21 +188,11 @@ impl Setting {
     }
 }
 
-/// Whether resetting would change anything.
+/// Whether resetting would change anything: exactly the keys
+/// `pins::reset_layout` writes, and nothing else.
 ///
-/// Exactly the keys `pins::reset_layout` writes, and nothing else: a square
-/// greyed out over a colour it does not touch would be lying about what
-/// clicking it would do.
-///
-/// What a section holds is not compared. Hand-added items and a dragged pin
-/// order come through a reset untouched, so a box full of them is still a box
-/// in its stock place.
-///
-/// A box the user wrote themselves is not compared either, for the same
-/// reason: a reset keeps it, appended after the stock ones. Comparing the whole
-/// list against the stock six answered "not stock" forever on any config with a
-/// box of its own - so the square never greyed, and the click that changes
-/// nothing looked exactly like the one that changes everything.
+/// What a box holds is not compared, and neither is a box the user wrote - a
+/// reset keeps both. Comparing the whole list said "not stock" forever.
 pub fn layout_is_stock(config: &Config) -> bool {
     let stock = Config::default();
     let block = |c: &Config| (c.center.rows, c.center.columns, c.center.contents);
@@ -297,12 +258,6 @@ fn columns_now(config: &Config) -> Option<usize> {
         .position(|(n, _)| *n == config.grid.max_columns)
 }
 
-/// Which shape the block is on, or `None` for one typed into the file that is
-/// not on the list.
-///
-/// Off is off however it was written: `rows = 0` with a width still set is the
-/// same block as no block, and a square that called that "as set" would take
-/// two clicks to turn anything on.
 /// The most tiles the block may take either way. One number, in `config`,
 /// where `validated` clamps to it and `shape_for` grows up to it.
 pub const CENTER_MOST: usize = Center::MOST;

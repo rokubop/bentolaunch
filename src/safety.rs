@@ -4,8 +4,7 @@
 //!
 //! The escape hatch is `SetWindowLongPtrW(GWL_EXSTYLE, ... | WS_EX_TRANSPARENT)`.
 //! That writes the window struct directly and does **not** require the owning
-//! thread to pump messages, so it still works when the UI thread is wedged —
-//! unlike `ShowWindow`/`SetWindowPos`, which marshal to that thread and would
+//! thread to pump messages, so it still works when the UI thread is wedged - //! unlike `ShowWindow`/`SetWindowPos`, which marshal to that thread and would
 //! hang right along with it. Clicks fall through to whatever is underneath and
 //! the machine is usable again.
 

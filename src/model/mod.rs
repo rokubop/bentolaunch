@@ -114,8 +114,7 @@ impl Mode {
 
 /// What activating a tile does.
 ///
-/// Everything that is not a live window collapses to a **shell parsing name** —
-/// the string form the shell already understands. A file path, a folder, a
+/// Everything that is not a live window collapses to a **shell parsing name** - /// the string form the shell already understands. A file path, a folder, a
 /// `.lnk`, `shell:AppsFolder\<AppUserModelID>` for a Store app, and a URI like
 /// `ms-settings:display` are all parsing names, and all of them both launch
 /// through `ShellExecuteW` and produce an icon through `IShellItemImageFactory`.
@@ -228,8 +227,8 @@ pub struct Item {
     /// of the same page would store.
     pub link: Option<String>,
     /// Which group inside the section produced it: the index into that
-    /// section's source list. Two groups can share a source — browser windows
-    /// and everything else — so this, not `origin`, is what the tint and the
+    /// section's source list. Two groups can share a source - browser windows
+    /// and everything else - so this, not `origin`, is what the tint and the
     /// drag runs key on. Set as the section is assembled.
     pub group: usize,
 }

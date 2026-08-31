@@ -40,7 +40,7 @@ impl Drop for Claim {
 /// itself; this process should exit.
 pub fn claim() -> Option<Claim> {
     // SAFETY: a named mutex with default security. `true` asks for initial
-    // ownership, which we never rely on — the handle existing is the claim.
+    // ownership, which we never rely on - the handle existing is the claim.
     let handle = unsafe { CreateMutexW(None, true, MUTEX_NAME) };
     let handle = match handle {
         Ok(handle) => handle,

@@ -1,6 +1,6 @@
 //! Live top-level windows.
 //!
-//! DESIGN.md is explicit that enumeration must not happen on the hotkey — that
+//! DESIGN.md is explicit that enumeration must not happen on the hotkey - that
 //! is the usual reason these launchers feel sluggish. So this module enumerates
 //! once at startup and then keeps the list current from `SetWinEventHook`.
 

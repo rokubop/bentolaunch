@@ -44,7 +44,7 @@ struct Group {
     matches: Vec<Vec<String>>,
     /// Pre-resolved per source, keyed by its index in `sources`: taskbar pins
     /// and manual entries both touch the disk, so they are read once. Windows
-    /// and tabs are absent — they are read at show time.
+    /// and tabs are absent - they are read at show time.
     fixed: Vec<(usize, Vec<Item>)>,
     /// 0 means no cap. Applied after every group has contributed, so the cut
     /// falls at the end of the section rather than inside one group.
@@ -298,8 +298,7 @@ pub fn init(exclude: HWND, sections: &[SectionConfig], center: &Center) {
 
 /// Build a tile from a manual config entry.
 ///
-/// Everything here is a shell parsing name, so nothing needs to exist on disk —
-/// `ms-settings:display` is as valid a target as `R:\dev`. Existence only
+/// Everything here is a shell parsing name, so nothing needs to exist on disk - /// `ms-settings:display` is as valid a target as `R:\dev`. Existence only
 /// affects which title and icon bentolaunch can infer.
 fn manual_item(entry: &ManualItem) -> Option<Item> {
     let target = entry.target().trim();
@@ -507,16 +506,11 @@ fn bookmark_items() -> Vec<Item> {
         .collect()
 }
 
-/// Every bookmark there is, folder path and all.
+/// Every bookmark there is, folder path and all. Empty until a browser answers,
+/// and empty for good against an extension that predates the question.
 ///
-/// Empty until a browser has been asked and has answered, and empty for good
-/// against an extension that predates the question - which is a box that draws
-/// nothing rather than a panel that breaks.
-///
-/// No favicon came with these. One is filed by origin, so anything sharing a
-/// site with an open tab or a bar entry is already wearing the right picture;
-/// the rest fall back to the shell, exactly as a hand-written site favorite
-/// does.
+/// No favicon comes with these. They are filed by origin, so anything sharing a
+/// site with an open tab already wears the right picture.
 fn all_bookmark_items() -> Vec<Item> {
     crate::browser::server::tree()
         .into_iter()
@@ -685,15 +679,10 @@ fn empty_slot(n: usize) -> Item {
     }
 }
 
-/// The centre block, as sections.
-///
-/// Last in the list on purpose. Every other box works out where its tiles are
-/// from what is configured ahead of it, and the centre is not configured as a
-/// section at all, so it goes on the end where it disturbs nothing.
-///
-/// Untitled, because the block never draws a header: it is the most valuable
-/// space on the panel and a title would spend a row of it saying what eight
-/// icons already say.
+/// The centre block, as sections. Last on purpose: every other box finds its
+/// tiles from what is configured ahead of it, and the centre is not a
+/// configured section. Untitled, because a header would spend a row of the most
+/// valuable space on the panel. See `ui::grid::foot_of` for who trips on this.
 /// The origin of a URL, spelled the way the extension spells it: scheme, `://`,
 /// host and port, lowercased. That string is the key every favicon is filed
 /// under, because one bitmap serves every page on a site.
@@ -731,19 +720,11 @@ fn wearing_favicon(item: &Item) -> Item {
     }
 }
 
-/// Whether a bar at the foot of the panel draws its squares now.
+/// Which foot bar draws now. The two never share the row: stacked, move mode
+/// spent two rows of the panel's foot on chrome. Nothing is lost by the modes
+/// standing down, because the corner button reads "Done" in every mode.
 ///
-/// The two never share the row. The moves take it in move mode and the modes
-/// have it the rest of the time: stacked, move mode spent two rows of the foot
-/// on chrome, and the row that never moves was pushed off the place it is
-/// aimed at by a box that comes and goes.
-///
-/// Nothing is lost by the modes standing down. The corner button reads "Done"
-/// in every mode, so there is always a square to leave by - which is the whole
-/// of what keeping the modes bar up was holding open.
-///
-/// A `move` box listed with no `modes` box anywhere is the old always-on bar
-/// and stays on, because then nothing else would ever draw the row.
+/// A `move` box with no `modes` box anywhere keeps the row for good.
 fn bar_shows(source: Source, mode: Mode, has_modes: bool) -> bool {
     match source {
         Source::Moves => mode == Mode::Move || !has_modes,
@@ -753,21 +734,12 @@ fn bar_shows(source: Source, mode: Mode, has_modes: bool) -> bool {
 }
 
 fn center_sections(center: &Block, mode: Mode) -> Vec<Section> {
-    // Off, the block holds nothing and so is not a box on the panel at all -
-    // and a square that switched it off would then have nowhere to be clicked
-    // to switch it back on. Edit mode keeps one empty slot in the middle for
-    // it, which is a box, which is somewhere to click.
+    // Empty is the same as off, whatever shape the file asks for: `rows` says
+    // how big the block gets, not that it has to be there first. Holding
+    // something it draws its whole shape, empty slots and all.
     //
-    // Center mode keeps it for the same reason from the other end: off is
-    // the shipped state now, so the first favorite anyone ever adds is added to
-    // a block that is not there, and the mode has to show where it will land.
-    //
-    // Empty is the same as off here, whatever shape the file asks for. Nine
-    // squares a half holding nothing is the middle of the screen spent on
-    // nothing, and `rows` says how big the block gets, not that it has to be
-    // there before there is anything to put in it. Once it holds something it
-    // draws its whole shape, empty slots and all - those are where the next one
-    // lands, and they stay put as things come and go.
+    // Both modes keep one slot, or there would be nowhere to click it back on
+    // and nowhere for the first favorite to land.
     if !center.shape.on() || !center.draws_anything() {
         return match mode {
             Mode::Layout | Mode::Center => vec![Section {
