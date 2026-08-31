@@ -111,32 +111,28 @@ impl Setting {
     /// value is said in words underneath. A glyph that changed with the value
     /// would be two things to read instead of one.
     ///
-    /// Geometric shapes rather than emoji. These are drawn in the UI font like
-    /// every other option, and anything with an emoji presentation comes back
-    /// in colour out of a different font - one bright pictogram among five line
-    /// drawings reads as the odd one out rather than as a set.
+    /// From the icon font, never the UI face. Almost none of these exist in
+    /// `Segoe UI Variable Text`, so reaching for Unicode shapes silently mixed
+    /// two typefaces at two weights on one surface - and its folder and its
+    /// file were the same blank rectangle.
     pub fn glyph(self) -> &'static str {
         match self {
-            // A square inside a square: the tile, and how much of it there is.
-            Setting::Tiles => "\u{25A3}",
-            // Lines of text, then columns of them. A pair on purpose: they are
-            // the two shape settings and they sit next to each other.
-            Setting::Labels => "\u{25A4}",
-            Setting::Columns => "\u{25A5}",
-            Setting::CenterHolds => "\u{25EB}",
-            Setting::Browser => "\u{25EF}",
-            // The same mark the menu puts on "Add file". It is the same kind of
-            // thing: a file, opened.
-            Setting::OpenFile => "\u{1F5CE}",
-            // An anticlockwise arrow: back round to where this started.
-            // Not the clockwise one, which every other app on the machine
-            // already uses for refresh.
-            Setting::Reset => "\u{21BA}",
-            // The same mark, because it is the same thing being asked
-            // about. The cross is the one the menu wears for closing.
-            Setting::ResetYes => "\u{21BA}",
-            Setting::ResetNo => "\u{2715}",
-            Setting::Done => "\u{2713}",
+            // Few big cells against many small ones: the two shape settings,
+            // side by side and telling each other apart.
+            Setting::Tiles => "\u{E8A9}",
+            Setting::Labels => "\u{E8FD}",
+            Setting::Columns => "\u{E9A6}",
+            Setting::Browser => "\u{E774}",
+            // A box split across the middle: the block, and the two lists in
+            // it. The same mark the edit square for this wears.
+            Setting::CenterHolds => "\u{E745}",
+            Setting::OpenFile => "\u{E8E5}",
+            // Undo, not refresh. Anticlockwise is back to where this started;
+            // the clockwise one is what every app on the machine reloads with.
+            Setting::Reset => "\u{E7A7}",
+            Setting::ResetYes => "\u{E7A7}",
+            Setting::ResetNo => "\u{E711}",
+            Setting::Done => "\u{E73E}",
         }
     }
 
@@ -368,6 +364,37 @@ mod tests {
 
     fn config() -> Config {
         Config::default()
+    }
+
+    #[test]
+    fn every_mark_comes_from_the_icon_font() {
+        // Reaching for a Unicode shape silently mixed two typefaces at two
+        // weights: eight of the marks were in the UI face and the rest fell
+        // back to Segoe UI Symbol, where the folder and the file are the same
+        // blank rectangle. The private use area is the icon set and nothing
+        // else, so this is the whole rule.
+        for setting in SETTINGS.iter().chain(CONFIRM_RESET.iter()) {
+            let mark = setting.glyph();
+            assert!(!mark.is_empty(), "{setting:?} has no mark");
+            for c in mark.chars() {
+                assert!(
+                    ('\u{E000}'..='\u{F8FF}').contains(&c),
+                    "{setting:?} reaches outside the icon font: {mark:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_two_squares_wear_the_same_mark() {
+        // "Add file" and "Open the file" were the same rectangle, on two
+        // surfaces one click apart.
+        let mut seen: Vec<&str> = Vec::new();
+        for setting in SETTINGS {
+            let mark = setting.glyph();
+            assert!(!seen.contains(&mark), "{setting:?} wears a mark already taken");
+            seen.push(mark);
+        }
     }
 
     #[test]

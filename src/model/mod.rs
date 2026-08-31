@@ -103,7 +103,7 @@ impl Mode {
         match self {
             Mode::Grid => "Done",
             Mode::Layout => "Edit layout",
-            Mode::Center => "Center",
+            Mode::Center => "Edit center",
             Mode::Close => "Close apps",
             Mode::Move => "Move window",
             Mode::AllApps => "All apps",

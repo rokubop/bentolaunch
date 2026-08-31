@@ -1301,12 +1301,20 @@ impl Panel {
                     width: rect.w,
                     height: rect.h,
                     glyph,
-                    mark: control.span().map(|(left, right)| Mark::Half {
-                        left,
-                        top: 0.0,
-                        right,
-                        bottom: 1.0,
-                    }),
+                    mark: match control {
+                        // Drawn, like the move bar's own latch, and for the
+                        // same reason the lanes are drawn: a circle from the
+                        // icon set says "a circle", not "on".
+                        Control::CenterOn => {
+                            Some(Mark::Latch { on: self.config.center.on() })
+                        }
+                        _ => control.span().map(|(left, right)| Mark::Half {
+                            left,
+                            top: 0.0,
+                            right,
+                            bottom: 1.0,
+                        }),
+                    },
                     label,
                     colors,
                     icon: None,
