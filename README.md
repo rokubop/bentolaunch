@@ -32,6 +32,9 @@ target\release\bentolaunch.exe
 
 `cargo build` without `--release` keeps a console window, so the log is visible.
 
+The browser extension is the `extension/` folder as it sits in the repo.
+Nothing builds it: load it unpacked from there. Releases only zip it up.
+
 Reads the config next to the `exe` location, so an installed copy
 and `target\release\` have separate settings.
 

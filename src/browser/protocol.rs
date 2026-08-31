@@ -254,6 +254,35 @@ mod tests {
         assert_eq!(mode, "something-newer");
     }
 
+    /// The extension is half of this app and ships from the same tag, so both
+    /// numbers it carries have to match the exe's. Neither did.
+    fn extension_manifest() -> &'static str {
+        include_str!("../../extension/manifest.json")
+    }
+
+    #[test]
+    fn the_extension_speaks_this_protocol() {
+        let js = include_str!("../../extension/bridge.js");
+        let theirs = js
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("const BRIDGE_PROTOCOL = "))
+            .and_then(|v| v.strip_suffix(";"))
+            .expect("bridge.js declares BRIDGE_PROTOCOL");
+        assert_eq!(theirs, PROTOCOL.to_string(), "the two halves would refuse to pair");
+    }
+
+    #[test]
+    fn the_extension_carries_the_app_version() {
+        // Chrome shows this in chrome://extensions. It sat two releases behind,
+        // so a 0.6.0 download introduced itself as 0.4.1.
+        let version = extension_manifest()
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("\"version\": \""))
+            .and_then(|v| v.strip_suffix("\","))
+            .expect("manifest.json has a version");
+        assert_eq!(version, env!("CARGO_PKG_VERSION"));
+    }
+
     #[test]
     fn outdated_names_the_version_this_build_speaks() {
         let json = serde_json::to_string(&Outbound::Outdated { protocol: PROTOCOL }).unwrap();
